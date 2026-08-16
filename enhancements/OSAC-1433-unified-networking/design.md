@@ -80,10 +80,11 @@ OSAC networking is handled by two managers:
 
 - **K8s Manager** (optional) — handles everything needed to make VMs part of
   the fabric: creates the K8s overlay (e.g., CUDN with LocalNet) and bridges
-  it to the fabric segment. Also creates MetalLB IPAddressPool CRs at subnet
-  creation time for CaaS VIP allocation. Needed for deployments that host
-  both VMs and BMs and require multi-tenancy across all. Once VMs are on the fabric, the fabric manager handles them
-  identically to bare-metal servers.
+  it to the fabric segment. Needed for deployments that host VMs — once VMs
+  are on the fabric, the fabric manager handles them identically to
+  bare-metal servers. MetalLB IPAddressPool CRs for CaaS VIP allocation are
+  created by the Subnet controller at subnet creation time (gated on
+  `NetworkClass.spec.vip_prefix_length`), independent of the k8sManager.
 
 #### Why Two Managers?
 
@@ -1117,11 +1118,15 @@ template roles create DNS records. A DNS API is a separate enhancement.
 
 #### BM-Only Deployments
 
-If a NetworkClass has no k8sManager, the deployment does not support VMs or CaaS
-clusters. ComputeInstance creation is rejected if the target NetworkClass
-has no k8sManager — there is no K8s overlay to place the VM on. Cluster
-creation is also rejected — without a k8sManager, there is no MetalLB
-IPAddressPool for VIP allocation on the hosting cluster.
+If a NetworkClass has no k8sManager, the deployment does not support VMs.
+ComputeInstance creation is rejected if the target NetworkClass has no
+k8sManager — there is no K8s overlay to place the VM on.
+
+CaaS clusters work without a k8sManager. MetalLB IPAddressPool creation
+is handled by the Subnet controller (gated on
+`NetworkClass.spec.vip_prefix_length`), not by the k8sManager. BM-only
+CaaS deployments provision clusters with fabric-level networking and
+MetalLB VIP allocation without requiring a K8s overlay.
 
 #### CIDR Overlap
 
@@ -1142,10 +1147,10 @@ VirtualNetwork at creation time.
 
 This design requires K8s-to-fabric connectivity in every deployment that
 hosts VMs. The k8sManager must bridge the OVN overlay to the physical
-fabric for VMs to participate. It is also required for CaaS clusters, where
-it creates MetalLB IPAddressPool CRs at subnet creation time for API and
-ingress VIP allocation. In BM-only deployments without CaaS, the
-k8sManager is not needed and the design reduces to fabric-manager-only.
+fabric for VMs to participate. In deployments without VMs (BM-only, with
+or without CaaS), the k8sManager is not needed and the design reduces to
+fabric-manager-only. MetalLB IPAddressPool creation for CaaS VIP
+allocation is handled by the Subnet controller, not the k8sManager.
 
 The trade-off is justified by infrastructure-agnostic subnets: any resource
 type on any subnet, uniform security enforcement via the fabric, and no
