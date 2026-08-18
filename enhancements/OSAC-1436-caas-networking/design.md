@@ -65,18 +65,18 @@ Cluster provisioning today follows this flow:
 
 ### Agent Pool Model
 
-The current assumption is that **pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **parking network** — a fabric-manager-managed V-Net that provides basic connectivity (DHCP, PXE, management access) while agents are idle. The parking network V-Net ID is a **deployment-level configuration** (e.g., AAP group_var `parking_vnet_id`), not a per-cluster or per-tenant parameter.
+The current assumption is that **pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **parking network** — a fabric-manager-managed V-Net that provides basic connectivity (DHCP, PXE, management access) while agents are idle. The parking network V-Net name is a **deployment-level configuration** (an AAP group_var, mirroring BMaaS's `netris_bm_parking_vnet`), not a per-cluster or per-tenant parameter.
 
 When an agent is selected for a cluster:
-1. The agent's port is **moved from the parking network to the tenant's subnet V-Net** (via `create_network_attachment`)
+1. The agent's port is **moved from the parking network to the tenant's subnet V-Net** (via the generic `move_network_attachment` role — `from_vnet_name` = parking, `to_vnet_name` = tenant)
 2. The agent receives a new IP from the tenant subnet's DHCP server
-3. After cluster deletion, the agent's port is **returned to the parking network** (via `delete_network_attachment`)
+3. After cluster deletion, the agent's port is **returned to the parking network** (the reverse move — `from_vnet_name` = tenant, `to_vnet_name` = parking)
 
-This differs from BMaaS, where servers start with no network attachment and are placed directly on the tenant V-Net. For CaaS, the `create_network_attachment` role must handle the transition: check if the port is already on a network (parking V-Net), remove it, then add to the target V-Net. The `delete_network_attachment` role reverses this: remove from tenant V-Net, return to parking V-Net.
+CaaS and BMaaS use the **same parking-network pattern and the same generic port-move primitive**. CaaS agents park while idle in the pool; BMaaS servers park while unassigned so they keep internet for metal3 inspection (see [BMaaS — Parking V-Net and Port Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#parking-v-net-and-port-moves)). In both cases provisioning moves the port parking → tenant and deprovisioning moves it tenant → parking.
 
-**Generic role behavior:** The `create_network_attachment` role works identically for both CaaS and BMaaS by always checking if the given port is already part of a V-Net. If yes, remove it first. Then add to the target V-Net. This means:
-- **CaaS:** agent on parking V-Net → remove from parking → add to tenant V-Net
-- **BMaaS:** server not on any V-Net → nothing to remove → add to tenant V-Net
+**Generic role behavior:** The `move_network_attachment` role is keyed on plain V-Net names — it detaches the port from `from_vnet_name` (if set), then attaches it to `to_vnet_name` (if set). Detach is a no-op when the port is not on the named V-Net, so re-runs and unexpected states are safe. This one role serves both services identically:
+- **CaaS:** agent on parking V-Net → detach parking → attach tenant V-Net
+- **BMaaS:** server on parking V-Net → detach parking → attach tenant V-Net
 
 **Future consideration:** The agent pool model may evolve toward on-demand agent booting during cluster provisioning (no pre-booted pool). The design should accommodate this by not assuming agents are pre-existing — the `reconcileAgentSelection` step abstracts agent discovery, and the networking flow works regardless of whether the agent was pre-booted or just provisioned.
 
@@ -150,7 +150,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `subnet_ref`. The role checks if the port is already on a V-Net (parking network) — if so, removes it first — then adds the port to the tenant's subnet V-Net. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
+    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.move_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `from_vnet_name` (the parking V-Net) and `to_vnet_name` (the tenant's subnet V-Net, resolved from `subnet_ref`). The role detaches the port from the parking network and attaches it to the tenant's subnet V-Net. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
     - **Per-agent IP discovery:** After switch port configuration moves agent ports to the tenant V-Net, agents receive new IPs from the tenant subnet's DHCP server. The Assisted Installer Agent CR reports network status including the assigned IP in `status.inventory.interfaces[].ipv4Addresses[]`. The operator watches for this field to be updated after the port move and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service. If the Agent CR does not report an IP within a configurable timeout (default: 5 minutes after port move), the operator sets a `NetworkingIPDiscoveryTimeout` condition on the ClusterOrder and requeues, preventing indefinite blocking.
     - Network attachments must be Ready before provisioning proceeds
 
@@ -218,7 +218,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
       - No switch port cleanup — template doesn't handle networking
-    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `delete_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, subnet_ref, and `parking_vnet_id` from deployment configuration). The role removes the port from the tenant's subnet V-Net and **returns it to the parking network** — the agent is back in the idle pool. See [Agent Pool Model](#agent-pool-model).
+    - ClusterOrder controller `reconcileNetworking` (delete): dispatcher calls `move_network_attachment` per BM node (passing host_name, logical_interface_name from the agent's node set definition, `from_vnet_name` = the tenant's subnet V-Net resolved from subnet_ref, and `to_vnet_name` = the parking V-Net name from deployment configuration). The role removes the port from the tenant's subnet V-Net and **returns it to the parking network** — the agent is back in the idle pool. See [Agent Pool Model](#agent-pool-model).
     - ClusterOrder controller `reconcileAgentCleanup` (delete): removes operator-set reservation labels from agents, making them available for future clusters.
     - Removes ClusterOrder finalizer
 
@@ -260,7 +260,7 @@ The tenant provides a single `ClusterNetworkAttachment` with `subnet` only — n
     {name: "mgmt-0", role: "management"}]
    ```
 3. fulfillment-service picks the first interface with role `fabric` → `data-0`, stores as `fabric_interface` on the node set definition
-4. Operator calls `create_network_attachment` with `interface=data-0` per node
+4. Operator calls `move_network_attachment` with `interface=data-0` per node (parking → tenant V-Net)
 
 For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible (the HostType BM-vs-VM discriminator and CUDN overlay support it) but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
 
@@ -290,7 +290,7 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 
 - `ClusterNetworkAttachment` proto message on ClusterSpec
 - `api_endpoint` / `ingress_endpoint` status fields on Cluster and ClusterOrder
-- Operator handles agent selection and network attachment (dispatcher calls `create_network_attachment` / `delete_network_attachment` for BM nodes before/after provisioning)
+- Operator handles agent selection and network attachment (dispatcher calls `move_network_attachment` for BM nodes before/after provisioning — parking → tenant on create, tenant → parking on delete)
 - Template provisions MetalLB VIPs and writes them to ClusterOrder status
 - VIP feedback loop: ClusterOrder → fulfillment-service → Cluster → ExternalIPAttachment controller
 - ExternalIPAttachment Pending → Ready lifecycle for cluster targets
@@ -405,7 +405,7 @@ Migration adds to clusters table:
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs/IPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents), provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP — no agent selection logic |
-| fabric_manager (Ansible role) | create_network_attachment (V-Net port attachment), delete_network_attachment (V-Net port removal), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| fabric_manager (Ansible role) | move_network_attachment (generic V-Net port move: detach from/attach to, used for both parking → tenant and tenant → parking), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle
@@ -700,7 +700,7 @@ Consequences:
 
 - AAP execution environment with `osac.templates.ocp_4_17_small` role updated (remove cluster_infra/external_access, add MetalLB VIP provisioning)
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
-- fabric_manager Ansible role with `create_network_attachment` / `delete_network_attachment` (OSAC-2081)
+- fabric_manager Ansible role with the generic `move_network_attachment` primitive (OSAC-2081); a provisioned parking V-Net for the idle agent pool
 - Integration test environment with CUDN or EVPN fabric
 - HostType test data with NetworkInterface fields
 
@@ -726,7 +726,7 @@ Consequences:
 | Cluster provisioning flow (operator side) | OSAC-2049 | New |
 | CLI --network-attachment for Cluster | OSAC-2076 | New |
 | Integration test | OSAC-2078 | New |
-| Fabric manager create/delete_network_attachment role | OSAC-2081 (Netris BM) | New |
+| Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | New |
 | HostType: add NetworkInterface fields (name, role, description) | Not tracked | **GAP** |
 | Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
 | Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |
