@@ -81,8 +81,9 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - Resource-specific attachment message (`BareMetalNetworkAttachment`) with `interface` and `primary` fields
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
-- bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher calls `create_network_attachment` per interface to configure switch ports
-- IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches port MAC to DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
+- bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher moves each interface's fabric port onto the tenant subnet's V-Net (parking → tenant) via the generic `move_network_attachment` role
+- Parking V-Net: an idle (unassigned) server keeps its fabric NIC on a Netris parking V-Net (DHCP + gateway + SNAT) so it has internet during metal3 inspection; provisioning moves the port parking → tenant, deletion moves it tenant → parking (see [Parking V-Net and Port Moves](#parking-v-net-and-port-moves))
+- IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches the port MAC (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to the DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
 - HostType resource with structured NetworkInterface list (name, role, description)
 - Remove unused `networkClass` field from BareMetalInstance spec entirely (unused per reviewer feedback)
 
@@ -90,7 +91,7 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 
 - CaaS or VMaaS networking (this EP covers BMaaS only)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
-- Fabric manager implementation (Netris create/delete_network_attachment roles deferred to OSAC-2081)
+- Creating the parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) and the initial per-server parking attach — a deployment prerequisite handled by the fabric infrastructure / test-infra, not the operator (see [Parking V-Net and Port Moves](#parking-v-net-and-port-moves))
 
 ## Proposal
 
@@ -223,7 +224,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
    b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
       - Reads `network_attachments` from the CR spec
-      - **Operator dispatches switch-side config:** For each attachment, dispatcher calls `osac.templates.{{ fabric_manager }}.create_network_attachment` passing `host_name` (Netris server name from ExternalHostID), `logical_interface_name` (interface name from HostType), `subnet_ref`. The fabric manager adds the server's port to the subnet's V-Net. The host will receive an IP from the fabric's DHCP server once it boots on the V-Net.
+      - **Operator dispatches switch-side config:** For each attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant V-Net name and moves the server's fabric port **parking → tenant V-Net** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = Netris server name from ExternalHostID, `logical_interface_name` = interface name from HostType, `from_vnet_name` = parking V-Net, `to_vnet_name` = tenant V-Net). The host will receive an IP from the fabric's DHCP server once it boots on the tenant V-Net. See [Parking V-Net and Port Moves](#parking-v-net-and-port-moves).
       - Network attachments must be Ready before provisioning proceeds
 
    c. `reconcileProvisioning` (runs after networking):
@@ -234,7 +235,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    d. `reconcilePower` (unchanged)
 
 7. **IP discovery and feedback (`reconcileIPDiscovery` — runs after provisioning):**
-   - After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the subnet and matches the server's port MAC address to find the corresponding DHCP-assigned IP.
+   - After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP.
    - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
@@ -271,7 +272,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator:
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown
-      - `reconcileNetworking` (delete): dispatcher calls `osac.templates.{{ fabric_manager }}.delete_network_attachment` per attachment (passing host_name, logical_interface_name, subnet_ref) to remove the server's port from the subnet's V-Net.
+      - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves each port **tenant V-Net → parking** (`from_vnet_name` = tenant V-Net, `to_vnet_name` = parking V-Net), returning the fabric NIC to the parking V-Net so the freed server keeps internet for its next inspection. A missing tenant Subnet CR is tolerated (detach skipped, port still parked).
       - Removes management finalizer
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
@@ -371,13 +372,79 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 ### Implementation Details/Notes/Constraints
 
-#### The IP Address Feedback Question
+#### Parking V-Net and Port Moves
+
+Bare-metal servers configure host-side networking entirely via DHCP. An
+**unassigned** server (owned by no tenant) has no tenant V-Net, so without
+intervention it has no default gateway and no internet — which breaks the Ironic
+Python Agent (IPA) during metal3 inspection/cleaning (it cannot download its
+rootfs). Hanging the default gateway off the management/BMC NIC is not an option:
+the host would then have two DHCP default routes (management + fabric) once a
+tenant subnet is attached, causing a default-gateway race.
+
+**Solution — a parking V-Net.** A Netris **parking V-Net** (DHCP + default
+gateway + SNAT for outbound internet) holds every server's **fabric NIC** while
+the server is idle, so an unassigned server always has internet via its fabric
+NIC. The parking V-Net exists **only in Netris** — it has no OSAC Subnet CR — and
+its name is a fabric-manager configuration value (`netris_bm_parking_vnet`,
+sourced from the `NETRIS_BM_PARKING_VNET` environment variable), not operator
+state.
+
+**Provision and deprovision are the same primitive: move a fabric port from one
+V-Net to another.** The port lifecycle is:
+
+| Flow | Trigger | Move (from → to) |
+|------|---------|------------------|
+| Initial | Deployment bootstrap (test-infra) | — → parking |
+| Provision | BMI `reconcileNetworking` | parking → tenant subnet's V-Net |
+| Deprovision | BMI deletion (networking cleanup) | tenant subnet's V-Net → parking |
+
+Creating the parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) and performing
+the initial per-server attach are deployment prerequisites (handled by the fabric
+infrastructure / test-infra), not operator responsibilities. The parking V-Net
+name configured for the fabric manager must match the one used at bootstrap.
+
+**Generic `move_network_attachment` role.** The Netris fabric manager exposes a
+single generic primitive, keyed on plain V-Net **names**:
+
+```
+move_network_attachment(host_name, logical_interface_name,
+                        from_vnet_name, to_vnet_name)
+    → detach the server's fabric port from from_vnet_name (if set),
+      then attach it to to_vnet_name (if set)
+```
+
+- The role resolves host → fabric server → fabric port, then detaches from the
+  source V-Net and attaches to the target. Either side may be empty (a pure
+  attach or pure detach).
+- Detach is a **no-op when the port is not on the named V-Net** (robust to
+  retries and unexpected state); attach fails if the target V-Net or port cannot
+  be resolved.
+- It operates purely against Netris — **no Subnet CR lookup inside the role**.
+  Callers resolve a `subnetRef` → tenant V-Net name and pass the parking V-Net
+  name from configuration.
+- The primitive is backend-/lifecycle-agnostic: callers decide what the V-Nets
+  mean (tenant, parking, …), so CaaS can reuse it for its own parking-network
+  flow.
+
+**Single move playbook, direction from the CR.** One AAP job template
+(`osac-move-network-attachment`, playbook `playbook_osac_move_network_attachment.yml`)
+serves both provision and deprovision. It derives direction from the CR: a
+resource carrying `metadata.deletionTimestamp` is **offboarding**
+(tenant → parking); otherwise it is **onboarding** (parking → tenant). The tenant
+V-Net is resolved per attachment from `subnetRef` (Subnet CR `metadata.name` ==
+Netris V-Net name); the parking V-Net comes from configuration. The
+bare-metal-fulfillment-operator therefore points **both** its networking-provision
+and networking-deprovision providers at the same `osac-move-network-attachment`
+template — no direction plumbing in the operator.
 
 #### IP Discovery
 
-IP discovery is decoupled from switch port configuration. The `create_network_attachment` role is switch-side only — it moves the server's port to the subnet's V-Net during `reconcileNetworking`, before the host boots. It does not query DHCP leases or return an IP address.
+IP discovery is decoupled from switch port configuration. The `move_network_attachment` role is switch-side only — it moves the server's fabric port onto the tenant subnet's V-Net during `reconcileNetworking`, before the host boots. It does not query DHCP leases or return an IP address.
 
-After `reconcileProvisioning` completes and the host has received a DHCP lease from the fabric's DHCP server, the operator runs `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the subnet reference and the server's port MAC address. The role queries the fabric manager's DHCP lease API for the subnet, matches the port MAC to find the corresponding DHCP-assigned IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+After `reconcileProvisioning` completes and the host has received a DHCP lease from the fabric's DHCP server, the operator runs `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing, per attachment, the subnet reference and the server's port MAC address. The role queries the fabric manager's DHCP lease API for the subnet, matches the port MAC to find the corresponding DHCP-assigned IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+
+**MAC resolution — the `osac.openshift.io/interface-macs` contract.** Bare-metal servers are not registered as named Netris fabric servers, so their DHCP leases appear in Netris IPAM as MAC-only host entries (no server name). To match a lease, the operator must know each attachment's NIC MAC. Inventory tooling annotates each `BareMetalHost` with a JSON map of OSAC interface name → NIC MAC, e.g. `{"eth9":"52:54:00:16:04:83"}`, under the `osac.openshift.io/interface-macs` annotation. During `reconcileIPDiscovery` the operator reads this annotation, builds a `subnetRef → MAC` map, and passes it to the job as an extra var (`network_attachment_macs`). The `query_dhcp_lease` role matches the IPAM host by MAC (Netris stores lease MACs lowercase; the role compares against the lowercased `mac[].address` values). When no MAC is supplied, the role falls back to matching by server name — the path named CaaS fabric servers use, which BMaaS is converging onto.
 
 The feedback controller syncs this to the fulfillment-service DB via the existing Signal / `syncStatus()` pattern. The ExternalIPAttachment controller reads the primary IP from CR status for DNAT creation.
 
@@ -391,9 +458,8 @@ The feedback controller syncs this to the fulfillment-service DB via the existin
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
 | osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
-| fabric_manager role (create_network_attachment) | Switch-side only: resolve host → fabric server, add server port to subnet's V-Net (port attachment) |
-| fabric_manager role (query_dhcp_lease) | Query fabric manager's DHCP lease API for a subnet, match port MAC address to find the DHCP-assigned IP, return it |
-| fabric_manager role (delete_network_attachment) | Switch-side only: remove server port from V-Net |
+| fabric_manager role (move_network_attachment) | Switch-side only: resolve host → fabric server → fabric port, detach from the source V-Net (if set) and attach to the target V-Net (if set). Serves both parking → tenant (provision) and tenant → parking (deprovision) |
+| fabric_manager role (query_dhcp_lease) | Query fabric manager's DHCP lease API for a subnet, match the port MAC (or fall back to server name) to find the DHCP-assigned IP, return it |
 
 #### Reconciliation Phase Ordering
 
@@ -401,7 +467,8 @@ The feedback controller syncs this to the fulfillment-service DB via the existin
 bare-metal-fulfillment-operator BareMetalInstance controller phases:
 1. reconcileInventory → allocate host, populate HostClass
    Sets condition: InventoryAssigned=True
-2. reconcileNetworking → configure switch ports (dispatcher, switch-side only)
+2. reconcileNetworking → move fabric port parking → tenant V-Net
+   (dispatcher, switch-side only)
    Requires: InventoryAssigned=True
    Sets condition: NetworkingConfigured=True
 3. reconcileProvisioning → OS provisioning (AAP). Host PXE boots and gets IP from DHCP.
@@ -468,7 +535,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: fabric_manager implementation blocked or delayed
 
-**Impact:** Fabric manager `create_network_attachment` and `delete_network_attachment` roles are prerequisites for BMaaS networking. Without them, switch port configuration cannot function. (IP allocation is operator-managed and does not depend on fabric manager roles.)
+**Impact:** The fabric manager `move_network_attachment` role and a provisioned parking V-Net are prerequisites for BMaaS networking. Without them, switch port configuration cannot function.
 
 **Mitigation:** Prioritize Netris BM roles (OSAC-2081). Accept that BMaaS remains unavailable until a fabric_manager exists. Document as a hard dependency.
 
@@ -528,7 +595,7 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 
 ### ~~4. How is the host's runtime IP discovered after network reconfiguration?~~ — Resolved
 
-Resolved: After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role). The role queries DHCP leases for the subnet and matches the server's port MAC address to find the assigned IP. The operator writes to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR. The feedback controller then syncs to fulfillment-service via Signal RPC. `create_network_attachment` remains switch-side only (port attachment to V-Net).
+Resolved: After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role). The role matches the server's port MAC address — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers). The operator writes to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR. The feedback controller then syncs to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between V-Nets).
 
 ## Test Plan
 
@@ -538,7 +605,8 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - fulfillment-service: interface validation (reject interface not in BareMetalInstanceType, reject duplicate interfaces, reject >1 attachment without interface)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after inventory, before provisioning)
-- bare-metal-fulfillment-operator: dispatcher call per attachment (create_network_attachment with correct params)
+- bare-metal-fulfillment-operator: dispatcher call per attachment (move_network_attachment with correct from/to V-Net params, direction from deletionTimestamp)
+- bare-metal-fulfillment-operator: `buildSubnetMACMap` resolves subnetRef → MAC from the interface-macs annotation (single-NIC fallback when interface unset)
 
 ### Integration Tests
 
@@ -548,6 +616,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with >1 attachment but no interface fields, verify error returned
 - E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
+- E2E: verify the port move — create BMI moves the fabric port parking → tenant V-Net; delete BMI returns it tenant → parking (confirm in Netris; a freed server can re-inspect with internet)
 
 ### Tricky Test Cases
 
@@ -566,7 +635,7 @@ Tech Preview criteria:
 - [ ] API fields (`network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] BaremetalInstance CRD updated with `NetworkAttachments` field, CEL validation, and status field for IP addresses
 - [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented
-- [ ] Dispatcher integration for `create_network_attachment` and `delete_network_attachment`
+- [ ] Dispatcher integration for `move_network_attachment` (provision + deprovision via one job template); parking V-Net provisioned and initial per-server attach done at deployment
 - [ ] BareMetalInstanceType with network ports (`BareMetalNetworkPortSpec`) available and tested
 - [ ] Auto ExternalIP attachment provisioning functional
 - [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback syncs to fulfillment-service)
@@ -637,7 +706,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 **Resolution:**
 1. Check bare-metal-fulfillment-operator logs for networking phase errors (dispatcher)
-2. Check AAP job logs for `create_network_attachment` role errors (switch-side)
+2. Check AAP job logs for `move_network_attachment` role errors (switch-side) — e.g. port not found on the server, or the parking/tenant V-Net not resolvable
 3. If fabric manager unreachable, investigate connectivity
 4. If switch port config failed, investigate switch configuration
 
@@ -672,7 +741,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 **Resolution:**
 1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachmentStatuses[?(@.primary==true)].ipAddress}'`
 2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
-3. If provisioning completed but IP missing, investigate `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease)
+3. If provisioning completed but IP missing, investigate `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease). Confirm the BareMetalHost carries the `osac.openshift.io/interface-macs` annotation with the attachment's interface — without it, MAC matching is skipped and only named fabric servers resolve
 
 ### Disabling the feature
 
@@ -687,7 +756,8 @@ Consequences:
 
 ## Infrastructure Needed
 
-- AAP execution environment with fabric manager role (`create_network_attachment`, `delete_network_attachment`) for Netris (OSAC-2081)
+- AAP execution environment with the Netris fabric manager `move_network_attachment` role
+- A provisioned parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) and the initial per-server parking attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (test-infra)
 - Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460)
 - Integration test environment with Netris fabric manager and Ironic/Metal3 backend
 
@@ -703,12 +773,14 @@ Consequences:
 | Primary field on BareMetalNetworkAttachment | OSAC-2042 | New |
 | Immutability + interface + primary validation | OSAC-1509 | New |
 | CLI --network-attachment for BareMetalInstance | OSAC-2075 | New |
-| BM provisioning flow (operator reconcileNetworking calls create_network_attachment) | OSAC-2047 | New |
+| BM provisioning flow (operator reconcileNetworking dispatches move_network_attachment, parking → tenant) | OSAC-2047 | New |
 | Integration test | OSAC-1510 | New |
-| Fabric manager create/delete_network_attachment role | OSAC-2081 (Netris BM) | New |
+| Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | New |
+| Parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) + initial per-server attach in setup-bmaas | osac-test-infra | New |
+| BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-test-infra | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
-| IP discovery: `query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status | Not tracked | **GAP** |
+| IP discovery: `query_dhcp_lease` role matches port MAC (from interface-macs annotation) to lease, operator writes to CR status | Not tracked | **GAP** |
 | bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
 | Remove unused BareMetalInstance spec.networkClass field | Not tracked | **GAP** |
 | BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed, description | Not tracked | **GAP** |

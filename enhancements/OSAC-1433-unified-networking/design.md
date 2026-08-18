@@ -624,7 +624,7 @@ precondition checks and requeue:
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to assigned IP; operator writes to CR status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to CR status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -651,27 +651,35 @@ IP discovery mechanism per service type:
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
 | CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC to DHCP-assigned IP (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
-The fabric manager's `create_network_attachment` role is switch-side
-only — it adds the host's port to the V-Net. The role is generic: it
-first checks if the port is already on a V-Net (e.g., a parking
-network for CaaS pre-booted agents) — if so, removes it — then adds
-the port to the target V-Net. This handles both BMaaS (server not on
-any V-Net) and CaaS (agent moving from parking to tenant V-Net) with
-the same role. The role is idempotent: if the port is already on the
-target V-Net, the role is a no-op. The role only removes and re-adds
-the port when the current V-Net differs from the target. Once on the
-V-Net, the host receives an IP from the fabric's DHCP server
-automatically. On deletion, `delete_network_attachment` removes the
-port from the tenant V-Net and returns it to the parking network
-(CaaS) or leaves it detached (BMaaS).
+The fabric manager's `move_network_attachment` role is switch-side
+only — it moves a host's fabric port from one V-Net to another
+(`from_vnet_name` → `to_vnet_name`, either side optional). Attach and
+detach are the **same primitive**: on provision the port moves from a
+**parking V-Net** to the tenant subnet's V-Net; on deletion it moves
+back to parking. The role operates purely against the fabric (no Subnet
+CR lookup) and is keyed on plain V-Net names, so the caller resolves a
+`subnetRef` → tenant V-Net name and supplies the parking V-Net name from
+configuration. Detach is a no-op if the port is not on the named V-Net,
+so re-runs and unexpected states are safe. One role handles both BMaaS
+(fabric NIC parked while the server is idle so it has internet during
+metal3 inspection) and CaaS (agent moving from a parking network to the
+tenant V-Net). Once on the tenant V-Net, the host receives an IP from
+the fabric's DHCP server automatically. A single AAP job template serves
+both directions, deriving onboard (parking → tenant) vs. offboard
+(tenant → parking) from the resource's `deletionTimestamp`. See
+[BMaaS — Parking V-Net and Port Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#parking-v-net-and-port-moves).
 
 IP discovery for BMaaS is a separate dispatcher call. After
 `reconcileProvisioning` completes and the host has received a DHCP
 lease, the operator dispatches `query_dhcp_lease` — this role queries
 the fabric manager's DHCP lease API for the subnet and matches the
 server's port MAC address to find the corresponding DHCP-assigned IP.
+Bare-metal hosts are not named fabric servers, so the lease is matched
+by NIC MAC, which the operator supplies from the host's
+`osac.openshift.io/interface-macs` BareMetalHost annotation; named
+fabric servers such as CaaS agents fall back to matching by server name.
 
 *NATGateway controller preconditions:*
 
