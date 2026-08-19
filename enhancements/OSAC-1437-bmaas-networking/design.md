@@ -75,23 +75,70 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - No ExternalIPAttachment support for `baremetal_instance` target
 - No IP address feedback mechanism (ExternalIPAttachment controller needs BM's IP to create DNAT rules)
 
+### Why the Current Approach is Insufficient
+
+The current design moves the fabric port **provisioning network → tenant before provisioning** (`reconcileNetworking` gates provisioning on `NetworkAttachmentsReady=True`). That places the server on the tenant V-Net for the entire deploy, which:
+
+1. **Premature handoff** — the tenant can reach the server while it is still being imaged/booted.
+2. **Provisioning runs inside the tenant network** — image pull and cloud-init (SSH key/secrets) traverse tenant turf.
+3. **Deploy egress depends on the tenant** — the provisioning network (with SNAT) is detached before provisioning, so deploy-time internet relies on an optional tenant NATGateway.
+4. **"Isolated until ready" is unrepresentable** — there is no provisioning posture and no handoff gate in the model.
+
+Root cause: the design **collapses the provisioning network and the tenant network into one, attached before provisioning**, because metal3 offers no mid-deploy switch point and DHCP-only demands the final default route at first boot.
+
 ### Goals
+
+**Core Design Goals (G1–G5):**
+
+- **G1 — OS-agnostic host networking.** All host addressing via DHCP; no per-OS host-side config. Corollary: exactly one default route at any moment.
+- **G2 — Provisioning connectivity.** During inspect + deploy the server can reach its image source and the Ironic conductor.
+- **G3 — Correct, minimal final state.** After provisioning: attached to exactly the tenant V-Net(s), single default route, no residual provisioning network.
+- **G4 — Isolated until ready.** The tenant reaches the server only after it is fully provisioned and in its final network state; provisioning traffic is never exposed to the tenant.
+- **G5 — Achievable on stock metal3 + Netris today.**
+
+**Implementation Goals:**
 
 - Multi-NIC support with explicit physical interface mapping (tenant specifies interface name from HostType)
 - Resource-specific attachment message (`BareMetalNetworkAttachment`) with `interface` and `primary` fields
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
-- bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher moves each interface's fabric port onto the tenant subnet's V-Net (parking → tenant) via the generic `move_network_attachment` role
-- Parking V-Net: an idle (unassigned) server keeps its fabric NIC on a Netris parking V-Net (DHCP + gateway + SNAT) so it has internet during metal3 inspection; provisioning moves the port parking → tenant, deletion moves it tenant → parking (see [Parking V-Net and Port Moves](#parking-v-net-and-port-moves))
+- bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher moves each interface's fabric port onto the tenant subnet's V-Net (provisioning network → tenant) via the generic `move_network_attachment` role
+- Provisioning network: an idle (unassigned) server keeps its fabric NIC on an OSAC-owned provisioning network (DHCP + gateway + SNAT) so it has internet during metal3 inspection; provisioning moves the port provisioning network → tenant, deletion moves it tenant → provisioning network (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
 - IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches the port MAC (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to the DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
 - HostType resource with structured NetworkInterface list (name, role, description)
 - Remove unused `networkClass` field from BareMetalInstance spec entirely (unused per reviewer feedback)
+
+### The Three Network Planes
+
+BMaaS involves three planes; this design owns only the data-plane ones. Do not conflate them.
+
+| Plane | Carries | OS sees it? | Netris-managed? | Owned by |
+|-------|---------|-------------|-----------------|----------|
+| **BMC / OOB** | Redfish/IPMI: power, virtual-media | Depends on wiring (dedicated port: no; shared-LOM: yes, own VLAN) | Not for now (separate mgmt network) | metal3 (prerequisite) |
+| **Provisioning network** | host DHCP, image download, IPA→conductor callback | Yes (in-band, fabric NIC) | **Yes** | this design |
+| **Tenant network** | tenant workload | Yes (fabric NIC after handoff) | Yes | this design |
+
+"OOB" refers only to the BMC plane. The provisioning network is **in-band** (the OS/IPA uses it) — never call it OOB.
+
+**Note on terminology:** In the current code and configuration, the provisioning network is identified as `netris_bm_parking_vnet`. This identifier is retained for deployment stability; the docs-only rename to "provisioning network" clarifies its purpose without requiring immediate config changes.
+
+#### Connectivity Matrix (Production vs Lab)
+
+| Path | Production | Lab (current) |
+|------|-----------|---------------|
+| Ironic → BMC (power/virtual-media) | mgmt/BMC network; conductor routes to BMC IPs | `bmc-net` (libvirt); sushy virtual-media |
+| IPA → Ironic (callback) | **provisioning V-Net** (dedicated BMC port ⇒ OS has no NIC on the BMC net) | `bmc-net` (VM happens to have a NIC there) |
+| Image download | provisioning V-Net → local mirror (or internet) | **libvirt `bmc-net`** → quay.io (avoids Netris/cloudsim latency) |
+| Tenant DHCP + lease discovery | tenant V-Net (Netris) | tenant V-Net (Netris) — **real** |
+| Fabric-port V-Net move | Netris | Netris (cloudsim) — **real** |
+
+Ironic reaching two planes at once is ordinary **multi-homing**: the conductor host has a NIC/route to each network; it listens on all interfaces for inbound callbacks and the kernel selects egress NIC + source IP per destination (established callback sockets reply from the IP the server connected to; BMC connections route out the BMC-facing NIC). Which network carries the callback is set by the metal3 **`Provisioning` CR** (`provisioningNetwork`, `provisioningIP`/`provisioningInterface`, `virtualMediaViaExternalNetwork`), and each BMC address is per-host on the `BareMetalHost` (`spec.bmc.address`) — none of this is OSAC operator code.
 
 ### Non-Goals
 
 - CaaS or VMaaS networking (this EP covers BMaaS only)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
-- Creating the parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) and the initial per-server parking attach — a deployment prerequisite handled by the fabric infrastructure / test-infra, not the operator (see [Parking V-Net and Port Moves](#parking-v-net-and-port-moves))
+- Creating the provisioning network (VPC + V-Net + DHCP + gateway + SNAT) and the initial per-server attach — a deployment prerequisite handled by the fabric infrastructure / test-infra, not the operator (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
 
 ## Proposal
 
@@ -222,20 +269,26 @@ Same as VMaaS/CaaS — the networking API is uniform.
       - FindFreeHost → AssignHost (Ironic/Metal3)
       - Populates HostClass from inventory
 
-   b. **`reconcileNetworking` (NEW — runs after inventory, before provisioning):**
-      - Reads `network_attachments` from the CR spec
-      - **Operator dispatches switch-side config:** For each attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant V-Net name and moves the server's fabric port **parking → tenant V-Net** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = Netris server name from ExternalHostID, `logical_interface_name` = interface name from HostType, `from_vnet_name` = parking V-Net, `to_vnet_name` = tenant V-Net). The host will receive an IP from the fabric's DHCP server once it boots on the tenant V-Net. See [Parking V-Net and Port Moves](#parking-v-net-and-port-moves).
-      - Network attachments must be Ready before provisioning proceeds
-
-   c. `reconcileProvisioning` (runs after networking):
+   b. `reconcileProvisioning` (runs after inventory):
       - Triggers AAP job via `RunProvisioningLifecycle`
       - Template does OS provisioning (PXE boot, user-data, etc.)
-      - Host-side networking is handled by DHCP — the template does NOT configure static IPs, gateway, or DNS. The host receives its IP automatically when it boots on the V-Net.
+      - Server stays on the provisioning network during this phase
+      - Host-side networking is handled by DHCP — the template does NOT configure static IPs, gateway, or DNS. The host receives its IP automatically from the provisioning network DHCP server.
 
-   d. `reconcilePower` (unchanged)
+   c. **`reconcileNetworking` (NEW — runs after provisioning is complete):**
+      - Reads `network_attachments` from the CR spec
+      - **Operator dispatches switch-side config:** For each attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant V-Net name and moves the server's fabric port **provisioning network → tenant V-Net** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = Netris server name from ExternalHostID, `logical_interface_name` = interface name from HostType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant V-Net). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
+      - Sets condition: `NetworkAttachmentsReady=True`
 
-7. **IP discovery and feedback (`reconcileIPDiscovery` — runs after provisioning):**
-   - After `reconcileProvisioning` completes and the host has received a DHCP lease, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP.
+   d. **`reconcileReboot` (NEW — runs after networking):**
+      - Issues reboot via BareMetalHost annotation so the OS re-DHCPs on the tenant V-Net
+      - Waits for reboot to complete
+      - Sets condition: `NetworkHandoffComplete=True`
+
+   e. `reconcilePower` (unchanged)
+
+7. **IP discovery and feedback (`reconcileIPDiscovery` — runs after reboot):**
+   - After `reconcileReboot` completes and the host has received a DHCP lease on the tenant V-Net, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
    - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
@@ -272,7 +325,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator:
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown
-      - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves each port **tenant V-Net → parking** (`from_vnet_name` = tenant V-Net, `to_vnet_name` = parking V-Net), returning the fabric NIC to the parking V-Net so the freed server keeps internet for its next inspection. A missing tenant Subnet CR is tolerated (detach skipped, port still parked).
+      - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves each port **tenant V-Net → provisioning network** (`from_vnet_name` = tenant V-Net, `to_vnet_name` = provisioning network), returning the fabric NIC to the provisioning network so the freed server keeps internet for its next inspection. A missing tenant Subnet CR is tolerated (detach skipped, port still returned to provisioning network).
       - Removes management finalizer
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
@@ -372,7 +425,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 ### Implementation Details/Notes/Constraints
 
-#### Parking V-Net and Port Moves
+#### Provisioning Network and Port Moves
 
 Bare-metal servers configure host-side networking entirely via DHCP. An
 **unassigned** server (owned by no tenant) has no tenant V-Net, so without
@@ -382,27 +435,38 @@ rootfs). Hanging the default gateway off the management/BMC NIC is not an option
 the host would then have two DHCP default routes (management + fabric) once a
 tenant subnet is attached, causing a default-gateway race.
 
-**Solution — a parking V-Net.** A Netris **parking V-Net** (DHCP + default
-gateway + SNAT for outbound internet) holds every server's **fabric NIC** while
-the server is idle, so an unassigned server always has internet via its fabric
-NIC. The parking V-Net exists **only in Netris** — it has no OSAC Subnet CR — and
-its name is a fabric-manager configuration value (`netris_bm_parking_vnet`,
-sourced from the `NETRIS_BM_PARKING_VNET` environment variable), not operator
-state.
+**Solution — a provisioning network.** A Netris **provisioning network** (DHCP +
+default gateway + SNAT for outbound internet) holds every server's **fabric NIC**
+while the server is idle and during provisioning, so an unassigned server always
+has internet via its fabric NIC. The provisioning network exists **only in
+Netris** — it has no OSAC Subnet CR — and its name is a fabric-manager
+configuration value (`netris_bm_parking_vnet`, sourced from the
+`NETRIS_BM_PARKING_VNET` environment variable), not operator state. **Note:** The
+configuration identifier remains `netris_bm_parking_vnet` for now to avoid
+destabilizing the lab; the docs-only rename to "provisioning network" clarifies
+its purpose.
 
 **Provision and deprovision are the same primitive: move a fabric port from one
 V-Net to another.** The port lifecycle is:
 
-| Flow | Trigger | Move (from → to) |
-|------|---------|------------------|
-| Initial | Deployment bootstrap (test-infra) | — → parking |
-| Provision | BMI `reconcileNetworking` | parking → tenant subnet's V-Net |
-| Deprovision | BMI deletion (networking cleanup) | tenant subnet's V-Net → parking |
+| Flow | Trigger | Move (from → to) | When |
+|------|---------|------------------|------|
+| Initial | Deployment bootstrap (test-infra) | — → provisioning network | Pre-deployment |
+| Provision | BMI `reconcileNetworking` (after ProvisionTemplateComplete) | provisioning network → tenant subnet's V-Net | **POST-provisioning** |
+| Deprovision | BMI deletion (networking cleanup) | tenant subnet's V-Net → provisioning network | Deletion |
 
-Creating the parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) and performing
-the initial per-server attach are deployment prerequisites (handled by the fabric
-infrastructure / test-infra), not operator responsibilities. The parking V-Net
-name configured for the fabric manager must match the one used at bootstrap.
+**Key difference from the previous design:** The port move now happens **AFTER
+provisioning is complete**, not before. The server is provisioned while on the
+provisioning network, then moved to the tenant V-Net and rebooted so the OS
+re-DHCPs there. This achieves isolation-until-ready (G4): the tenant cannot reach
+the server during imaging/first-boot, and provisioning traffic (image
+pull/cloud-init) never traverses the tenant network.
+
+Creating the provisioning network (VPC + V-Net + DHCP + gateway + SNAT) and
+performing the initial per-server attach are deployment prerequisites (handled by
+the fabric infrastructure / test-infra), not operator responsibilities. The
+provisioning network name configured for the fabric manager must match the one
+used at bootstrap.
 
 **Generic `move_network_attachment` role.** The Netris fabric manager exposes a
 single generic primitive, keyed on plain V-Net **names**:
@@ -421,22 +485,74 @@ move_network_attachment(host_name, logical_interface_name,
   retries and unexpected state); attach fails if the target V-Net or port cannot
   be resolved.
 - It operates purely against Netris — **no Subnet CR lookup inside the role**.
-  Callers resolve a `subnetRef` → tenant V-Net name and pass the parking V-Net
-  name from configuration.
+  Callers resolve a `subnetRef` → tenant V-Net name and pass the provisioning
+  network name from configuration.
 - The primitive is backend-/lifecycle-agnostic: callers decide what the V-Nets
-  mean (tenant, parking, …), so CaaS can reuse it for its own parking-network
-  flow.
+  mean (tenant, provisioning, …), so CaaS can reuse it for its own
+  provisioning-network flow.
 
 **Single move playbook, direction from the CR.** One AAP job template
-(`osac-move-network-attachment`, playbook `playbook_osac_move_network_attachment.yml`)
-serves both provision and deprovision. It derives direction from the CR: a
-resource carrying `metadata.deletionTimestamp` is **offboarding**
-(tenant → parking); otherwise it is **onboarding** (parking → tenant). The tenant
-V-Net is resolved per attachment from `subnetRef` (Subnet CR `metadata.name` ==
-Netris V-Net name); the parking V-Net comes from configuration. The
+(`osac-move-network-attachment`, playbook
+`playbook_osac_move_network_attachment.yml`) serves both provision and
+deprovision. It derives direction from the CR: a resource carrying
+`metadata.deletionTimestamp` is **offboarding** (tenant → provisioning network);
+otherwise it is **onboarding** (provisioning network → tenant). The tenant V-Net
+is resolved per attachment from `subnetRef` (Subnet CR `metadata.name` == Netris
+V-Net name); the provisioning network name comes from configuration. The
 bare-metal-fulfillment-operator therefore points **both** its networking-provision
 and networking-deprovision providers at the same `osac-move-network-attachment`
 template — no direction plumbing in the operator.
+
+#### Topology-Agnostic Operator (Transport is Environment Config)
+
+The operator owns **V-Net membership + lifecycle orchestration only**, referenced
+by V-Net **name** (config/CR), never by physical transport:
+
+- moves the fabric port between provisioning and tenant V-Nets,
+- patches `spec.image`, reboots via the BMH annotation,
+- discovers the tenant lease (`query_dhcp_lease`, MAC match).
+
+The **transport** is environment config, not code:
+
+- image source = `BareMetalHost.spec.image.url` / template param (lab: quay.io
+  over libvirt; prod: mirror over the provisioning V-Net),
+- callback/PXE/DHCP network = the metal3 `Provisioning` CR (lab: `Disabled` +
+  `virtualMediaViaExternalNetwork`; prod: `Managed`/`Unmanaged` on the
+  provisioning V-Net).
+
+The operator must never assume the provisioning network carries the
+image/callback (no egress checks, no SNAT logic). This is what lets the lab use a
+faster transport while running the exact production code.
+
+#### Assumptions
+
+- Single fabric NIC per server on the Netris fabric (moves provisioning↔tenant).
+- BMC reachability (Ironic↔BMC) is a deployment prerequisite on a tenant-isolated
+  mgmt network; not Netris-managed for now.
+- The provisioning network (VPC + V-Net + DHCP + gateway + egress) and the
+  initial per-server attach are deployment prerequisites (test-infra / inventory
+  tooling), as today.
+- Inventory tooling sets the `osac.openshift.io/interface-macs` annotation for
+  the tenant NIC.
+- **Self-contained images**: first boot needs no *tenant-side* internet
+  (first-boot egress happens on the provisioning network during boot #1). A
+  robust "cloud-init done" signal is a long-term item.
+
+#### Tenant Handoff Signaling
+
+The operator uses conditions and phase to signal tenant handoff readiness:
+
+- `NetworkAttachmentsReady` — the tenant port is attached to the tenant V-Net
+  (set after the move).
+- `NetworkHandoffComplete` — the port has been moved and the server has been
+  rebooted; the OS is running on the tenant V-Net.
+- `IPDiscoveryComplete` — the tenant-V-Net DHCP IP is discovered and valid.
+- Phase `Ready` — fully provisioned + on the tenant network + IP known.
+
+**Gating rule:** the operator must not surface a tenant IP or report `Ready`
+until after move + reboot + discovery. The provisioning-network IP is never
+exposed to the tenant. External access is signaled separately by the
+`ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
 
 #### IP Discovery
 
@@ -458,28 +574,89 @@ The feedback controller syncs this to the fulfillment-service DB via the existin
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
 | osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
-| fabric_manager role (move_network_attachment) | Switch-side only: resolve host → fabric server → fabric port, detach from the source V-Net (if set) and attach to the target V-Net (if set). Serves both parking → tenant (provision) and tenant → parking (deprovision) |
+| fabric_manager role (move_network_attachment) | Switch-side only: resolve host → fabric server → fabric port, detach from the source V-Net (if set) and attach to the target V-Net (if set). Serves both provisioning network → tenant (provision) and tenant → provisioning network (deprovision) |
 | fabric_manager role (query_dhcp_lease) | Query fabric manager's DHCP lease API for a subnet, match the port MAC (or fall back to server name) to find the DHCP-assigned IP, return it |
 
+#### Lab Validation
+
+BMaaS networking validation in the lab (osac-test-infra) exercises each network
+plane separately, with deliberate shortcuts where the lab environment differs
+from production.
+
+**BMC/OOB plane:**
+- **What is tested:** Simulated via sushy/redfish-virtual-media on the libvirt
+  `bmc-net`; validated by successful power/virtual-media/inspection operations.
+- **Detailed procedure:** `osac-test-infra/infra/netris/roles/setup-bmc` + docs.
+- **Lab shortcut:** sushy ≠ real iDRAC/iLO; no real BMC latency or failure modes.
+
+**Provisioning network plane:**
+- **What is tested:** The Netris provisioning V-Net (config identifier
+  `netris_bm_parking_vnet`) is exercised for the **port move + isolation**, not
+  image transport; image/callback run over libvirt `bmc-net` for speed
+  (explicitly a lab shortcut).
+- **Detailed procedure:** `osac-test-infra/setup-bmaas`.
+- **Lab shortcut:** Image/callback transport over libvirt instead of the
+  provisioning V-Net — avoids Netris/cloudsim latency. Production uses the
+  provisioning V-Net for both port parking and image/callback transport.
+
+**Tenant network plane:**
+- **What is tested:** Real Netris V-Net; validated by the post-handoff assertions
+  (tenant-subnet IP, single default route, reachable only post-handoff).
+- **Detailed procedure:** `osac-test-infra` E2E tests.
+- **Lab shortcut:** None — this is real end-to-end.
+
+**What the lab deliberately does not test (and why):**
+- Real image transport over Netris (lab uses libvirt for speed; production impact
+  is latency only, not correctness).
+- Real switch/VLAN-reprogram latency (lab uses cloudsim; real switches have
+  multi-second convergence).
+- Real BMC (sushy virtual-media ≠ iDRAC/iLO; power/media commands work, but
+  timing and failure modes differ).
+- Real NIC carrier/re-DHCP timing on reboot (VMs boot instantly; real servers
+  take 30+ seconds and may time out DHCP).
+- Production IPA-callback-over-provisioning-V-Net path (lab uses `bmc-net` for
+  speed).
+
+The lab faithfully exercises the operator ordering, the Netris port move, the
+reboot flow, MAC-based discovery, the isolation logic, and the API signaling —
+the core correctness invariants. Real hardware validation happens later in the
+deployment pipeline.
+
 #### Reconciliation Phase Ordering
+
+**Target reconcile flow (provision-then-handoff):**
 
 ```
 bare-metal-fulfillment-operator BareMetalInstance controller phases:
 1. reconcileInventory → allocate host, populate HostClass
    Sets condition: InventoryAssigned=True
-2. reconcileNetworking → move fabric port parking → tenant V-Net
-   (dispatcher, switch-side only)
+
+2. reconcileProvisioning → OS provisioning (AAP). Server stays on the provisioning network.
+   Host PXE boots and gets IP from DHCP on the provisioning V-Net.
    Requires: InventoryAssigned=True
-   Sets condition: NetworkingConfigured=True
-3. reconcileProvisioning → OS provisioning (AAP). Host PXE boots and gets IP from DHCP.
-   Requires: NetworkingConfigured=True
-   Sets condition: ProvisioningComplete=True
-4. reconcileIPDiscovery → query fabric manager's DHCP lease API via dispatcher
-   (query_dhcp_lease), match port MAC to assigned IP, write to CR status
-   Requires: ProvisioningComplete=True
+   Sets condition: ProvisionTemplateComplete=True
+
+3. reconcileNetworking → move fabric port provisioning network → tenant V-Net
+   (dispatcher, switch-side only)
+   Requires: ProvisionTemplateComplete=True
+   Sets condition: NetworkAttachmentsReady=True
+
+4. reconcileReboot → reboot server (BMH annotation) so OS re-DHCPs on tenant V-Net
+   Requires: NetworkAttachmentsReady=True
+   Sets condition: NetworkHandoffComplete=True
+
+5. reconcileIPDiscovery → query fabric manager's DHCP lease API via dispatcher
+   (query_dhcp_lease), match port MAC to assigned IP on tenant V-Net, write to CR status
+   Requires: NetworkHandoffComplete=True
    Sets condition: IPDiscoveryComplete=True
-5. reconcilePower → power state management
+
+6. Phase Ready → fully provisioned + on tenant network + IP known
+   Requires: IPDiscoveryComplete=True
+
+7. reconcilePower → power state management (independent)
 ```
+
+The server sits on the **provisioning network** (the renamed-in-docs identifier `netris_bm_parking_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the operator move the fabric port to the tenant V-Net and issue **one reboot** so the OS re-DHCPs on the tenant network. Deletion reverses it (tenant → provisioning network).
 
 ### Security Considerations
 
@@ -615,8 +792,9 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with >1 attachment but no interface fields, verify error returned
-- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
-- E2E: verify the port move — create BMI moves the fabric port parking → tenant V-Net; delete BMI returns it tenant → parking (confirm in Netris; a freed server can re-inspect with internet)
+- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant V-Net, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
+- E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant V-Net + reboots; delete BMI returns it tenant → provisioning network (confirm in Netris; a freed server can re-inspect with internet)
+- E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
 
 ### Tricky Test Cases
 
@@ -624,6 +802,28 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
 - IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status)
+
+## Long-Term Evolution (The Reboot is the Seam)
+
+The structure `inventory → provision → establish-tenant-networking → discovery`
+stays; only "establish-tenant-networking" changes:
+
+**Ironic Standalone Networking** (metal3-docs PR #586; BMO PR #3469, ToR
+networking part 1): Ironic switches the port VLAN per lifecycle phase
+(provisioning→tenant) on one NIC — drop the reboot. Upstream assumes
+`networking-generic-switch` (direct ToR control), which does not fit
+Netris-owns-the-switch; adopting it means a Netris backend or aligning the model.
+
+**Dedicated always-on provisioning NIC** (two NICs): attach the tenant NIC after
+`provisioned`; no move of the provisioning NIC. Needs 2 NICs, a local registry,
+gateway-less provisioning DHCP, and provisioning-network isolation.
+
+**Static host-side networking + IPAM** (`networkData`): one boot, but not
+OS-agnostic and reintroduces IPAM. Opt-in fast path for capable, self-contained
+images.
+
+Each evolution replaces just the reboot step while preserving the same overall
+flow and operator structure.
 
 ## Graduation Criteria
 
@@ -634,12 +834,14 @@ Proposed maturity level: **Tech Preview** → **GA**
 Tech Preview criteria:
 - [ ] API fields (`network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] BaremetalInstance CRD updated with `NetworkAttachments` field, CEL validation, and status field for IP addresses
-- [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented
-- [ ] Dispatcher integration for `move_network_attachment` (provision + deprovision via one job template); parking V-Net provisioned and initial per-server attach done at deployment
+- [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented (provision-then-handoff flow)
+- [ ] bare-metal-fulfillment-operator `reconcileReboot` phase implemented (BMH annotation-based reboot after port move)
+- [ ] Dispatcher integration for `move_network_attachment` (provision + deprovision via one job template); provisioning network provisioned and initial per-server attach done at deployment
 - [ ] BareMetalInstanceType with network ports (`BareMetalNetworkPortSpec`) available and tested
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning, matches port MAC to assigned IP, operator writes to CR status, feedback syncs to fulfillment-service)
-- [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, IP feedback)
+- [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant V-Net, operator writes to CR status, feedback syncs to fulfillment-service)
+- [ ] Tenant handoff signaling (NetworkAttachmentsReady, NetworkHandoffComplete, IPDiscoveryComplete, Ready) implemented
+- [ ] Integration tests pass (E2E coverage for multi-NIC, auto ExternalIP, IP feedback, isolation-until-ready)
 - [ ] Documentation: API reference, user guide for simplified BM creation
 
 GA criteria:
@@ -648,6 +850,7 @@ GA criteria:
 - [ ] NATGateway full stack (OSAC-1443) implemented and stable
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
+- [ ] Reboot-based short-term validated; evolution path to Ironic Standalone Networking or dedicated provisioning NIC confirmed
 
 ## Upgrade / Downgrade Strategy
 
@@ -757,7 +960,7 @@ Consequences:
 ## Infrastructure Needed
 
 - AAP execution environment with the Netris fabric manager `move_network_attachment` role
-- A provisioned parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) and the initial per-server parking attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (test-infra)
+- A provisioned provisioning network (VPC + V-Net + DHCP + gateway + SNAT, config identifier `netris_bm_parking_vnet`) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (test-infra)
 - Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460)
 - Integration test environment with Netris fabric manager and Ironic/Metal3 backend
 
@@ -773,10 +976,11 @@ Consequences:
 | Primary field on BareMetalNetworkAttachment | OSAC-2042 | New |
 | Immutability + interface + primary validation | OSAC-1509 | New |
 | CLI --network-attachment for BareMetalInstance | OSAC-2075 | New |
-| BM provisioning flow (operator reconcileNetworking dispatches move_network_attachment, parking → tenant) | OSAC-2047 | New |
+| BM provisioning flow (operator reconcileNetworking dispatches move_network_attachment after provisioning, provisioning network → tenant) | OSAC-2047 | New |
+| BM reboot flow (reconcileReboot issues BMH annotation-based reboot after port move) | Not tracked | **GAP** |
 | Integration test | OSAC-1510 | New |
 | Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | New |
-| Parking V-Net (VPC + V-Net + DHCP + gateway + SNAT) + initial per-server attach in setup-bmaas | osac-test-infra | New |
+| Provisioning network (VPC + V-Net + DHCP + gateway + SNAT, config identifier `netris_bm_parking_vnet`) + initial per-server attach in setup-bmaas | osac-test-infra | New |
 | BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-test-infra | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
