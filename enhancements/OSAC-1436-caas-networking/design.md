@@ -74,9 +74,16 @@ When an agent is selected for a cluster:
 
 CaaS and BMaaS use the **same parking-network pattern and the same generic port-move primitive**. CaaS agents park while idle in the pool; BMaaS servers park while unassigned so they keep internet for metal3 inspection (see [BMaaS — Parking V-Net and Port Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#parking-v-net-and-port-moves)). In both cases provisioning moves the port parking → tenant and deprovisioning moves it tenant → parking.
 
-**Generic role behavior:** The `move_network_attachment` role is keyed on plain V-Net names — it detaches the port from `from_vnet_name` (if set), then attaches it to `to_vnet_name` (if set). Detach is a no-op when the port is not on the named V-Net, so re-runs and unexpected states are safe. This one role serves both services identically:
-- **CaaS:** agent on parking V-Net → detach parking → attach tenant V-Net
-- **BMaaS:** server on parking V-Net → detach parking → attach tenant V-Net
+**Generic role behavior:** The `move_network_attachment` role is keyed on plain V-Net names — it detaches the port from `from_vnet_name` (if set), then attaches it to `to_vnet_name` (if set). Detach is a no-op when the port is not on the named V-Net, so re-runs and unexpected states are safe. This one role serves both CaaS and BMaaS, but the **timing** differs:
+
+- **CaaS:** Move happens **BEFORE provisioning** (agents are pre-booted on the
+  provisioning network, so the port is moved to the tenant V-Net before cluster
+  creation begins; no in-deploy switch needed). Agent on provisioning network →
+  detach provisioning network → attach tenant V-Net → cluster provisioning.
+- **BMaaS:** Move happens **POST-provisioning** (provision on the provisioning
+  network → move to tenant V-Net → reboot so the OS re-DHCPs on the tenant
+  network). This achieves isolation-until-ready for bare-metal servers; CaaS does
+  not require this since agents are pre-booted and idle until assigned.
 
 **Future consideration:** The agent pool model may evolve toward on-demand agent booting during cluster provisioning (no pre-booted pool). The design should accommodate this by not assuming agents are pre-existing — the `reconcileAgentSelection` step abstracts agent discovery, and the networking flow works regardless of whether the agent was pre-booted or just provisioned.
 
