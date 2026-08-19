@@ -72,8 +72,6 @@ When an agent is selected for a cluster:
 2. The agent receives a new IP from the tenant subnet's DHCP server
 3. After cluster deletion, the agent's port is **returned to the parking network** (the reverse move — `from_vnet_name` = tenant, `to_vnet_name` = parking)
 
-CaaS and BMaaS use the **same parking-network pattern and the same generic port-move primitive**. CaaS agents park while idle in the pool; BMaaS servers park while unassigned so they keep internet for metal3 inspection (see [BMaaS — Parking V-Net and Port Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#parking-v-net-and-port-moves)). In both cases provisioning moves the port parking → tenant and deprovisioning moves it tenant → parking.
-
 **Generic role behavior:** The `move_network_attachment` role is keyed on plain V-Net names — it detaches the port from `from_vnet_name` (if set), then attaches it to `to_vnet_name` (if set). Detach is a no-op when the port is not on the named V-Net, so re-runs and unexpected states are safe. This one role serves both CaaS and BMaaS, but the **timing** differs:
 
 - **CaaS:** Move happens **BEFORE provisioning** (agents are pre-booted on the
