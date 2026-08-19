@@ -139,6 +139,7 @@ Ironic reaching two planes at once is ordinary **multi-homing**: the conductor h
 - CaaS or VMaaS networking (this EP covers BMaaS only)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
 - Creating the provisioning network (VPC + V-Net + DHCP + gateway + SNAT) and the initial per-server attach — a deployment prerequisite handled by the fabric infrastructure / test-infra, not the operator (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
+- Re-provision handoff reset: NetworkHandoffComplete is never reset after initial provisioning, so an in-place re-provision (config-version change after Ready) would run over the tenant V-Net (deferred to long-term design)
 
 ## Proposal
 
