@@ -666,11 +666,17 @@ bare-metal-fulfillment-operator BareMetalInstance controller phases:
    Requires: IPDiscoveryComplete=True
 
 7. reconcilePower → power state management (independent)
+
+Deletion (power-off-first — tenant workloads never touch provisioning network):
+1. reconcileNetworkOffboardShutdown → power off while port is still on tenant network
+   Sets condition: NetworkOffboardComplete=True
+2. reconcileNetworking (delete) → move port tenant network → provisioning network
+   Host is off — nothing runs on provisioning network
+3. reconcileDeprovisioning → Ironic PXE boots cleaning ramdisk (not tenant OS)
+4. reconcileInventory (delete) → unassign host
 ```
 
-The server sits on the **provisioning network** (config identifier `netris_bm_parking_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the operator move the fabric port to the tenant network (waiting for the network segment to reach active state) and issue **one reboot** so the OS re-DHCPs on the tenant network.
-
-**Deletion** uses power-off-first ordering: the host is powered off while the port is still on the tenant network (`NetworkOffboardComplete`), then the port is moved back to the provisioning network, then Ironic deprovisioning runs (PXE boots a cleaning ramdisk on the provisioning network — not the tenant OS). This guarantees tenant workloads never run on the provisioning network.
+The server sits on the **provisioning network** (config identifier `netris_bm_provisioning_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the operator move the fabric port to the tenant network (waiting for the network segment to reach active state) and issue **one reboot** so the OS re-DHCPs on the tenant network.
 
 **Known behavior (Netris-specific) — DHCP cross-VLAN lease persistence:** The Netris softgate DHCP server is not VLAN-scoped — it serves all V-Nets through the softgate. When the OS reboots after a port move, NetworkManager may attempt a DHCP REQUEST renewal for the old (provisioning) IP. The softgate can ACK this renewal even though the port is on the tenant VLAN, resulting in the host keeping the provisioning IP. The network segment readiness wait mitigates this by ensuring the fabric has fully converged, but in some timing scenarios a second reboot (or DHCP release before reboot) may be needed. This is a known limitation of the Netris DHCP architecture; other fabric managers with VLAN-scoped DHCP would not exhibit this behavior.
 
