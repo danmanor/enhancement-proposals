@@ -19,27 +19,17 @@ superseded-by:
 
 # BMaaS Networking — Switch Port Configuration and Tenant-Defined Interface Mapping
 
-This enhancement extends the unified networking API to support BMaaS-specific requirements: multi-NIC BaremetalInstance provisioning with tenant-specified physical interface mapping, switch port configuration via dispatcher, IP address feedback through CR status, and auto-provisioned external access (ExternalIP).
+BMaaS networking provides multi-NIC BaremetalInstance provisioning with tenant-specified physical interface mapping, switch port configuration via dispatcher, IP address feedback through CR status, and auto-provisioned external access (ExternalIP).
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how BMaaS consumes that architecture.
 
-BaremetalInstance currently has NO networking fields. The bare-metal-fulfillment-operator allocates hosts from inventory (Ironic or Metal3) but does not configure switch ports or integrate with the OSAC Networking API. This enhancement introduces `BareMetalNetworkAttachment` with explicit `interface` and `primary` fields, adds `reconcileNetworking` phase to the operator, and enables IP address feedback via CR status for DNAT rule creation. See [PRD](prd.md) for detailed requirements.
+BaremetalInstance supports `BareMetalNetworkAttachment` with explicit `interface` and `primary` fields. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures switch ports via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-BaremetalInstance does NOT participate in the networking API today. Current flow:
-
-1. Tenant creates BaremetalInstance with template + template_parameters (no networking parameters)
-2. fulfillment-service creates BaremetalInstance CR on hub (sets TemplateID, TemplateParameters, RunStrategy, labels, annotations)
-3. bare-metal-fulfillment-operator BareMetalInstance controller:
-   - `reconcileInventory`: FindFreeHost → AssignHost (Ironic or Metal3 backend). Populates HostClass and NetworkClass from inventory.
-   - `reconcileProvisioning`: triggers AAP job via `RunProvisioningLifecycle` — full CR serialized as payload. Template does BM-specific provisioning (OS install, user-data).
-   - `reconcilePower`: manages power state (Ironic/Metal3 API).
-   - Updates CR status (phase, conditions).
-4. osac-operator feedback controller: watches CR status changes, fires Signal RPC to fulfillment-service.
-5. fulfillment-service syncs status back to its database.
+Bare-metal servers require explicit switch port configuration to participate in the OSAC Networking API. Unlike VMs (which live inside an OVN overlay bridged to the fabric), BM servers connect directly to the physical fabric — each NIC's switch port must be moved between network segments during the provisioning lifecycle.
 
 ### Architecture: Two Operators on One CR
 
@@ -49,42 +39,19 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
     bare-metal-fulfillment-operator ─────────────────────┤ (provisioning)
       - reconcileInventory (Ironic/Metal3)               │
       - reconcileProvisioning (AAP)                      │
+      - reconcileNetworking (dispatcher)                 │
+      - reconcileReboot (handoff)                        │
+      - reconcileIPDiscovery (DHCP lease query)          │
       - reconcilePower (Ironic/Metal3)                   │
-      - finalizers: inventory, baremetalinstance          │
+      - finalizers: inventory, baremetalinstance,         │
+        baremetalinstance-networking                      │
                                                          │
-    osac-operator ───────────────────────────────────────┘ (feedback only)
+    osac-operator ───────────────────────────────────────┘ (feedback + cleanup)
       - BareMetalInstanceFeedbackReconciler
       - fires Signal RPC on status change
       - finalizer: baremetalinstance-feedback (removed last)
+      - BareMetalInstance cleanup controller (auto ExternalIP)
 ```
-
-### What Already Works
-
-- Two-operator architecture is stable (bare-metal-fulfillment-operator for provisioning, osac-operator for feedback)
-- Inventory assignment (host allocation from Ironic/Metal3)
-- OS provisioning via AAP templates
-- Power management via Ironic/Metal3 API
-- Status feedback to fulfillment-service
-
-### What's Missing
-
-- BaremetalInstance spec has no `network_attachments` field
-- No switch port configuration during BM provisioning
-- No integration with the OSAC Networking API
-- The `NetworkClass` field populated from inventory is stored but unused. This is a static config string (e.g., "openstack") set at operator startup — NOT the OSAC NetworkClass CRD. This field should be removed entirely from the BareMetalInstance spec (it is unused per reviewer feedback).
-- No ExternalIPAttachment support for `baremetal_instance` target
-- No IP address feedback mechanism (ExternalIPAttachment controller needs BM's IP to create DNAT rules)
-
-### Why the Current Approach is Insufficient
-
-The current design moves the fabric port **provisioning network → tenant before provisioning** (`reconcileNetworking` gates provisioning on `NetworkAttachmentsReady=True`). That places the server on the tenant network segment for the entire deploy, which:
-
-1. **Premature handoff** — the tenant can reach the server while it is still being imaged/booted.
-2. **Provisioning runs inside the tenant network** — image pull and cloud-init (SSH key/secrets) traverse tenant turf.
-3. **Deploy egress depends on the tenant** — the provisioning network (with SNAT) is detached before provisioning, so deploy-time internet relies on an optional tenant NATGateway.
-4. **"Isolated until ready" is unrepresentable** — there is no provisioning posture and no handoff gate in the model.
-
-Root cause: the design **collapses the provisioning network and the tenant network into one, attached before provisioning**, because metal3 offers no mid-deploy switch point and DHCP-only demands the final default route at first boot.
 
 ### Goals
 
@@ -276,13 +243,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
       - Server stays on the provisioning network during this phase
       - Host-side networking is handled by DHCP — the template does NOT configure static IPs, gateway, or DNS. The host receives its IP automatically from the provisioning network DHCP server.
 
-   c. **`reconcileNetworking` (NEW — runs after provisioning is complete):**
+   c. **`reconcileNetworking` (runs after provisioning is complete):**
       - Reads `network_attachments` from the CR spec
       - **Operator dispatches switch-side config:** For each attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant network segment name and moves the server's fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface name from HostType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
       - **Network segment readiness wait:** After each port attach, the move playbook polls the fabric manager until the target network segment reaches active/ready state. This ensures the switch fabric has fully converged before the operator triggers the handoff reboot — without this wait, the host may DHCP on the wrong network.
       - Sets condition: `NetworkAttachmentsReady=True`
 
-   d. **`reconcileReboot` (NEW — runs after networking):**
+   d. **`reconcileReboot` (runs after networking):**
       - Issues reboot via BareMetalHost annotation so the OS re-DHCPs on the tenant network
       - Waits for reboot to complete
       - Sets condition: `NetworkHandoffComplete=True`
@@ -326,7 +293,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
-      - `reconcileNetworkOffboardShutdown` (NEW): powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
+      - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
       - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves each port **tenant network → provisioning network** (`from_vnet_name` = tenant network segment, `to_vnet_name` = provisioning network), returning the fabric NIC to the provisioning network so the freed server keeps internet for its next inspection. The host is off at this point, so nothing runs on the provisioning network. A missing tenant Subnet CR is tolerated (detach skipped, port still returned to provisioning network).
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown. Ironic powers the host back on via BMC and PXE-boots a cleaning ramdisk on the provisioning network — not the tenant OS.
       - Removes management finalizer

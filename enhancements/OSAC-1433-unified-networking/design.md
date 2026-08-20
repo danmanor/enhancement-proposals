@@ -25,10 +25,9 @@ superseded-by:
 
 ## Summary
 
-This enhancement describes the technical design for the OSAC unified
-networking architecture. For the problem statement, gaps analysis, and
-requirements, see the companion
-[Requirements Document (PRD)](prd.md).
+This document describes the technical design for the OSAC unified
+networking architecture. For the problem statement and requirements,
+see the companion [Requirements Document (PRD)](prd.md).
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
@@ -360,15 +359,14 @@ manager handles ExternalIP allocation — one pool serves all resource types.
 
 This section shows how the unified networking API works from the tenant's
 perspective. The flows are the same regardless of which fabric manager or
-K8s manager the provider has deployed. Annotations mark what is **new** or
-**changed** compared to the current design.
+K8s manager the provider has deployed.
 
 #### Provider Setup
 
 1. Provider deploys hosting cluster(s) and fabric controller
-2. Provider creates NetworkClass for the deployment (**new** — provider-only,
+2. Provider creates NetworkClass for the deployment (provider-only,
    tenants never see it)
-3. Provider creates ExternalIPPool (**renamed** from PublicIPPool):
+3. Provider creates ExternalIPPool:
 
 ```bash
 osac admin create externalippool \
@@ -502,10 +500,10 @@ all resources equally — there is no VM-vs-BM distinction.
 #### External Access (Same for All Resource Types)
 
 Since all resources are on the fabric, external access operations are
-uniform. There is no VM-vs-BM distinction (**changed** — the current design
-has separate K8s-side steps for VMs).
+uniform. There is no VM-vs-BM distinction — the fabric manager handles
+DNAT and SNAT identically for all resource types.
 
-**Allocate ExternalIP:** (**renamed** from PublicIP)
+**Allocate ExternalIP:**
 
 ```bash
 osac create externalip --pool external-pool-1 --name my-ip

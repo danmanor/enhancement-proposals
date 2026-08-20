@@ -20,33 +20,15 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-This enhancement provides default networking resources (including dual-stack subnets and NATGateway) at tenant onboarding, optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion.
+Default networking provides automatic resource provisioning at tenant onboarding (including dual-stack subnets and NATGateway), optional network_attachments with defaults, auto ExternalIP provisioning, and auto-cleanup on deletion.
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system automatically provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, IPv6 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration (dual-stack). Resources (ComputeInstance, Cluster, BaremetalInstance) can omit network_attachments and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-Creating a reachable resource in OSAC requires 6+ sequential API calls: VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP, and ExternalIPAttachment. Every tenant must understand the full networking resource model before provisioning their first VM, cluster, or bare-metal server. This friction slows onboarding, increases the chance of misconfiguration, and makes OSAC harder to adopt compared to platforms where a single create command produces a reachable instance.
-
-### What Already Works
-
-- Tenant controller exists and reconciles Tenant resources
-- VirtualNetwork, Subnet, SecurityGroup CRDs and controllers are implemented
-- ExternalIP and ExternalIPAttachment provisioning works end-to-end
-- NATGateway resource is implemented (OSAC-1676)
-- NetworkClass resource exists with defaults configuration
-- Resource creation with explicit network_attachments works for all three resource types
-
-### What's Missing
-
-- No default networking resources at tenant onboarding
-- No default CIDR or SecurityGroup rules configuration on NetworkClass
-- network_attachments field is required — no defaults applied when omitted
-- No auto ExternalIP allocation mode
-- No auto-cleanup of auto-created resources on parent deletion
-- No tenant READY condition gating on default networking readiness
+A reachable resource in OSAC requires networking resources: VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP, and ExternalIPAttachment. Default networking eliminates this friction — a single create command produces a reachable instance by leveraging tenant defaults provisioned at onboarding.
 
 ### Goals
 
@@ -66,7 +48,7 @@ Creating a reachable resource in OSAC requires 6+ sequential API calls: VirtualN
 
 ## Proposal
 
-This enhancement adds three main capabilities: default networking (including NATGateway) at tenant onboarding, optional network_attachments with auto-population, and auto ExternalIP provisioning.
+The design covers three capabilities: default networking (including NATGateway) at tenant onboarding, optional network_attachments with auto-population, and auto ExternalIP provisioning.
 
 ### Workflow Description
 

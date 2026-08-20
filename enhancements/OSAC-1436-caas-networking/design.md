@@ -18,41 +18,21 @@ superseded-by:
 
 # CaaS Networking — Cluster Networking via OSAC Networking API
 
-This enhancement extends the unified networking API to support CaaS-specific requirements: tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
+CaaS networking provides tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how CaaS consumes that architecture.
 
-Cluster provisioning currently uses inline networking logic in the CaaS template — all VLAN creation, SNAT, DNAT, IP allocation, DNS, and MetalLB configuration happens in step collections with zero tenant control. This enhancement moves networking lifecycle to the OSAC Networking API, enables tenants to place clusters on shared or isolated VirtualNetworks, and introduces a VIP feedback loop for cluster API/ingress endpoints to enable auto-provisioned external access. See [PRD](prd.md) for detailed requirements.
+Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the operator handles agent selection and port moves, and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
-Cluster provisioning today follows this flow:
-
-1. Tenant creates Cluster with template + node_sets + pull_secret (no networking parameters)
-2. fulfillment-service creates ClusterOrder CR
-3. osac-operator ClusterOrder controller triggers AAP workflow
-4. AAP workflow calls the CaaS template which dispatches to `{{ network_steps_collection }}.cluster_infra` and `{{ network_steps_collection }}.external_access`:
-   - **Fabric manager**: selects agents, creates server cluster, allocates NAT IP, creates SNAT/DNAT, DNS, MetalLB
-   - **agentless_net**: allocates VLAN, configures switch ports, creates L3 router namespace, SNAT, DNAT, DNS, MetalLB
-
-### What Already Works
-
-- HyperShift HostedCluster + NodePool creation works
-- ClusterOrder CR exists with spec/status fields
-- AAP workflow integration (`osac-create-hosted-cluster-workflow`) works
-- Step collections (`netris.steps`, `agentless_net.steps`) provision working networking
-
-### What's Missing
-
-- CaaS template does ALL networking — none goes through the OSAC Networking API
-- Tenants have no control over which VirtualNetwork or Subnet their cluster nodes use
-- Tenants cannot place two clusters in the same VN or isolate them in separate VNs
-- `network_steps_collection` env var selects the ENTIRE networking backend deployment-wide
-- Step collections duplicate functionality that should be in the networking API
-- No VIP feedback loop (cluster VIPs are provisioned in the template but not synced to fulfillment-service)
-- No auto external access (tenant must manually create ExternalIP + ExternalIPAttachment for API/ingress)
+Clusters require tenant-controlled networking to enable:
+- Placing clusters on shared or isolated VirtualNetworks
+- Automatic agent port configuration (provisioning network → tenant network) during cluster creation
+- VIP feedback loop for cluster API/ingress endpoints to enable DNAT via ExternalIPAttachment
+- Auto external access (ExternalIP + ExternalIPAttachment) for single-call cluster provisioning with inbound connectivity
 
 ### Goals
 
@@ -65,7 +45,7 @@ Cluster provisioning today follows this flow:
 
 ### Agent Pool Model
 
-The current assumption is that **pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **provisioning network** — a fabric-manager-managed network segment that provides basic connectivity (DHCP, PXE, management access) while agents are idle. The provisioning network segment name is a **deployment-level configuration** (an AAP group_var, mirroring BMaaS's `netris_bm_provisioning_vnet`), not a per-cluster or per-tenant parameter.
+**Pre-booted Assisted Installer agents** are ready in a pool, waiting to be assigned to clusters. These agents sit on a **provisioning network** — a fabric-manager-managed network segment that provides basic connectivity (DHCP, PXE, management access) while agents are idle. The provisioning network segment name is a **deployment-level configuration** (an AAP group_var, mirroring BMaaS's `netris_bm_provisioning_vnet`), not a per-cluster or per-tenant parameter.
 
 When an agent is selected for a cluster:
 1. The agent's port is **moved from the provisioning network to the tenant's subnet network segment** (via the generic `move_network_attachment` role — `from_vnet_name` = provisioning, `to_vnet_name` = tenant)
@@ -149,12 +129,12 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 6. **osac-operator ClusterOrder controller:**
     - Creates namespace, ServiceAccount, RoleBindings (same as today)
 
-    **a. `reconcileAgentSelection` (NEW — replaces template-side agent selection):**
+    **a. `reconcileAgentSelection`:**
     - For each node_set: selects suitable agents from inventory based on `host_type`, availability, and labels
     - Labels and reserves selected agents for this cluster
     - Stores selected agent references on ClusterOrder status
 
-    **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
+    **b. `reconcileNetworking` (runs after agent selection, before provisioning):**
     - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.move_network_attachment` passing `host_name` (agent's fabric server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `from_vnet_name` (the provisioning network) and `to_vnet_name` (the tenant's subnet network segment, resolved from `subnet_ref`). The move playbook waits for the target network segment to reach active state (fabric converged) before returning success. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
     - **Per-agent IP discovery:** After switch port configuration moves agent ports to the tenant network, agents receive new IPs from the tenant subnet's DHCP server. The Assisted Installer Agent CR reports network status including the assigned IP in `status.inventory.interfaces[].ipv4Addresses[]`. The operator watches for this field to be updated after the port move and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service. If the Agent CR does not report an IP within a configurable timeout (default: 5 minutes after port move), the operator sets a `NetworkingIPDiscoveryTimeout` condition on the ClusterOrder and requeues, preventing indefinite blocking.
     - Network attachments must be Ready before provisioning proceeds
@@ -522,7 +502,7 @@ Instead of implementing VIP feedback loop, require tenants to manually create Ex
 
 ### ~~1. How does the operator select agents?~~ — Resolved
 
-Resolved: The operator queries Agent CRs directly via K8s API — selects by host_type label match and availability, labels selected agents with `osac.openshift.io/cluster-order: <name>` to reserve them. This is the current approach but may evolve as the agent management model changes.
+Resolved: The operator queries Agent CRs directly via K8s API — selects by host_type label match and availability, labels selected agents with `osac.openshift.io/cluster-order: <name>` to reserve them. This may evolve as the agent management model changes.
 
 ### ~~2. NMState NNCP configuration~~ — Resolved
 
