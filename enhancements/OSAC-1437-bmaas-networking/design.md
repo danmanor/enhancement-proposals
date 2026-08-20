@@ -217,6 +217,12 @@ Same as VMaaS/CaaS — the networking API is uniform.
      --external-ip-attachment --name my-server
    ```
 
+   After provisioning completes, `osac get baremetalinstance` shows the discovered internal IP:
+   ```
+   ID          NAME       CATALOG ITEM   STATE    INTERNAL IP
+   01a0...     my-server  ci-bm-default  RUNNING  10.100.0.2
+   ```
+
 5. **fulfillment-service:**
    - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). The system selects the first interface with role `fabric` from the HostType as the default interface for the single attachment (matching PRD FR-5).
    - Validates:
