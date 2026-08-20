@@ -635,7 +635,7 @@ targets.
 *IP discovery — DHCP-based host networking:*
 
 All host-side IP assignment uses DHCP. The fabric's DHCP server (managed
-by the fabric manager as part of the V-Net infrastructure) assigns IPs
+by the fabric manager as part of the network segment infrastructure) assigns IPs
 to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
 or configure host-side networking — DHCP handles IP address, gateway,
 prefix, and DNS automatically.
@@ -654,30 +654,30 @@ IP discovery mechanism per service type:
 | BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
 The fabric manager's `move_network_attachment` role is switch-side
-only — it moves a host's fabric port from one V-Net to another
+only — it moves a host's fabric port from one network segment to another
 (`from_vnet_name` → `to_vnet_name`, either side optional). Attach and
 detach are the **same primitive**: on provision the port moves from a
-**provisioning network** to the tenant subnet's V-Net; on deletion it moves
-back to the provisioning network. The role operates purely against the fabric (no
-Subnet CR lookup) and is keyed on plain V-Net names, so the caller resolves a
-`subnetRef` → tenant V-Net name and supplies the provisioning network name from
-configuration. Detach is a no-op if the port is not on the named V-Net,
-so re-runs and unexpected states are safe.
+**provisioning network** to the tenant subnet's network segment; on deletion it
+moves back to the provisioning network. The role operates purely against the
+fabric (no Subnet CR lookup) and is keyed on plain segment names, so the caller
+resolves a `subnetRef` → tenant segment name and supplies the provisioning
+network name from configuration. Detach is a no-op if the port is not on the
+named segment, so re-runs and unexpected states are safe.
 
 One role handles both BMaaS (fabric NIC on the provisioning network while the
 server is idle so it has internet during metal3 inspection) and CaaS (agent
-moving from a provisioning network to the tenant V-Net). The **timing** of the
+moving from a provisioning network to the tenant network). The **timing** of the
 move differs per service:
 
 - **BMaaS:** Move happens **POST-provisioning** (provision on the provisioning
-  network → move to tenant V-Net → reboot so the OS re-DHCPs on the tenant
+  network → move to tenant network → reboot so the OS re-DHCPs on the tenant
   network). This achieves isolation-until-ready: the tenant cannot reach the
   server during imaging/first-boot.
 - **CaaS:** Move happens **BEFORE provisioning** (agents are pre-booted on the
-  provisioning network, so the port is moved to the tenant V-Net before cluster
+  provisioning network, so the port is moved to the tenant network before cluster
   creation begins; no in-deploy switch needed).
 
-Once on the tenant V-Net, the host receives an IP from the fabric's DHCP server
+Once on the tenant network, the host receives an IP from the fabric's DHCP server
 automatically. A single AAP job template serves both directions, deriving onboard
 (provisioning network → tenant) vs. offboard (tenant → provisioning network) from
 the resource's `deletionTimestamp`. See [BMaaS — Provisioning Network and Port
@@ -995,7 +995,7 @@ message BareMetalInstanceStatus {
 }
 ```
 
-IP discovered after DHCP assignment on the tenant V-Net. After
+IP discovered after DHCP assignment on the tenant network. After
 `reconcileProvisioning` completes, the operator dispatches
 `query_dhcp_lease` to the fabric manager's DHCP lease API, matching
 the server's port MAC address to find the assigned IP (see
@@ -1097,7 +1097,7 @@ attachment determines:
 
 **IP assignment:** All resource types receive IPs via DHCP. For VMs,
 OVN provides DHCP on the CUDN overlay. For BM servers and CaaS agents,
-the fabric's DHCP server assigns IPs on the V-Net. The provisioning
+the fabric's DHCP server assigns IPs on the network segment. The provisioning
 template does NOT configure host-side networking (no static IP, gateway,
 or DNS configuration) — DHCP handles it automatically.
 
