@@ -266,7 +266,7 @@ Forwarding) instances to route between the OVN overlay and the fabric. Each
 tenant VN maps to a VRF on the host, which peers with the fabric via BGP.
 VMs are reachable from the fabric via L3 routing through the VRF. See the
 [CUDN with VRF-lite setup guide](/docs/networking/setup-bpg-vrf-lite) for
-a working lab example.
+a working example.
 
 **DPU-based bridging.** SmartNICs (DPUs) offload the OVN-to-fabric bridging
 to hardware. The DPU handles packet encapsulation/decapsulation between OVN

@@ -89,23 +89,23 @@ BMaaS involves three planes; this design owns only the data-plane ones. Do not c
 
 **Note on terminology:** In the current code and configuration, the provisioning network is identified as `netris_bm_parking_vnet`. This identifier is retained for deployment stability; the docs-only rename to "provisioning network" clarifies its purpose without requiring immediate config changes.
 
-#### Connectivity Matrix (Production vs Lab)
+#### Connectivity Paths
 
-| Path | Production | Lab (current) |
-|------|-----------|---------------|
-| Ironic → BMC (power/virtual-media) | mgmt/BMC network; conductor routes to BMC IPs | `bmc-net` (libvirt); sushy virtual-media |
-| IPA → Ironic (callback) | **provisioning network** (dedicated BMC port ⇒ OS has no NIC on the BMC net) | `bmc-net` (VM happens to have a NIC there) |
-| Image download | provisioning network → local mirror (or internet) | **libvirt `bmc-net`** → quay.io (avoids Netris/cloudsim latency) |
-| Tenant DHCP + lease discovery | tenant network (fabric manager) | tenant V-Net (Netris) — **real** |
-| Fabric-port network move | fabric manager | Netris (cloudsim) — **real** |
+| Path | Network |
+|------|---------|
+| Ironic → BMC (power/virtual-media) | mgmt/BMC network; conductor routes to BMC IPs |
+| IPA → Ironic (callback) | provisioning network |
+| Image download | provisioning network → local mirror (or internet) |
+| Tenant DHCP + lease discovery | tenant network (fabric manager) |
+| Fabric-port network move | fabric manager |
 
-Ironic reaching two planes at once is ordinary **multi-homing**: the conductor host has a NIC/route to each network; it listens on all interfaces for inbound callbacks and the kernel selects egress NIC + source IP per destination (established callback sockets reply from the IP the server connected to; BMC connections route out the BMC-facing NIC). Which network carries the callback is set by the metal3 **`Provisioning` CR** (`provisioningNetwork`, `provisioningIP`/`provisioningInterface`, `virtualMediaViaExternalNetwork`), and each BMC address is per-host on the `BareMetalHost` (`spec.bmc.address`) — none of this is OSAC operator code.
+Ironic reaching two planes at once is ordinary **multi-homing**: the conductor host has a NIC/route to each network; it listens on all interfaces for inbound callbacks and the kernel selects egress NIC + source IP per destination. Which network carries the callback is set by the metal3 **`Provisioning` CR** (`provisioningNetwork`, `provisioningIP`/`provisioningInterface`, `virtualMediaViaExternalNetwork`), and each BMC address is per-host on the `BareMetalHost` (`spec.bmc.address`) — none of this is OSAC operator code.
 
 ### Non-Goals
 
 - CaaS or VMaaS networking (this EP covers BMaaS only)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
-- Creating the provisioning network (network segment + DHCP + gateway + SNAT) and the initial per-server attach — a deployment prerequisite handled by the fabric infrastructure / test-infra, not the operator (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
+- Creating the provisioning network (network segment + DHCP + gateway + SNAT) and the initial per-server attach — a deployment prerequisite handled by the fabric infrastructure / deployment infrastructure, not the operator (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
 - Re-provision handoff reset: NetworkHandoffComplete is never reset after initial provisioning, so an in-place re-provision (config-version change after Ready) would run over the tenant network (deferred to long-term design)
 
 ## Proposal
@@ -410,18 +410,16 @@ segment** (DHCP + default gateway + SNAT for outbound internet) holds every
 server's **fabric NIC** while the server is idle and during provisioning, so an
 unassigned server always has internet via its fabric NIC. The provisioning
 network exists **only in the fabric manager** — it has no OSAC Subnet CR — and
-its name is a fabric-manager configuration value (`netris_bm_parking_vnet`,
-sourced from the `NETRIS_BM_PARKING_VNET` environment variable), not operator
-state. **Note:** The configuration identifier remains `netris_bm_parking_vnet`
-for now to avoid destabilizing the lab; the docs-only rename to "provisioning
-network" clarifies its purpose.
+its name is a fabric-manager configuration value (`netris_bm_provisioning_vnet`,
+sourced from the `NETRIS_BM_PROVISIONING_VNET` environment variable, with
+backward-compatible fallback to `NETRIS_BM_PARKING_VNET`), not operator state.
 
 **Provision and deprovision are the same primitive: move a fabric port from one
 network segment to another.** The port lifecycle is:
 
 | Flow | Trigger | Move (from → to) | When |
 |------|---------|------------------|------|
-| Initial | Deployment bootstrap (test-infra) | — → provisioning network | Pre-deployment |
+| Initial | Deployment bootstrap (deployment infrastructure) | — → provisioning network | Pre-deployment |
 | Provision | BMI `reconcileNetworking` (after ProvisionTemplateComplete) | provisioning network → tenant subnet's network segment | **POST-provisioning** |
 | Deprovision | BMI deletion (networking cleanup) | tenant subnet's network segment → provisioning network | Deletion |
 
@@ -434,7 +432,7 @@ pull/cloud-init) never traverses the tenant network.
 
 Creating the provisioning network (network segment + DHCP + gateway + SNAT) and
 performing the initial per-server attach are deployment prerequisites (handled by
-the fabric infrastructure / test-infra), not operator responsibilities. The
+the fabric infrastructure / deployment infrastructure), not operator responsibilities. The
 provisioning network name configured for the fabric manager must match the one
 used at bootstrap.
 
@@ -485,15 +483,11 @@ referenced by segment **name** (config/CR), never by physical transport:
 
 The **transport** is environment config, not code:
 
-- image source = `BareMetalHost.spec.image.url` / template param (lab: quay.io
-  over libvirt; prod: mirror over the provisioning network),
-- callback/PXE/DHCP network = the metal3 `Provisioning` CR (lab: `Disabled` +
-  `virtualMediaViaExternalNetwork`; prod: `Managed`/`Unmanaged` on the
-  provisioning network).
+- image source = `BareMetalHost.spec.image.url` / template param (local mirror or internet via provisioning network),
+- callback/PXE/DHCP network = the metal3 `Provisioning` CR (`Managed`/`Unmanaged`/`Disabled` depending on deployment).
 
 The operator must never assume the provisioning network carries the
-image/callback (no egress checks, no SNAT logic). This is what lets the lab use a
-faster transport while running the exact production code.
+image/callback (no egress checks, no SNAT logic).
 
 #### Assumptions
 
@@ -501,7 +495,7 @@ faster transport while running the exact production code.
 - BMC reachability (Ironic↔BMC) is a deployment prerequisite on a tenant-isolated
   mgmt network; not fabric-managed for now.
 - The provisioning network (network segment + DHCP + gateway + egress) and the
-  initial per-server attach are deployment prerequisites (test-infra / inventory
+  initial per-server attach are deployment prerequisites (deployment infrastructure / inventory
   tooling), as today.
 - Inventory tooling sets the `osac.openshift.io/interface-macs` annotation for
   the tenant NIC.
@@ -555,51 +549,6 @@ The feedback controller syncs this to the fulfillment-service DB via the existin
 | osac-operator ExternalIPAttachment controller | Read BM's primary IP from CR status, create DNAT via fabric_manager |
 | fabric_manager role (move_network_attachment) | Switch-side only: resolve host → fabric server → fabric port, detach from the source network segment (if set) and attach to the target segment (if set). Waits for target segment active state after attach. Serves both provisioning → tenant (provision) and tenant → provisioning (deprovision) |
 | fabric_manager role (query_dhcp_lease) | Query fabric manager's DHCP lease API for a subnet, match the port MAC (or fall back to server name) to find the DHCP-assigned IP, return it |
-
-#### Lab Validation
-
-BMaaS networking validation in the lab (osac-test-infra) exercises each network
-plane separately, with deliberate shortcuts where the lab environment differs
-from production.
-
-**BMC/OOB plane:**
-- **What is tested:** Simulated via sushy/redfish-virtual-media on the libvirt
-  `bmc-net`; validated by successful power/virtual-media/inspection operations.
-- **Detailed procedure:** `osac-test-infra/infra/netris/roles/setup-bmc` + docs.
-- **Lab shortcut:** sushy ≠ real iDRAC/iLO; no real BMC latency or failure modes.
-
-**Provisioning network plane:**
-- **What is tested:** The Netris provisioning V-Net (config identifier
-  `netris_bm_parking_vnet`) is exercised for the **port move + isolation**, not
-  image transport; image/callback run over libvirt `bmc-net` for speed
-  (explicitly a lab shortcut).
-- **Detailed procedure:** `osac-test-infra/setup-bmaas`.
-- **Lab shortcut:** Image/callback transport over libvirt instead of the
-  provisioning V-Net — avoids Netris/cloudsim latency. Production uses the
-  provisioning network for both port provisioning and image/callback transport.
-
-**Tenant network plane:**
-- **What is tested:** Real Netris V-Net; validated by the post-handoff assertions
-  (tenant-subnet IP, single default route, reachable only post-handoff).
-- **Detailed procedure:** `osac-test-infra` E2E tests.
-- **Lab shortcut:** None — this is real end-to-end.
-
-**What the lab deliberately does not test (and why):**
-- Real image transport over Netris (lab uses libvirt for speed; production impact
-  is latency only, not correctness).
-- Real switch/VLAN-reprogram latency (lab uses cloudsim; real switches have
-  multi-second convergence).
-- Real BMC (sushy virtual-media ≠ iDRAC/iLO; power/media commands work, but
-  timing and failure modes differ).
-- Real NIC carrier/re-DHCP timing on reboot (VMs boot instantly; real servers
-  take 30+ seconds and may time out DHCP).
-- Production IPA-callback-over-provisioning-V-Net path (lab uses `bmc-net` for
-  speed).
-
-The lab faithfully exercises the operator ordering, the Netris port move, the
-reboot flow, MAC-based discovery, the isolation logic, and the API signaling —
-the core correctness invariants. Real hardware validation happens later in the
-deployment pipeline.
 
 #### Reconciliation Phase Ordering
 
@@ -949,7 +898,7 @@ Consequences:
 ## Infrastructure Needed
 
 - AAP execution environment with the fabric manager `move_network_attachment` role
-- A provisioned provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (test-infra)
+- A provisioned provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (deployment infrastructure)
 - Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460)
 - Integration test environment with fabric manager and Ironic/Metal3 backend
 
@@ -969,8 +918,8 @@ Consequences:
 | BM reboot flow (reconcileReboot issues BMH annotation-based reboot after port move) | Not tracked | **GAP** |
 | Integration test | OSAC-1510 | New |
 | Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | New |
-| Provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) + initial per-server attach in setup-bmaas | osac-test-infra | New |
-| BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-test-infra | New |
+| Provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) + initial per-server attach in setup-bmaas | osac-deployment infrastructure | New |
+| BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-deployment infrastructure | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
 | IP discovery: `query_dhcp_lease` role matches port MAC (from interface-macs annotation) to lease, operator writes to CR status | Not tracked | **GAP** |
