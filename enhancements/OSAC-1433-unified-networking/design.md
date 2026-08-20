@@ -710,10 +710,10 @@ address.
 
 *Auto-provisioned resource labeling:*
 
-All auto-provisioned resources receive the label
-`osac.openshift.io/auto-provisioned: "true"`. Auto-provisioned
+All auto-created resources receive the label
+`osac.openshift.io/auto-created: "true"`. Auto-provisioned
 ExternalIPs also receive a parent-resource label
-`osac.openshift.io/auto-provisioned-for: <resource-id>` so that the
+`osac.openshift.io/auto-created-for: <resource-id>` so that the
 cleanup logic can find orphaned ExternalIPs directly, even if the
 intermediate ExternalIPAttachment has already been deleted.
 
@@ -722,13 +722,13 @@ intermediate ExternalIPAttachment has already been deleted.
 The parent resource's finalizer uses a phased requeue approach to
 ensure correct ordering:
 
-1. Query ExternalIPAttachments labeled `auto-provisioned` targeting
+1. Query ExternalIPAttachments labeled `auto-created` targeting
    this resource. Issue delete for each. Requeue.
 2. On next reconcile: check if all ExternalIPAttachments are fully
    deleted (including their own finalizers completing the DNAT rule
    removal). If not, requeue.
 3. Once all ExternalIPAttachments are gone: query ExternalIPs labeled
-   `auto-provisioned-for: <this-resource>`. Issue delete for each.
+   `auto-created-for: <this-resource>`. Issue delete for each.
    Requeue.
 4. On next reconcile: check if all ExternalIPs are fully deleted. If
    not, requeue.
@@ -737,7 +737,7 @@ ensure correct ordering:
 
 If cleanup fails permanently (after N retries): finalizer is removed,
 parent resource deleted, orphaned resources left in cluster. Orphaned
-resources are identifiable by the `auto-provisioned-for` label.
+resources are identifiable by the `auto-created-for` label.
 
 **Enable outbound NAT (SNAT):**
 

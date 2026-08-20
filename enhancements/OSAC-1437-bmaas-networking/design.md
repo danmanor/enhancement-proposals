@@ -261,7 +261,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      - If >1 attachment without `interface`, reject (explicit interface required when multi-homed)
      - Number of attachments ≤ number of available interfaces on template
      - If multiple attachments, exactly one is `primary`; if single attachment, `primary` is implicit
-   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-provisioned: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
+   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) + ExternalIPAttachment (labeled `osac.openshift.io/auto-created: "true"`) in the same DB transaction — both start in **Pending** state. The ExternalIPAttachment references the BaremetalInstance but does not yet have a DNAT target IP (the BM's IP is unknown until `reconcileNetworking` runs). Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
 6. **bare-metal-fulfillment-operator BareMetalInstance controller:**
@@ -279,6 +279,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    c. **`reconcileNetworking` (NEW — runs after provisioning is complete):**
       - Reads `network_attachments` from the CR spec
       - **Operator dispatches switch-side config:** For each attachment, the operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant V-Net name and moves the server's fabric port **provisioning network → tenant V-Net** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = Netris server name from ExternalHostID, `logical_interface_name` = interface name from HostType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant V-Net). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
+      - **V-Net readiness wait:** After each port attach, the move playbook polls the fabric manager until the target V-Net reaches `active` state with `provisioning=false`. This ensures the switch fabric has fully converged before the operator triggers the handoff reboot — without this wait, the host may DHCP on the wrong network.
       - Sets condition: `NetworkAttachmentsReady=True`
 
    d. **`reconcileReboot` (NEW — runs after networking):**
@@ -321,12 +322,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 10. **Delete BaremetalInstance:**
-    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-provisioned-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
+    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-created-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
-    - bare-metal-fulfillment-operator:
-      - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown
-      - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves each port **tenant V-Net → provisioning network** (`from_vnet_name` = tenant V-Net, `to_vnet_name` = provisioning network), returning the fabric NIC to the provisioning network so the freed server keeps internet for its next inspection. A missing tenant Subnet CR is tolerated (detach skipped, port still returned to provisioning network).
+    - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
+      - `reconcileNetworkOffboardShutdown` (NEW): powers off the host **while the port is still on the tenant V-Net**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
+      - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves each port **tenant V-Net → provisioning network** (`from_vnet_name` = tenant V-Net, `to_vnet_name` = provisioning network), returning the fabric NIC to the provisioning network so the freed server keeps internet for its next inspection. The host is off at this point, so nothing runs on the provisioning network. A missing tenant Subnet CR is tolerated (detach skipped, port still returned to provisioning network).
+      - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown. Ironic powers the host back on via BMC and PXE-boots a cleaning ramdisk on the provisioning network — not the tenant OS.
       - Removes management finalizer
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
@@ -544,16 +546,24 @@ faster transport while running the exact production code.
 The operator uses conditions and phase to signal tenant handoff readiness:
 
 - `NetworkAttachmentsReady` — the tenant port is attached to the tenant V-Net
-  (set after the move).
+  (set after the move + V-Net active wait).
 - `NetworkHandoffComplete` — the port has been moved and the server has been
   rebooted; the OS is running on the tenant V-Net.
 - `IPDiscoveryComplete` — the tenant-V-Net DHCP IP is discovered and valid.
+  The orchestration function (`reconcileNetworkProvisionAndDiscovery`)
+  explicitly checks this condition after `reconcileIPDiscovery` returns —
+  if `IPDiscoveryComplete=False/TemplateFailed`, the phase is set to `Failed`
+  and the flow stops. Without this explicit check, the phase could briefly
+  reach `Ready` between IP discovery retry cycles.
+- `NetworkOffboardComplete` (deletion only) — the host has been powered off
+  while still on the tenant V-Net, prior to the port moving back to the
+  provisioning network. Tracked by `reconcileNetworkOffboardShutdown`.
 - Phase `Ready` — fully provisioned + on the tenant network + IP known.
 
 **Gating rule:** the operator must not surface a tenant IP or report `Ready`
-until after move + reboot + discovery. The provisioning-network IP is never
-exposed to the tenant. External access is signaled separately by the
-`ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
+until after move + V-Net active + reboot + discovery. The provisioning-network
+IP is never exposed to the tenant. External access is signaled separately by
+the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
 
 #### IP Discovery
 
@@ -638,7 +648,7 @@ bare-metal-fulfillment-operator BareMetalInstance controller phases:
    Sets condition: ProvisionTemplateComplete=True
 
 3. reconcileNetworking → move fabric port provisioning network → tenant V-Net
-   (dispatcher, switch-side only)
+   (dispatcher, switch-side only; waits for V-Net active after attach)
    Requires: ProvisionTemplateComplete=True
    Sets condition: NetworkAttachmentsReady=True
 
@@ -657,7 +667,11 @@ bare-metal-fulfillment-operator BareMetalInstance controller phases:
 7. reconcilePower → power state management (independent)
 ```
 
-The server sits on the **provisioning network** (the renamed-in-docs identifier `netris_bm_parking_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the operator move the fabric port to the tenant V-Net and issue **one reboot** so the OS re-DHCPs on the tenant network. Deletion reverses it (tenant → provisioning network).
+The server sits on the **provisioning network** (the renamed-in-docs identifier `netris_bm_parking_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the operator move the fabric port to the tenant V-Net (waiting for the V-Net to reach `active` state) and issue **one reboot** so the OS re-DHCPs on the tenant network.
+
+**Deletion** uses power-off-first ordering: the host is powered off while the port is still on the tenant V-Net (`NetworkOffboardComplete`), then the port is moved back to the provisioning network, then Ironic deprovisioning runs (PXE boots a cleaning ramdisk, not the tenant OS). This guarantees tenant workloads never run on the provisioning network.
+
+**Known behavior — Netris DHCP cross-VLAN lease persistence:** The Netris softgate DHCP server is not VLAN-scoped — it serves all V-Nets through the softgate. When the OS reboots after a port move, NetworkManager may attempt a DHCP REQUEST renewal for the old (parking) IP. The softgate can ACK this renewal even though the port is on the tenant VLAN, resulting in the host keeping the parking IP. The V-Net wait_active mitigates this by ensuring the fabric has fully converged, but in some timing scenarios a second reboot (or DHCP release before reboot) may be needed. This is a known limitation of the Netris DHCP architecture.
 
 ### Security Considerations
 
@@ -694,7 +708,7 @@ The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
 - OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
+- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
 
@@ -876,7 +890,7 @@ If `N+1` upgrade fails or cluster is misbehaving:
 Acceptable downgrade steps:
 - Delete CRs using new field (`network_attachments`)
 - Re-create without networking fields
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
+- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`)
 
 ## Version Skew Strategy
 
@@ -927,7 +941,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after BaremetalInstance deletion
 
-**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-provisioned: "true"` with no parent
+**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-created: "true"` with no parent
 
 **Cause:** Finalizer cleanup failed permanently
 

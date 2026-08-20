@@ -142,7 +142,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
     - For each node_set: resolves `host_type` → HostType → picks first interface with role `fabric` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
-    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-provisioned: "true"` and `osac.openshift.io/auto-provisioned-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-provisioned: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
+    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-created: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with enriched `network_attachment` in spec
 
@@ -155,7 +155,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Stores selected agent references on ClusterOrder status
 
     **b. `reconcileNetworking` (NEW — runs after agent selection, before provisioning):**
-    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.move_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `from_vnet_name` (the parking V-Net) and `to_vnet_name` (the tenant's subnet V-Net, resolved from `subnet_ref`). The role detaches the port from the parking network and attaches it to the tenant's subnet V-Net. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
+    - **Operator dispatches switch-side config:** For each agent across all node sets, dispatcher calls `osac.templates.{{ fabric_manager }}.move_network_attachment` passing `host_name` (agent's Netris server name), `logical_interface_name` (fabric_interface from the agent's node set definition), `from_vnet_name` (the parking V-Net) and `to_vnet_name` (the tenant's subnet V-Net, resolved from `subnet_ref`). The move playbook waits for the target V-Net to reach `active` state (fabric converged) before returning success. Agents receive new IPs from the tenant subnet's DHCP server. See [Agent Pool Model](#agent-pool-model).
     - **Per-agent IP discovery:** After switch port configuration moves agent ports to the tenant V-Net, agents receive new IPs from the tenant subnet's DHCP server. The Assisted Installer Agent CR reports network status including the assigned IP in `status.inventory.interfaces[].ipv4Addresses[]`. The operator watches for this field to be updated after the port move and populates `AgentStatus.IPAddress` on the ClusterOrder status. The feedback controller then syncs these IPs to the fulfillment-service. If the Agent CR does not report an IP within a configurable timeout (default: 5 minutes after port move), the operator sets a `NetworkingIPDiscoveryTimeout` condition on the ClusterOrder and requeues, preventing indefinite blocking.
     - Network attachments must be Ready before provisioning proceeds
 
@@ -214,7 +214,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 12. **Delete Cluster:**
-    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-provisioned-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
+    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
@@ -415,7 +415,7 @@ Migration adds to clusters table:
 
 #### Auto-Provisioned Resource Lifecycle
 
-- Labeled `osac.openshift.io/auto-provisioned: "true"`
+- Labeled `osac.openshift.io/auto-created: "true"`
 - Parent resource finalizer deletes in order: ExternalIPAttachment → ExternalIP
 - On permanent cleanup failure: finalizer removed, parent deleted, orphaned resources left for manual cleanup
 
@@ -452,7 +452,7 @@ This feature inherits the existing security model:
 No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
 - OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
+- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
 
@@ -631,7 +631,7 @@ If `N+1` upgrade fails or cluster is misbehaving:
 Acceptable downgrade steps:
 - Delete Clusters using new field
 - Re-create using old flow (no network_attachment field)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
+- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`)
 
 ## Version Skew Strategy
 
@@ -670,7 +670,7 @@ kubectl describe cluster <name> -n <namespace>
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after Cluster deletion
 
-**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-provisioned: "true"` with no parent
+**Detection:** `kubectl get externalip` shows orphaned ExternalIP labeled `osac.openshift.io/auto-created: "true"` with no parent
 
 **Cause:** Finalizer cleanup failed permanently
 
