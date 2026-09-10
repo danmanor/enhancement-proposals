@@ -246,7 +246,7 @@ the cluster's VIPs are discovered (see
 - Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
 - Work in air-gapped environments using data-center-routable IPs
-- Support one tenant network attachment for each bare-metal server, selected from the host type's physical interfaces
+- Support one tenant network attachment for each bare-metal server, selected from the BareMetalInstanceType's physical network ports
 - Provide IPv4-only networking; IPv6 and dual-stack networking are not supported
 
 ### 2.2 Success Metrics
@@ -364,10 +364,10 @@ least one explicit allow/deny rule. The most-specific matching rule wins.
 
 #### FR-7: Single network attachment for bare metal (R7)
 
-Bare-metal host types may expose multiple physical interfaces. The
+BareMetalInstanceTypes may expose multiple physical network ports. The
 `BaremetalInstance.network_attachments` API field remains repeated for
 compatibility, but accepts at most one tenant attachment, selected from the
-interface descriptions provided by the template. The selected attachment
+network ports provided by the BareMetalInstanceType. The selected attachment
 supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 
 ### 4.2 Non-Functional Requirements
@@ -405,6 +405,7 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 - [ ] Network resources expose create, read/list, and delete operations only; user/API update, patch, and replace requests for network-owned `spec` fields are rejected or not exposed
 - [ ] All network-owned `spec` fields on NetworkClass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway are immutable after creation
 - [ ] `ComputeInstance.compute_network_attachments` and deprecated `network_attachments` are immutable as complete lists, including every attachment field
+- [ ] `ComputeInstance.compute_network_attachments` and deprecated `network_attachments` retain list-shaped APIs but accept zero or one entry only; requests with more than one entry are rejected
 - [ ] `Cluster.network_attachment` and `BaremetalInstance.network_attachments` are immutable, including every attachment field
 - [ ] `auto_external_ip_attachment` is immutable after workload creation; changing it requires delete and recreate
 - [ ] Every network-owned field documents its wire type, format, presence/default behavior, allowed values, reference scope, and cross-field validation
@@ -434,10 +435,17 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 
 ### Resource-Specific (Bare Metal)
 
-- [ ] Host types describe available interfaces (name, role, description) for bare-metal servers
-- [ ] Bare-metal network attachments include an optional interface reference that identifies a named interface from the host type
+- [ ] BareMetalInstanceTypes describe available network ports (name, role, type, speed) for bare-metal servers
+- [ ] Bare-metal network attachments include an optional interface reference that identifies a named port from the BareMetalInstanceType
 - [ ] Bare-metal servers accept at most one `network_attachments` entry, using one valid physical interface
 - [ ] All referenced subnets must belong to the same VirtualNetwork
+
+### Resource-Specific (VMaaS)
+
+- [ ] `ComputeInstance.compute_network_attachments` remains a repeated/list field for API compatibility but accepts zero or one entry only
+- [ ] The deprecated `ComputeInstance.network_attachments` compatibility field follows the same zero-or-one cardinality when supplied alone
+- [ ] A single VM attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one entry are rejected
+- [ ] Multi-interface VM support is deferred until it has an implemented and tested contract
 
 ## 6. Dependencies
 
