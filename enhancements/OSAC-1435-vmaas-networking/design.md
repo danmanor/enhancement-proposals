@@ -369,40 +369,6 @@ for example `spec.compute_network_attachments[1]`,
 `spec.compute_network_attachments[0].primary`. The request is not persisted
 when the failure is found during create.
 
-#### VMaaS validation tests
-
-The VMaaS unit and integration suites must cover both accepted and rejected
-paths:
-
-- accept omitted and empty attachment input when both tenant defaults are
-  Ready; reject the same request when either default is absent, Pending, or
-  Failed;
-- accept one canonical entry with omitted or `primary: true`; reject explicit
-  `primary: false`, a second canonical entry, and a second deprecated entry;
-- accept one deprecated field-14 entry and verify conversion; reject both
-  field 14 and field 18 even when one is empty;
-- preserve a supplied Subnet and non-empty SecurityGroup list while filling
-  only missing fields; reject a cross-VirtualNetwork combination, duplicate
-  SecurityGroup, wrong-scope reference, missing reference, or non-Ready
-  reference;
-- reject VM creation without a K8s manager and accept K8s-only creation when
-  the manager advertises VM support;
-- reject a Catalog/Template list with more than one entry or explicit
-  `primary: false`, and verify that direct and Catalog creates return the same
-  validation result;
-- reject a CR that bypasses the API and contains multiple attachments or an
-  explicit false primary value;
-- verify the template creates exactly one interface and fails closed on an
-  invalid CR rather than silently dropping entries;
-- verify status ignores/rejects a mismatched, non-IPv4, duplicate, or second
-  interface result;
-- verify automatic ExternalIP creation rolls back on pool exhaustion or any
-  validation failure, and verify its controller requeues until both the
-  ExternalIP and VM IP prerequisites are Ready; and
-- verify update/patch attempts for every nested network field and the
-  auto-external switch are rejected, while controller status/finalizer writes
-  remain allowed.
-
 #### Catalog Item interaction
 
 Catalog Item v2 governs the canonical `compute_network_attachments` field as
@@ -428,8 +394,8 @@ The Catalog list must obey the same Compute rules as direct creation: it may
 contain zero or one attachment, and a supplied attachment is implicit primary
 when `primary` is omitted. Catalog policy can govern subnet, SecurityGroup,
 and the compatible `primary` value; CUDN/NAD placement and hosting-cluster
-selection remain system concerns. A shared Catalog Item cannot lock or default
-tenant-local Subnet or SecurityGroup references.
+selection remain system concerns. A shared Catalog Item cannot lock or
+default tenant-local Subnet or SecurityGroup references.
 
 #### Template Changes (osac-aap)
 
@@ -575,31 +541,12 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 ## Test Plan
 
-### Unit Tests
-
-- fulfillment-service: attachment cardinality (accept empty or one entry, reject more than one)
-- fulfillment-service: primary validation (accept single implicit primary, accept explicit `primary: true`, reject `primary: false`)
-- fulfillment-service: Catalog policy resolution for `compute_network_attachments` (locked conflict, editable default, tenant default fallthrough, and shared-item local-reference rejection)
-- fulfillment-service: dual-field validation (reject both old and new, convert old → new)
-- fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
-- fulfillment-service: auto ExternalIP pool selection (pick READY IPv4 pool with most capacity)
-- osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution for the sole attachment
-
-### Integration Tests
-
-- E2E: create ComputeInstance with one explicit attachment, verify a single-interface KubeVirt VM is provisioned
-- E2E: create ComputeInstance with more than one attachment, verify the single-interface validation error
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create ComputeInstance in BM-only deployment, verify error returned
-- E2E: create ComputeInstance with old `network_attachments` field, verify backward compat (internal conversion)
-
-### Tricky Test Cases
-
-- Explicit `primary: false` on the single attachment (verify validation error)
-- ExternalIPPool exhaustion (verify error returned, no resource created)
-- Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
-
+The executable, reviewable plan for VMaaS Networking is maintained in
+[testplan.md](testplan.md). It covers the one-or-less interface contract,
+attachment defaulting, provisioning and status, automatic ExternalIP behavior,
+immutability, cleanup, Catalog parity, and unsupported behavior. Shared
+networking contracts are covered by the [Unified Networking test
+plan](../OSAC-1433-unified-networking/testplan.md).
 ## Graduation Criteria
 
 **Note:** This section will be updated when the enhancement is targeted at a release.

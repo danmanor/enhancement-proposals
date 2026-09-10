@@ -476,34 +476,6 @@ tenant surface is intentionally narrow:
   Ready by setting status, and a controller cannot report Ready when any
   required manager or dependency is still Pending/Failed.
 
-#### Validation ownership and test contract
-
-The implementation must have a test for every rejection boundary, not only
-for successful provisioning. At minimum, the shared validation suite covers:
-
-- missing required messages and fields, empty required lists, invalid enum and
-  oneof values, malformed IPv4/CIDR formats, host bits, IPv6, and dual-stack;
-- references that are missing, wrong type, cross-tenant, cross-project,
-  duplicate, Pending, Failed, or otherwise not Ready/Allocated;
-- CIDR containment, sibling overlap, pool overlap, duplicate rules, equal-
-  specificity rule conflicts, and one-resource/one-consumer constraints;
-- unsupported manager/resource combinations, missing managers, missing
-  conditional MetalLB prefix, K8s-only NATGateway, and caller-supplied
-  provider-only fields;
-- update, patch, replace, and delete attempts that violate immutability or
-  dependency guards;
-- direct user creates versus internal default/auto-provisioning creates,
-  proving that only the internal path may persist Pending dependency graphs;
-- transaction rollback when capacity, uniqueness, or a dependent validation
-  fails; and
-- reconciliation requeue behavior when a dependency is Pending, followed by
-  successful dispatch only after the required Ready/Allocated/status
-  preconditions are true.
-
-The service-specific test plans may add cases, but must not remove or weaken
-these shared cases. A service test that exercises an attachment through a
-Catalog Item must assert the same final validation result as a direct create.
-
 ## Proposal
 
 ### NetworkClass
@@ -1859,8 +1831,12 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 ## Test Plan
 
-*Section to be completed when targeted at a release.*
-
+The executable, reviewable plan for the shared networking contract is
+maintained in [testplan.md](testplan.md). It is the source of truth for unit,
+integration, and end-to-end coverage, including supported workflows,
+explicitly unsupported behavior, dependency readiness, immutability, and
+recovery. Service-specific test plans inherit these shared cases and may add
+service-specific cases without weakening them.
 ## Graduation Criteria
 
 *Section to be completed when targeted at a release.*

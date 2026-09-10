@@ -554,32 +554,6 @@ example `spec.network_attachments[1]`,
 `spec.network_attachments[0].interface`, or
 `spec.network_attachments[0].primary`. No invalid input is persisted.
 
-#### BMaaS validation tests
-
-Required negative and positive coverage includes:
-
-- omitted/empty input resolves exactly one attachment; a second explicit
-  entry, explicit `primary: false`, and empty defaults are rejected;
-- missing, Pending, Failed, wrong-scope, wrong-VirtualNetwork, or duplicate
-  Subnet/SecurityGroup references are rejected;
-- a Ready BareMetalInstanceType with one or more fabric ports succeeds;
-  missing type, no fabric port, unknown interface, lifecycle interface, and
-  inventory host without the named interface are rejected or held Pending as
-  specified;
-- omitted interface selects the first ordered fabric port, while a supplied
-  interface is preserved and never replaced by the default;
-- port move rejects an unknown/lifecycle port and touches only the selected
-  port;
-- DHCP status rejects a non-IPv4, wrong-subnet, wrong-MAC, duplicate, or
-  second status result;
-- the CaaS private worker path is revalidated as a normal one-entry BM
-  request and cannot inject a second attachment;
-- auto ExternalIP capacity/validation failure rolls back the parent and
-  children, and successful auto-provisioning waits for BM IP discovery before
-  DNAT; and
-- update/patch and dependency-delete guard cases cover every network-owned
-  nested field.
-
 #### Catalog Item interaction
 
 Catalog Item v2 may govern the complete `network_attachments` list. It may
@@ -925,36 +899,13 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 
 ## Test Plan
 
-### Unit Tests
-
-- fulfillment-service: single-attachment validation (reject more than one attachment, accept the single attachment as implicit primary)
-- fulfillment-service: Catalog `network_attachments` policy resolution (locked conflict, editable default, tenant default fallthrough, interface validation, and shared-item local-reference rejection)
-- fulfillment-service: interface validation (reject interface not in BareMetalInstanceType, reject lifecycle interface)
-- fulfillment-service: auto ExternalIP pool selection (pick READY IPv4 pool with most capacity)
-- fulfillment-service: interface validation (reject interface not in BareMetalInstanceType, reject lifecycle interface)
-- bare-metal-fulfillment-operator: reconcileNetworking phase ordering (after inventory, before provisioning)
-- bare-metal-fulfillment-operator: one dispatcher call for the selected attachment (move_network_attachment with correct from/to network segment params, direction from deletionTimestamp)
-- bare-metal-fulfillment-operator: `buildSubnetMACMap` resolves subnetRef → MAC from the interface-macs annotation (single-NIC fallback when interface unset)
-
-### Integration Tests
-
-- E2E: create BaremetalInstance with one attachment, verify the selected switch port is configured and the IP is allocated from the selected subnet
-- E2E: create BaremetalInstance through a Catalog Item with a locked or editable attachment, verify interface, implicit-primary, and tenant-default precedence
-- E2E: create BaremetalInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
-- E2E: create BaremetalInstance with a second attachment, verify the single-NIC validation error
-- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches the selected port MAC to assigned IP on tenant network, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads the single tenant IP)
-- E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
-- E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
-
-### Tricky Test Cases
-
-- BaremetalInstance with no usable interface, verify networking fails without exposing a provisioning-network address
-- ExternalIPPool exhaustion (verify error returned, no resource created)
-- Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
-- IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status)
-
+The executable, reviewable plan for BMaaS Networking is maintained in
+[testplan.md](testplan.md). It covers one-attachment and field-level
+defaulting, physical-interface resolution, provisioning and handoff, DHCP
+status, automatic ExternalIP behavior, CaaS private handoff, Catalog parity,
+immutability, cleanup, and unsupported behavior. Shared networking contracts
+are covered by the [Unified Networking test
+plan](../OSAC-1433-unified-networking/testplan.md).
 ## Long-Term Evolution (The Reboot is the Seam)
 
 The structure `inventory → provision → establish-tenant-networking → discovery`

@@ -449,27 +449,6 @@ an alternative resource or attachment contract.
   tenant-onboarding/auto-provisioning graph; a direct tenant request cannot
   create a workload that points to a Pending default.
 
-**Default Networking validation tests:**
-
-- reject missing NetworkClass defaults, malformed/IPv6/dual-stack default
-  CIDRs, Subnet CIDR outside the VN, wrong default labels/tenant annotations,
-  duplicate defaults, and a default SecurityGroup attached to another VN;
-- accept an empty tenant fallback SecurityGroup only when it is the
-  system-created default and the provider baseline is present; reject an
-  empty tenant-created SecurityGroup;
-- accept K8s-only onboarding without NATGateway and reject any later tenant
-  NATGateway create in that deployment;
-- keep `DefaultNetworkingReady` false while any supported default is Pending
-  or Failed, and verify readiness becomes true only after all expected
-  resources are Ready;
-- verify omitted, empty, partial, and complete workload attachment inputs for
-  all three services, including preservation of explicit values and rejection
-  of VM/BM cardinality violations;
-- verify a Catalog/Template default is resolved before tenant defaults and an
-  invalid explicit Catalog/Template value is not replaced; and
-- verify failed default creation and auto ExternalIP reservation roll back
-  without leaving a partially labeled default or parent workload.
-
 ### Implementation Details/Notes/Constraints
 
 #### Component Responsibility
@@ -662,40 +641,12 @@ Resolved: Return error, no resource persisted.
 
 ## Test Plan
 
-### Unit Tests
-
-- fulfillment-service: NetworkClass defaults validation (required canonical CIDR fields and conditional MetalLB prefix)
-- fulfillment-service: resource-specific network-field population (Compute `compute_network_attachments`, Cluster `network_attachment`, Bare Metal `network_attachments`) for omitted, empty, and partially specified attachments, preserving explicit values
-- fulfillment-service: Compute list cardinality validation (zero or one entry; reject more than one) and single-entry primary validation
-- fulfillment-service: auto ExternalIP pool selection (pick READY IPv4 pool with most capacity)
-- fulfillment-service: capacity exhaustion error (return error, resource not persisted)
-- fulfillment-service: default resource creation at tenant onboarding (VN, IPv4 Subnet, SG, and NATGateway with default label when supported)
-- fulfillment-service: DefaultNetworkingReady condition tracking (true when all supported defaults including the IPv4 Subnet and NATGateway when enabled are READY via feedback, false when any enabled default failed)
-- osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
-
-### Integration Tests
-
-- E2E: create Tenant, verify default VN/IPv4 Subnet/SG and, when supported, NATGateway are created and labeled `osac.openshift.io/default: "true"`
-- E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains non-READY with condition
-- E2E: create ComputeInstance without `compute_network_attachments`, verify defaults populated in spec
-- E2E: create BaremetalInstance without network_attachments, verify exactly one default attachment is populated in spec
-- E2E: create BaremetalInstance with more than one network attachment, verify the single-NIC validation error
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: create Cluster with `--external-ip-attachment`, verify two ExternalIPs created BEFORE provisioning, cluster VIPs match
-- E2E: delete ComputeInstance with auto-created resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create ComputeInstance with explicit complete and partial `compute_network_attachments`, verify supplied fields are preserved and only missing fields are defaulted
-- E2E: create ComputeInstance with more than one `compute_network_attachments` entry, verify the single-interface validation error
-- E2E: create each resource type through a Catalog Item, verify locked and create-time editable network policy precedence relative to tenant defaults
-- E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
-- E2E: update or patch of a default network resource is rejected, and delete is blocked while dependencies exist
-
-### Tricky Test Cases
-
-- Tenant onboarding failure: default Subnet provisioning fails, verify Tenant non-READY, manual retry works
-- ExternalIPPool exhaustion: verify error returned, no resource created
-- Auto-provisioned resource cleanup failure: verify finalizer retry, eventual orphan cleanup
-- Cluster ExternalIP prerequisite ordering: verify ExternalIPs allocated BEFORE provisioning, template receives correct VIPs
-
+The executable, reviewable plan for Default Networking is maintained in
+[testplan.md](testplan.md). It covers default NetworkClass configuration,
+tenant onboarding, readiness and failure recovery, workload default
+resolution, automatic ExternalIP behavior, and unsupported behavior. Shared
+networking contracts are covered by the [Unified Networking test
+plan](../OSAC-1433-unified-networking/testplan.md).
 ## Graduation Criteria
 
 **Note:** This section will be updated when the enhancement is targeted at a release.

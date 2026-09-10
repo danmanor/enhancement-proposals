@@ -488,25 +488,6 @@ These additional rules are mandatory whenever the resolved NetworkClass uses
 - ExternalIPAttachment for a VM follows the VM IP preconditions from the
   shared and VMaaS designs. EVPN does not permit DNAT to an unknown CUDN IP.
 
-**EVPN validation tests:**
-
-- reject an unregistered or capability-incomplete `cudn_evpn` manager,
-  NATGateway creation, IPv6/dual-stack values, malformed/overlapping CIDRs,
-  and tenant attempts to set provider-only topology controls;
-- verify first-Subnet provisioning waits for fabric, CUDN namespace/bridge,
-  and MetalLB IPAddressPool readiness;
-- allow a second fabric-only Subnet when the first has no VMs, reject it when
-  any VM exists, and verify concurrent create behavior is serialized;
-- reject VM placement in every Subnet once the VN has multiple Subnets,
-  reject a VM in a fabric-only or non-Ready CUDN Subnet, and accept exactly
-  one VM attachment in the supported topology;
-- verify the template uses the selected Subnet's CUDN and fails closed on a
-  missing or mismatched namespace/NAD;
-- verify status and deletion behavior for first and later Subnets, including
-  retry after one manager fails and dependency blocking while VMs exist; and
-- verify ExternalIPAttachment waits for both ExternalIP allocation and the
-  VM's discovered CUDN IP.
-
 #### osac-operator: Sequential Provisioning
 
 **Provisioning Package Extension:**
@@ -1445,138 +1426,12 @@ Where is the authoritative MAC value? Does Netris VNet gateway MAC come from a p
 
 ## Test Plan
 
-### Unit Tests
-
-**fulfillment-service (Go + Ginkgo):**
-
-- `internal/servers/subnet_server_test.go`:
-  - Subnet creation succeeds for first subnet under VirtualNetwork (no existing subnets)
-  - Subnet creation succeeds for second subnet under VirtualNetwork when first has no VMs
-  - Subnet creation fails (400 Bad Request) when first subnet has VMs (FailedPrecondition code)
-  - Error message includes "first subnet has running VMs" and "delete VMs first or create new VirtualNetwork"
-  - Subnet creation succeeds with skip-k8s-manager annotation
-
-**osac-operator (Go + Ginkgo):**
-
-- `internal/controller/subnet_controller_test.go`:
-  - Auto-detection (single subnet): provisions fabric + k8s manager (CUDN created)
-  - Auto-detection (multiple subnets): second+ subnets provision fabric-only; the first CUDN persists
-  - Auto-detection: subnet count check determines skip (count > 1 → skip k8s manager)
-  - Explicit skip annotation: subnet provisions fabric-only even if single subnet
-  - Sequential provisioning: fabric job runs first, k8s job waits for fabric completion
-  - Sequential provisioning: VNI extraction from fabric ConfigMap extracts correct l2_vni, l3_vni, fabric_reserved_range
-  - Sequential provisioning: VNI extraction fails if fabric ConfigMap missing data, reconcile returns error with VNIExtractionFailed event
-  - Sequential provisioning: k8s job receives VNI data and reserved range in extraVars
-  - Parallel provisioning fallback when only fabric manager exists (no k8s manager in NetworkClass)
-  - Controller restart mid-provisioning resumes from fabric job complete state
-  - **Deletion validation (CUDN subnet with VMs):** deletion blocked, emits DeletionBlocked event, requeues
-  - **Deletion validation (CUDN subnet no VMs):** deletion proceeds, deprovision job runs
-  - **Deletion validation (fabric-only subnet):** deletion proceeds directly, no VM check
-
-**VMaaS (Go + Ginkgo):**
-
-- `internal/controller/computeinstance_controller_test.go`:
-  - VM creation succeeds when single subnet under VirtualNetwork (CUDN exists)
-  - VM creation fails (validation error) when multiple subnets exist (no CUDN)
-  - Error message includes subnet count and "requires single subnet for VMs"
-  - VM creation fails when namespace doesn't exist (provisioning in progress)
-
-**osac-aap (Ansible + ansible-test):**
-
-- `collections/ansible_collections/osac/templates/roles/netris/`:
-  - `create_subnet.yaml` creates/fetches Netris VPC for VirtualNetwork
-  - `create_subnet.yaml` creates Netris VNet with correct CIDR
-  - `create_subnet.yaml` publishes VNI data via ConfigMap (l2_vni, l3_vni, fabric_reserved_range)
-  - **Integration test must verify ConfigMap data path** (verified: set_stats does NOT populate AAP Job CR status.extraVars)
-  - `delete_subnet.yaml` deletes Netris VNet, VPC remains
-
-- `collections/ansible_collections/osac/templates/roles/cudn_evpn/`:
-  - `create_subnet.yaml` creates namespace with k8s.ovn.org/primary-user-defined-network label
-  - `create_subnet.yaml` creates CUDN with correct VNI values and excludeSubnets from extra_vars
-  - `create_subnet.yaml` waits for CUDN Ready condition before completing
-  - `create_subnet.yaml` sets tenant and owner-reference annotations on CUDN
-  - `delete_subnet.yaml` enforces deletion order: VMs → wait for VMIs terminated → CUDN → namespace
-  - Stale VRF recovery (if needed) is manual — see Support Procedures (not automated due to ovnkube-node restart impact)
-
-### Integration Tests
-
-**osac-operator (envtest - Kind cluster):**
-
-- Create NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
-- Create Subnet, verify dispatcher plan includes both fabric and k8s targets
-- Mock fabric job completion with VNI data in status
-- Verify k8s job created with VNI in extra_vars
-- Verify Subnet.status.phase transitions: Pending → Provisioning → Ready
-- Delete Subnet, verify finalizer blocks until fabric and k8s jobs complete
-
-**fulfillment-service + osac-operator (Kind cluster, mocked Netris):**
-
-- Create VirtualNetwork, create first Subnet → succeeds
-- Create second Subnet under same VirtualNetwork → API returns 400 FailedPrecondition
-- Create second VirtualNetwork, create Subnet → succeeds (different VirtualNetwork)
-
-**AAP Job CR data path validation (Kind cluster, real AAP):**
-
-- **Verify set_stats → Job CR status data path:**
-  1. Create test Subnet with fabric_manager="netris"
-  2. Fabric job executes, calls set_stats with VNI data
-  3. Wait for fabric AAP Job CR to reach Successful phase
-  4. Inspect AAP Job CR: `kubectl get job -n osac <job-name> -o jsonpath='{.status.extraVars}'`
-  5. **If status.extraVars contains VNI data:** set_stats path works, current design is correct
-  6. **If status.extraVars is empty/missing:** Switch to ConfigMap fallback (Open Question #3)
-  7. Document finding in implementation notes
-
-### E2E Tests
-
-**osac-test-infra (pytest, real Netris fabric + OCP cluster):**
-
-`tests/test_evpn_vm_to_fabric_connectivity.py`:
-
-**Preconditions:**
-- OCP cluster with OVN-Kubernetes, FRR operator, NMState operator installed
-- VTEP CR exists (tenant-vtep)
-- FRRConfiguration exists with underlay BGP peering (evpn: "true" label)
-- RouteAdvertisements CR exists (frrConfigurationSelector matches FRRConfiguration)
-- Netris fabric accessible, API credentials configured
-- NetworkClass "netris-evpn" with fabric_manager="netris", k8s_manager="cudn_evpn"
-
-**Test Flow:**
-
-1. Create Tenant via fulfillment-service API
-2. Create VirtualNetwork with IPv4 CIDR 200.200.0.0/16, networkClass="netris-evpn"
-3. Create Subnet with IPv4 CIDR 200.200.1.0/24
-4. Wait for Subnet.status.phase == "Ready" (timeout 300s)
-5. Verify CUDN exists on OCP: `kubectl get clusteru
-
-serdefinednetwork <vnet-name>`
-6. Verify CUDN status.conditions Ready=True
-7. Deploy VirtualMachine in CUDN namespace
-8. Wait for VMI Running with IP in 200.200.1.0/24
-9. Verify FRR VNI status: `vtysh -c "show evpn vni"` includes L2 VNI and L3 VNI
-10. Verify BGP EVPN routes: `vtysh -c "show bgp l2vpn evpn"` includes Type-2 (MAC), Type-3 (VTEP), Type-5 (prefix)
-11. Provision bare-metal node on Netris fabric in same subnet (200.200.1.0/24)
-12. Verify L2 connectivity: VM pings bare-metal node (same subnet)
-13. Provision bare-metal node in different subnet (200.200.2.0/24) under same VPC
-14. Verify L3 connectivity: VM pings bare-metal node (cross-subnet via ipVRF)
-15. Delete Subnet, verify CUDN deleted, VMs terminated
-16. Verify Netris VNet deleted (API query)
-
-**Expected Results:**
-
-- VM receives IP from 200.200.1.0/24 range (OVN-K IPAM)
-- VM MAC and IP advertised to fabric via BGP EVPN Type-2 route
-- L2 ping succeeds (same-subnet VM ↔ bare-metal)
-- L3 ping succeeds (cross-subnet VM ↔ bare-metal via VPC ipVRF routing)
-- FRR shows VTEP 10.2.0.2 (ns-leaf-1) as remote VTEP for VNI
-- Cleanup completes without orphaned resources
-
-**Tricky Areas:**
-
-- VNI extraction timing: fabric job may complete before controller reads status (race condition test)
-- CUDN VNI collision: two Subnets created concurrently (stress test)
-- Gateway MAC mismatch detection: compare CUDN gateway MAC with Netris VNet gateway MAC
-- AAP Job CR extraVars schema: set_stats output format varies by Ansible version
-
+The executable, reviewable Phase 1 plan is maintained in
+[testplan.md](testplan.md). It covers manager registration and capabilities,
+sequential fabric-to-CUDN provisioning, supported subnet and VM placement,
+deletion and dependency guards, concurrency and isolation, and explicitly
+unsupported Phase 1 behavior. Shared networking contracts are covered by the
+[Unified Networking test plan](../OSAC-1433-unified-networking/testplan.md).
 ## Graduation Criteria
 
 Graduation criteria will be defined when targeting a release. Expected stages:

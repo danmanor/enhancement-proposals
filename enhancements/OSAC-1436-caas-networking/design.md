@@ -450,26 +450,12 @@ again before creating any private BMaaS worker request.
   resources and endpoint statuses are available. The ExternalIPAttachment
   controller requeues rather than dispatching DNAT with an empty endpoint.
 
-**Validation errors and tests:**
+**Validation errors:**
 
 - Field paths identify the failure: `spec.network_attachment.subnet`,
   `spec.network_attachment.security_groups[0]`,
   `spec.node_sets[<name>].baremetal_instance_type`, or the corresponding
-  `target_endpoint` field.
-- Unit tests reject a repeated/multi-attachment request, unsupported VM node
-  set, missing/default-not-Ready network resource, cross-VN reference,
-  missing fabric port, lifecycle interface, tenant `fabric_interface`, and
-  post-create network mutation.
-- Integration tests verify one ClusterOrder attachment, different stored
-  fabric interfaces for different node-set types, exactly one BM attachment
-  per worker, and no second attachment after worker reconciliation.
-- ExternalIP tests cover failure to reserve two addresses, duplicate API or
-  ingress endpoint values, wrong endpoint enum, endpoint status arriving
-  before ExternalIP allocation, and successful independent API/ingress
-  requeue-to-Ready transitions.
-- Delete tests prove the Cluster finalizer waits for worker BMI deletion and
-  auto-created ExternalIPAttachment/ExternalIP cleanup before releasing
-  dependent network resources.
+  `target_endpoint` field. No invalid input is persisted.
 
 #### Catalog Item interaction
 
@@ -664,36 +650,12 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 
 ## Test Plan
 
-### Unit Tests
-
-- fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
-- fulfillment-service: fabric_interface resolution per node set (BareMetalInstanceType must have fabric-role port)
-- fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role port from network_ports[])
-- osac-operator BareMetalWorkerReconciler: BMI creation with enriched network_attachment
-- osac-operator BareMetalWorkerReconciler: Agent-to-BMI MAC correlation
-- fulfillment-service: Catalog `network_attachment` policy resolution (locked conflict, editable default, tenant default fallthrough, and shared-item local-reference rejection)
-- fulfillment-service: auto ExternalIP pool selection (pick READY IPv4 pool with most capacity)
-- osac-operator ClusterOrder controller: agent selection logic
-- osac-operator ClusterOrder controller: network attachment resolution
-- osac-operator feedback controller: VIP sync to fulfillment-service
-
-### Integration Tests
-
-- E2E: create Cluster with explicit network_attachment, verify cluster provisioned on correct subnet
-- E2E: create Cluster with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
-- E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
-- E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
-- E2E: create Cluster with omitted network_attachment, verify default Subnet + SecurityGroup populated
-- E2E: create Cluster through a Catalog Item with a locked or editable `network_attachment`, verify tenant override and default-network precedence
-- E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
-
-### Tricky Test Cases
-
-- Multiple node sets sharing the same subnet (verify correct fabric interface resolution per node set from BareMetalInstanceType)
-- ExternalIPPool exhaustion (verify error returned, no resource created)
-- Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
-- VIP feedback loop failure (Signal RPC fails, fulfillment-service does not sync VIPs)
-
+The executable, reviewable plan for CaaS Networking is maintained in
+[testplan.md](testplan.md). It covers the singular Cluster attachment, BM
+node-set interface resolution, private BMaaS handoff, VIP and ExternalIP
+behavior, cleanup, Catalog parity, and unsupported behavior. Shared
+networking contracts are covered by the [Unified Networking test
+plan](../OSAC-1433-unified-networking/testplan.md).
 ## Graduation Criteria
 
 **Note:** This section will be updated when the enhancement is targeted at a release.

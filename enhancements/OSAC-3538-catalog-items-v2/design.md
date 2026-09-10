@@ -88,9 +88,6 @@ See the [PRD](prd.md) for product requirements.
 - [Risks and alternatives](#risks-and-alternatives)
   - [Alternatives considered](#alternatives-considered)
 - [Test plan](#test-plan)
-  - [Unit tests](#unit-tests)
-  - [Integration tests](#integration-tests)
-  - [E2E tests](#e2e-tests)
 - [Graduation criteria](#graduation-criteria)
 
 ## End-to-end example
@@ -1146,109 +1143,12 @@ Future constraints belong inside editable policy messages, for example integer r
 
 ## Test plan
 
-### Unit tests
-
-Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), which runs against a real ephemeral PostgreSQL container, the embedded OPA/Rego policy, and protovalidate, with a fake Kubernetes client for controllers. No kind cluster, Keycloak, or Envoy. Database delete-protection triggers are covered here as migration tests (`*_test.go` beside each `.up.sql`, via the `DescribeMigration` harness against the same real Postgres).
-
-**Policy semantics.**
-
-- Absent, locked, editable, and editable-with-default states.
-- Missing `oneof` arm rejection.
-- Explicit `0` and `false` presence on the optional scalars, distinct from omission, and preserved through Template defaulting into final validation.
-- Explicit empty string on a presence-bearing string is a tenant value, distinct from omission, and an omitted string falls through to the Catalog default.
-- Empty repeated list is treated as omission and falls through to the Catalog default.
-- Locked tenant-input rejection.
-
-**Resolution.**
-
-- Tenant value over Catalog default.
-- Catalog default over Template and system defaults.
-- Normal fallthrough for editable-without-default and ungoverned fields.
-- Requiredness after complete resolution.
-- Resource-specific default-network resolution after Catalog and Template resolution for Compute, Cluster, and Bare Metal.
-
-**Lists.**
-
-- Omitted tenant list applies the editable Catalog default.
-- Explicitly empty tenant list is treated the same as omitted and applies the default.
-- Non-empty tenant list overrides an editable default.
-- Locked policy with an omitted tenant list applies the locked value.
-- Locked policy with an explicitly empty tenant list applies the locked value.
-- Locked policy with a non-empty tenant list returns `InvalidArgument`.
-- A Compute attachment policy containing more than one item, or a sole item
-  with `primary: false`, returns `InvalidArgument` under the direct Compute
-  validation contract.
-- Empty `locked` value or empty editable default is rejected at Catalog Item Create and Update for Compute and Bare Metal attachment lists, whose resource semantics treat empty as unset.
-- Default network resolution runs after Catalog resolution and triggers whenever the resolved attachment remains unset after tenant input, Catalog policy, and Template defaults, including an editable policy with no Catalog default that the tenant did not supply.
-
-**Authoring validation and references.**
-
-- Scalar and CIDR validation at Catalog Item authoring.
-- Catalog Item Create without a Template rejected with `InvalidArgument`.
-- Every governable Template parameter type succeeds with a matching, unpackable policy `Any` on Catalog Item Create, Update, and Catalog-based resource Create.
-- Unknown parameter names, `google.protobuf.Value` policies, mismatched type URLs, and malformed payloads return `InvalidArgument`; an ungoverned `Value` parameter retains normal Template provisioning behavior.
-- A reference selected by Catalog policy is copied into the materialized resource.
-- Shared and tenant-local reference scope.
-- Shared `editable {}` accepted for local references.
-- Shared locked and default local references rejected.
-- Catalog Item provenance resolves on Create but not Update.
-
-**Referential integrity (database migration triggers).**
-
-- Referent deletion blocked for both locked and editable-default values.
-- Deleting a governed referent succeeds after its Catalog Item reference is removed.
-- Template deletion blocked by every Catalog Item type, including unpublished items.
-- Template deletion blocked by a materialized resource, then allowed after the resource is gone.
-- Catalog Item deletion succeeds after resource creation.
-- Secret deletion blocked while a Catalog Item references a governed `pull_secret_secret`.
-
-**Visibility filtering.**
-
-- Tenant Admin sees own unpublished items.
-- Tenant User does not see unpublished items.
-
-**Lifecycle and immutability.**
-
-- Catalog Item updates affect only later resources.
-- Catalog Item Template change rejected on Update for all three types, over both public and private APIs, while other mutable fields still update.
-- `BareMetalInstance.spec.template` change rejected on Update.
-
-**Provisioning source and reconcile.**
-
-- Bare Metal reconciler uses materialized `spec.template` only (fulfillment-service reconciler in `internal/controllers/baremetalinstance/`, fake Kubernetes client).
-- Provisioning source for each resource type, at the server-logic level:
-  - `catalog_item` only: succeeds and materializes `spec.template`.
-  - `template` only: succeeds.
-  - Both: `InvalidArgument`.
-  - Neither: `InvalidArgument`.
-
-### Integration tests
-
-Infrastructure: fulfillment-service `it/` suite against a real kind cluster (created via osac-installer) with Envoy Gateway (TLS and SNI routing), Keycloak (real JWT and organization-to-tenant mapping), and real Postgres. Exercises the full request path over the wire with real authentication; the operator is not reconciling to real infrastructure.
-
-- End-to-end Create over the real gRPC and REST wire materializes `spec.template` and persists, for each resource type.
-- Provisioning source matrix (`catalog_item` only, `template` only, both, neither) exercised through the real interceptor chain.
-- All three resource types accept direct Template-only Create.
-- Tenant Admin sees own unpublished items and Tenant User does not, using real Keycloak identities and organization-to-tenant mapping.
-- Tenant-supplied resource references behave the same under Catalog-based and direct Template-based Create (generic reference-validation interceptor plus private handler).
-- REST gateway and the `osac` CLI handle the new shapes (list wrapping, scalar presence, `run_strategy`).
-- Existing resource update, reconcile, upgrade, and scale work after Catalog Item deletion.
-
-### E2E tests
-
-Infrastructure: osac-test-infra pytest against the full stack, fulfillment service through the operator and AAP to real infrastructure. Uses the existing `catalog`, `vmaas`, `caas`, and `bmaas` suites.
-
-- Catalog-based provisioning succeeds end-to-end and materializes `spec.template`:
-  - ComputeInstance (vmaas) resolves a `compute_network_attachments` Catalog list policy, including zero-or-one cardinality and single-attachment primary validation, into the ordinary resource list.
-  - Cluster (caas) resolves a governed `network_attachment` policy while keeping `fabric_interface` system-resolved.
-  - BareMetalInstance (bmaas) resolves a single `network_attachments` policy, including interface and implicit-primary validation, through Catalog Item creation.
-- A locked Catalog network value rejects conflicting tenant input; an editable value accepts tenant input and otherwise falls through to Catalog, Template, and tenant default networking in that order.
-- A shared Catalog Item cannot lock or default tenant-local Subnet or SecurityGroup references, while a tenant-owned item can reference resources in its own scope.
-- A Catalog `auto_external_ip_attachment` policy enables only the resource-specific automatic external-access behavior; it does not select an ExternalIP, ExternalIPPool, NATGateway, or allocation strategy.
-- Cluster provisioning resolves a governed `pull_secret_secret` reference end-to-end.
-- Bare Metal `auto_external_ip_attachment` policy resolves through Catalog into the provisioned resource spec.
-- Regenerated UI, CLI, operator, AAP, and test-infra clients handle the new shapes. This is a cross-component compatibility concern spanning repos, not a single enforcement point.
-
+The executable, reviewable Catalog Items v2 networking-governance plan is
+maintained in [testplan.md](testplan.md). It covers typed policy authoring,
+presence and precedence, direct-versus-Catalog parity, reference scope and
+readiness, metadata and unrelated fields, and unsupported governance.
+Resource-specific networking validation remains owned by the Unified
+Networking, VMaaS, CaaS, and BMaaS test plans linked there.
 ## Graduation criteria
 
 Graduation criteria will be defined when targeting a release. Expected stages: Dev Preview -> Tech Preview -> GA based on production deployment feedback.
