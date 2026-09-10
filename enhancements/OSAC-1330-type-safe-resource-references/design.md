@@ -9,7 +9,7 @@ tracking-link:
 prd:
   - "prd.md"
 see-also:
-  - "/enhancements/OSAC-356-networking"
+  - "/enhancements/OSAC-1433-unified-networking"
   - "/enhancements/bare-metal-fulfillment"
 replaces:
   - N/A
@@ -27,6 +27,9 @@ and `<Type>LocalReference`), introduces a gRPC interceptor using protoreflect
 for centralized reference validation, and updates the CLI, UI, database
 triggers, and CEL filter paths accordingly. See [PRD](prd.md) for detailed
 requirements.
+
+The networking schemas covered by this design use IPv4 CIDRs only; IPv6 and
+dual-stack networking are not supported.
 
 ## Motivation
 
@@ -498,7 +501,6 @@ message SubnetSpec {
     (google.api.field_behavior) = IMMUTABLE
   ];
   optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
-  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
 }
 ```
 
@@ -519,7 +521,6 @@ message SubnetSpec {
     (google.api.field_behavior) = IMMUTABLE
   ];
   optional string ipv4_cidr = 2 [(google.api.field_behavior) = IMMUTABLE];
-  optional string ipv6_cidr = 3 [(google.api.field_behavior) = IMMUTABLE];
 }
 ```
 

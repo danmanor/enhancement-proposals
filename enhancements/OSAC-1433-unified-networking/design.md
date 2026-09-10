@@ -3,12 +3,11 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
 see-also:
-  - Networking API: /enhancements/OSAC-356-networking
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
   - VMaaS Networking: /enhancements/OSAC-1435-vmaas-networking
@@ -16,7 +15,7 @@ see-also:
   - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
   - Default Networking: /enhancements/OSAC-1433-default-networking
 replaces:
-  - /enhancements/OSAC-356-networking
+  - OSAC-356 Networking API proposal (retired)
 superseded-by:
   - N/A
 ---
@@ -55,8 +54,21 @@ The BMaaS integration is based on the `BaremetalInstance` resource defined in
 the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api),
 which provides a per-server resource aligned with ComputeInstance.
 
+BMaaS supports one tenant network attachment per `BaremetalInstance`: one
+physical NIC is connected to one Subnet. A host type may describe multiple
+physical interfaces for inventory and other service workflows, but BMaaS does
+not support multi-NIC or multi-homed tenant attachments.
+
+All networking resources and manager integrations in this design use IPv4.
+IPv6 and dual-stack networking are not supported.
+
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
+
+> **Current implementation boundary:** The current OSAC implementation supports
+> connected deployments only; air-gapped deployments are not currently
+> supported. The remainder of this document describes the desired-state
+> architecture.
 
 ## Proposal
 
@@ -116,7 +128,7 @@ spec:
   k8sManager: cudn_localnet
 status:
   capabilities:
-    addressFamily: dualStack
+    addressFamily: ipv4
 ```
 
 **Neutron + CUDN (VMs and BM):**
@@ -156,21 +168,12 @@ operator computes the intersection of capabilities declared by the fabric
 manager and k8sManager ConfigMaps and populates `status.capabilities`
 automatically.
 
-If the provider needs to restrict a capability that the managers support
-(e.g., disable IPv6 in a deployment even though the fabric manager supports
-it), they can set `spec.disableCapabilities`:
-
-```yaml
-spec:
-  fabricManager: netris
-  k8sManager: cudn_localnet
-  disableCapabilities:
-    - ipv6
-```
+All networking managers and NetworkClasses expose IPv4-only behavior. IPv6 and
+dual-stack networking are not supported.
 
 | Capability | Type | Meaning |
 |-----------|------|---------|
-| `addressFamily` | enum | `ipv4`, `ipv6`, or `dualStack` |
+| `addressFamily` | enum | `ipv4` |
 | `dpuSupport` | bool | DPU-accelerated networking available |
 
 The set of capabilities is defined by the operator and is fixed — adding a
@@ -226,7 +229,7 @@ metadata:
 data:
   name: cudn_localnet
   description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
-  capabilities: "addressFamily:dualStack"
+  capabilities: "addressFamily:ipv4"
 ```
 
 The operator discovers managers by listing ConfigMaps with the appropriate
@@ -415,6 +418,14 @@ osac create security-group --virtual-network my-net --name my-sg \
 
 The fabric manager creates ACL rules on the fabric.
 
+#### SecurityGroup Rule Semantics
+
+SecurityGroup behavior is uniform across VMaaS, CaaS, and BMaaS and is
+enforced by the selected network backend. The default SecurityGroup is
+hard-coded to permit all traffic. When SecurityGroup rules overlap or
+contradict, the most specific matching rule wins. These semantics apply to
+both ingress and egress.
+
 #### Resource Creation (Differs by Type)
 
 The networking setup above is shared. Only the resource creation step
@@ -434,16 +445,15 @@ and gets an IP from the subnet CIDR.
 
 **BaremetalInstance:**
 
-Bare-metal servers have multiple physical interfaces. The tenant discovers
-available network ports via the BareMetalInstanceType API — each
+Bare-metal host types may describe multiple physical interfaces. The tenant
+discovers available network ports via the BareMetalInstanceType API — each
 BareMetalInstanceType lists its network ports with name, role, type, speed,
-and description (see
-[HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)). Given the port identifiers, the tenant specifies which
-interface to attach to which subnet. Each
-`network_attachment` maps one physical interface to one subnet. If
-`interface` is omitted, the fabric manager picks a default.
+and description (see [HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)).
+BMaaS selects exactly one of those interfaces for the tenant network. The
+tenant specifies the single interface-to-subnet mapping, or omits `interface`
+and lets the fabric manager select the default.
 
-Single interface (simple case):
+Single interface:
 
 ```bash
 osac create baremetalinstance --template bcm_h100 \
@@ -451,27 +461,14 @@ osac create baremetalinstance --template bcm_h100 \
   --name my-server
 ```
 
-Multiple interfaces (e.g., east-west traffic on one subnet, north-south
-on another):
-
-```bash
-osac create baremetalinstance --template bcm_h100 \
-  --network-attachment interface=data-0,subnet=east-west-subnet,security-groups=my-sg \
-  --network-attachment interface=data-1,subnet=north-south-subnet \
-  --name my-server
-```
-
-The fabric manager configures each host switch port on the corresponding
-fabric segment. Each interface gets an IP from its subnet's CIDR.
+The fabric manager configures the selected host switch port on the
+corresponding fabric segment. The interface gets an IP from the subnet's CIDR.
 
 Validation rules:
 - All referenced subnets must belong to the same VirtualNetwork
-- The same interface cannot appear in multiple attachments
-- The `interface` must reference a valid port name from the BareMetalInstanceType's
-  network ports list
-- Multiple attachments without `interface` is invalid — if more than one
-  attachment is specified, each must have an explicit `interface`
-- The number of attachments cannot exceed the number of available interfaces
+- BMaaS accepts at most one network attachment per BaremetalInstance
+- If an attachment is provided, its `interface` must reference a valid port
+  name from the BareMetalInstanceType's network ports list
 
 **Cluster:**
 
@@ -496,6 +493,46 @@ correct physical interfaces based on each node set's host type.
 
 In all cases, the resource ends up on the fabric. The fabric manager sees
 all resources equally — there is no VM-vs-BM distinction.
+
+#### Catalog Item integration
+
+Catalog Items are an optional, create-time governance layer over the resource
+API. They govern the tenant-facing network field on a resource; they do not
+create or select the provider's NetworkClass, VirtualNetwork, provisioning
+network, fabric manager, or k8s manager.
+
+The resource-specific Catalog fields are:
+
+| Resource | Catalog-governed network field | System-resolved networking |
+|---|---|---|
+| ComputeInstance | `compute_network_attachments` (the canonical per-resource field) | CUDN/NAD placement and the hosting namespace |
+| Cluster | `network_attachment` (one attachment for the cluster) | `fabric_interface` for each node set |
+| BaremetalInstance | `network_attachments` (at most one attachment) | Provisioning-network handoff and switch-side port operations |
+
+At Create, Catalog policy and tenant input are resolved first, followed by
+Template defaults. If the resulting tenant-facing attachment is still unset,
+the tenant's default networking is applied. The final value is then checked
+with the ordinary subnet, SecurityGroup, VirtualNetwork, cardinality, primary,
+and interface rules for that resource type.
+
+A shared Catalog Item cannot lock or default a tenant-local Subnet or
+SecurityGroup. It must leave such values editable or ungoverned so the tenant
+can supply them or receive the tenant's default network. A tenant-owned item
+may reference resources in its own tenant and project scope.
+
+The Catalog `auto_external_ip_attachment` policy governs only whether the
+resource-specific automatic external-access behavior is enabled. It does not
+select an ExternalIP, ExternalIPPool, NATGateway, or allocation strategy. The
+resulting side effect remains resource-specific: one automatically attached
+ExternalIP for Compute and Bare Metal, and the API and ingress ExternalIPs for
+Cluster.
+
+Catalog governance ends after the resource is created. Later resource updates
+follow the networking lifecycle rules below; in particular, immutable
+attachment structure is distinct from mutable SecurityGroup membership.
+
+See [Catalog Items v2](/enhancements/OSAC-3538-catalog-items-v2/design.md)
+for the typed policy representation and reference lifecycle.
 
 #### External Access (Same for All Resource Types)
 
@@ -529,10 +566,8 @@ osac create externalipattachment --externalip my-ip \
 
 The fabric manager creates a DNAT rule: external IP → resource's subnet IP.
 Each resource (ComputeInstance, BaremetalInstance) is associated with one
-subnet and has one fabric IP — the DNAT targets that IP directly. For
-bare-metal servers with multiple interfaces, the ExternalIP is attached to
-the resource, not to a specific interface — the fabric manager routes to
-the resource's primary subnet IP.
+subnet and has one fabric IP — the DNAT targets that IP directly. For BMaaS,
+that is the IP of the single tenant network attachment.
 
 **Cluster ExternalIPAttachment flow:**
 
@@ -622,7 +657,7 @@ precondition checks and requeue:
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to CR status |
+| BaremetalInstance | the single `status.networkAttachmentStatuses[].ipAddress` populated for the selected interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches the selected port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to the assigned IP; operator writes to CR status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -640,7 +675,7 @@ prefix, and DNS automatically.
 
 After the host receives its IP via DHCP, the IP is discovered and
 written to the resource's CR status for two purposes:
-- ExternalIPAttachment controller reads the primary IP for DNAT target
+- ExternalIPAttachment controller reads the single BMaaS tenant IP for DNAT target
 - Tenant visibility (API response includes the allocated IP)
 
 IP discovery mechanism per service type:
@@ -756,8 +791,7 @@ in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 ```protobuf
 message VirtualNetworkSpec {
   string network_class = 1; // required, immutable
-  string ipv4_cidr = 2;     // optional, immutable
-  string ipv6_cidr = 3;     // optional, immutable
+  string ipv4_cidr = 2;     // required, immutable
 }
 ```
 
@@ -824,19 +858,21 @@ automatically (first `fabric`-role interface → stored as
 `fabric_interface` on the node set definition).
 
 **BMaaS** uses BareMetalInstanceType: the tenant discovers interfaces
-from BareMetalInstanceType and specifies port names directly on
+from BareMetalInstanceType and specifies one port name on
 `BareMetalNetworkAttachment.interface`, validated against the
-BareMetalInstanceType's network ports list. The `interface` field
-references port names that exist on both HostType and
-BareMetalInstanceType (they describe the same physical NICs).
+BareMetalInstanceType's network ports list. The `interface` field references
+a port name that exists on both HostType and BareMetalInstanceType (they
+describe the same physical NIC). A host type may list additional physical
+interfaces, but BMaaS does not attach them to the tenant network.
 
 #### Network Attachment Types
 
 Each resource type has its own network attachment message. The core fields
 (`subnet`, `security_groups`) are shared, but each type adds
-resource-specific fields. `network_attachments` are immutable after
-resource creation — changing network attachment requires recreating the
-resource.
+resource-specific fields. The attachment list or singular attachment,
+subnet, interface, and primary designation are immutable after resource
+creation. SecurityGroup membership remains mutable where the resource-specific
+design permits it.
 
 **ComputeNetworkAttachment** (for ComputeInstance):
 
@@ -849,8 +885,8 @@ message ComputeNetworkAttachment {
 ```
 
 Each entry maps one virtual NIC to one subnet. Multiple entries create
-a multi-homed VM. See [Multi-NIC Behavior](#multi-nic-behavior) for
-primary designation and default gateway semantics.
+a multi-homed VM. See the [VMaaS networking design](/enhancements/OSAC-1435-vmaas-networking/design.md)
+for primary designation and default gateway semantics.
 
 **BareMetalNetworkAttachment** (for BaremetalInstance):
 
@@ -859,17 +895,15 @@ message BareMetalNetworkAttachment {
   string subnet = 1;                    // Subnet ID, required, immutable
   repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
   string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
-  bool primary = 4;                     // optional, immutable: designates default gateway
+  bool primary = 4;                     // the single attachment is implicitly primary
 }
 ```
 
-Each entry maps one physical interface to one subnet. The `interface`
-field references a port name from the BareMetalInstanceType's network ports list.
-If omitted, the fabric manager picks a default. Multiple entries create
-a multi-homed BM server. See [Multi-NIC Behavior](#multi-nic-behavior)
-for primary designation and default gateway semantics, and
-[Resource Creation](#resource-creation-differs-by-type) for interface
-discovery and multi-interface examples.
+BMaaS accepts at most one entry. That entry maps one physical interface to
+one subnet; if `interface` is omitted, the fabric manager picks a default.
+The single attachment is implicitly primary and supplies the instance's
+default route and ExternalIP DNAT target. The host type's interface catalog
+does not imply support for multiple tenant network attachments.
 
 **ClusterNetworkAttachment** (for Cluster):
 
@@ -989,7 +1023,7 @@ message BareMetalNetworkAttachmentStatus {
 
 message BareMetalInstanceStatus {
   // ... existing fields ...
-  repeated BareMetalNetworkAttachmentStatus network_attachment_statuses = N;
+  repeated BareMetalNetworkAttachmentStatus network_attachment_statuses = N; // at most one for BMaaS
 }
 ```
 
@@ -1082,7 +1116,7 @@ of their own deletion state), the controller requeues with a short interval
 | Controller | Gate deprovision on |
 |---|---|
 | VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
-| Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
+| Subnet | No ComputeInstance CRs with `spec.computeNetworkAttachments[].subnetRef`, no ClusterOrder CRs with `spec.networkAttachment.subnetRef`, and no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see the per-service designs) |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
@@ -1116,55 +1150,44 @@ This is the same pattern used during provisioning (e.g., the NATGateway
 controller gates provisioning on ExternalIP readiness and VirtualNetwork
 readiness) -- applied symmetrically to the deprovision path.
 
+Catalog Items with governed Subnet or SecurityGroup references are also strong
+references while those policies are stored. Their reverse-reference
+protection is defined by Catalog Items v2 and applies even when the Catalog
+Item has not yet produced a resource. After materialization, the resource's
+network reference continues to protect the network object, while
+`spec.catalog_item` remains weak provenance.
+
 #### NATGateway Scope
 
 One NATGateway per VirtualNetwork. All subnets in the VN use the gateway.
 Per-subnet NAT association is a future enhancement.
 
-#### Multi-NIC Support
+#### Attachment cardinality and primary behavior
 
-ComputeInstance supports multiple `network_attachments` (virtual NICs). All
-subnets must belong to the same VN. BaremetalInstance supports multiple
-`network_attachments` with the `interface` field to map physical NICs to
-subnets. Cluster supports a single `network_attachment` — one subnet for all
-node sets. Per-node-set subnet placement is not supported in v0.2. All
-subnets must belong to the same VN across all resource types.
+ComputeInstance supports multiple `compute_network_attachments` (virtual
+NICs). All subnets must belong to the same VN, and VM primary-attachment
+behavior is defined by the VMaaS design. The deprecated shared
+`network_attachments` field is a migration compatibility path, not the
+canonical Catalog policy field.
 
-#### Multi-NIC Behavior
+BaremetalInstance accepts at most one `network_attachment`. When present,
+that attachment is implicitly primary and supplies the default gateway,
+ExternalIP DNAT target, and NATGateway source address. There is no secondary
+BMaaS attachment or tenant-facing multi-homing behavior.
 
-When a resource has multiple network attachments, the tenant designates
-one as **primary** via `primary: true` on the attachment. The primary
-attachment determines:
+Cluster supports a single `network_attachment` — one subnet for all node
+sets. Per-node-set subnet placement is not supported in v0.2. All subnets
+must belong to the same VN across all resource types.
 
-- Which subnet provides the **default gateway** for the resource
-- Which subnet IP is used as the **DNAT target** for ExternalIPAttachment
-- Which subnet IP is used as the **source** for NATGateway SNAT
+**IP assignment:** All resource types receive IPs via DHCP. For VMs, OVN
+provides DHCP on the CUDN overlay. For BM servers and CaaS agents, the
+fabric's DHCP server assigns an IP on the network segment. The provisioning
+template does NOT configure host-side networking (no static IP, gateway, or
+DNS configuration) — DHCP handles it automatically.
 
-**Validation:**
-- If only one attachment exists, it is primary by default
-- If multiple attachments exist, exactly one must be marked `primary: true`
-- If multiple attachments exist and none is marked primary, the request is
-  rejected
-- `primary` is immutable after creation
-
-**IP assignment:** All resource types receive IPs via DHCP. For VMs,
-OVN provides DHCP on the CUDN overlay. For BM servers and CaaS agents,
-the fabric's DHCP server assigns IPs on the network segment. The provisioning
-template does NOT configure host-side networking (no static IP, gateway,
-or DNS configuration) — DHCP handles it automatically.
-
-| Subnet role | IP assignment provides (via DHCP) |
-|-------------|---------------------------------------------|
-| Primary | IP address + default gateway + DNS |
-| Secondary | IP address + connected route only (no gateway) |
-
-This ensures the resource has exactly one default route. Secondary subnets
-are reachable via directly connected routes.
-
-**ExternalIPAttachment:** When targeting a multi-homed resource, the fabric
-manager creates a DNAT rule to the resource's primary subnet IP. The tenant
-does not need to specify which interface — the primary designation
-determines the target.
+**ExternalIPAttachment:** For BMaaS, the fabric manager creates a DNAT rule
+to the single attachment's subnet IP. The tenant does not select an
+interface for the DNAT target because BMaaS has only one tenant attachment.
 
 **Cluster networking:** `ClusterNetworkAttachment` is a single attachment
 (one subnet for the whole cluster). Multi-NIC for individual cluster nodes
@@ -1178,20 +1201,19 @@ k8sManager creates a K8s overlay on each hosting cluster and bridges it to
 the fabric segment. VMs on different hosting clusters share the same subnet
 via the fabric.
 
-#### Hub Selection (CR Placement)
+#### Deployment Topology
 
-The fulfillment-controller creates K8s CRs on a registered hub cluster.
-All networking resources (VirtualNetwork, Subnet, SecurityGroup,
-ExternalIPPool, ExternalIP, ExternalIPAttachment, NATGateway) select a
-hub randomly from the available hubs. Hub selection is sticky — once a
-resource is assigned to a hub via `status.hub`, subsequent reconciliations
-reuse the same hub.
+Each OSAC deployment has exactly one hub cluster. Multi-hub deployments are
+not supported. All networking resources (VirtualNetwork, Subnet,
+SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
+NATGateway) are reconciled through that hub, and their `status.hub` fields
+identify the deployment's hub.
 
-This design assumes a single-hub deployment. Multi-hub resource placement
-(affinity between related resources, cross-hub CR visibility) is deferred
-as a future design concern. The fabric spans all hosting clusters, so
-AAP-dispatched operations reach the same infrastructure regardless of
-which hub triggers them.
+Hosting clusters are distinct from the hub. Where a `k8sManager` is
+configured, subnet creation provisions the K8s overlay on each hosting cluster
+and bridges it to the fabric segment. VMs on different hosting clusters share
+the same subnet via the fabric; those hosting clusters do not create additional
+hubs.
 
 #### Cross-VN Communication
 
@@ -1294,9 +1316,11 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    not necessarily internet-routable. Applies equally to air-gapped and
    internet-connected deployments.
 
-9. **network_attachments immutability.** Network attachments are immutable
-   after resource creation. Changing network attachment requires recreating
-   the resource.
+9. **Attachment immutability.** Attachment cardinality, Subnet, interface,
+   and primary designation are immutable after resource creation. SecurityGroup
+   membership remains mutable where the resource-specific design permits it.
+   Changing the immutable attachment structure requires recreating the
+   resource.
 
 10. **Security enforcement.** The fabric is the single enforcement point
     for SecurityGroups. No separate K8s-level ACL needed — VMs are on the

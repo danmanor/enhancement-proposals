@@ -8,7 +8,7 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
-  - Original Networking API: /enhancements/OSAC-356-networking
+  - Original Networking API: OSAC-356 proposal (retired)
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
@@ -91,6 +91,11 @@ This section defines key terms used throughout this document.
   connectivity. In this design, VMs also participate in the fabric through
   a K8s manager that bridges the OVN overlay to the physical network.
 
+### Address-family scope
+
+All networking resources and traffic described by this PRD use IPv4 CIDRs.
+IPv6 and dual-stack networking are not supported.
+
 ## 1. Problem Statement
 
 The OSAC Networking API must serve as a foundational service across all three
@@ -99,7 +104,7 @@ resource model. The technical design that fulfills these requirements is
 described in a companion enhancement:
 [Unified Networking Design](/enhancements/OSAC-1433-unified-networking).
 
-The original [Networking API enhancement](/enhancements/OSAC-356-networking) was designed
+The original OSAC-356 Networking API enhancement was designed
 with VMaaS (ComputeInstance) as the only consumer, explicitly listing CaaS and
 BMaaS as non-goals. As OSAC grows and new teams onboard, this limitation forces
 each service type to implement networking independently:
@@ -224,7 +229,8 @@ the cluster's VIPs are discovered (see
 - Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
 - Work in air-gapped environments using data-center-routable IPs
-- Support per-interface network attachment for bare-metal servers with multiple physical interfaces
+- Support one tenant network attachment for each bare-metal server, selected from the host type's physical interfaces
+- Provide IPv4-only networking; IPv6 and dual-stack networking are not supported
 
 ### 2.2 Success Metrics
 
@@ -239,8 +245,8 @@ the cluster's VIPs are discovered (see
 - VPC Peering / cross-VN communication (separate enhancement)
 - DNS API for tenant-managed DNS zones (separate enhancement)
 - Advanced per-physical-interface configuration for BaremetalInstance (NIC
-  bonding, VLAN trunking, etc. — basic per-interface subnet attachment is
-  supported via the `interface` field on NetworkAttachment)
+  bonding, VLAN trunking, or multiple tenant attachments; BMaaS uses one
+  physical NIC selected through the `interface` field)
 - Load Balancer API
 - Internet Gateway API
 - Quota enforcement for networking resources
@@ -272,10 +278,7 @@ the cluster's VIPs are discovered (see
 - As a tenant, I want to place my BaremetalInstance on Subnets in my
   VirtualNetwork
 - As a tenant, I want to see the available physical interfaces on a bare-metal
-  template so I can decide how to attach networks
-- As a tenant, I want to attach different physical interfaces of my
-  BaremetalInstance to different Subnets (e.g., data interface to a data
-  subnet, management interface to a management subnet)
+  template so I can select the one interface used for my tenant network
 - As a tenant, I want to attach an ExternalIP to my bare-metal server for
   inbound access
 
@@ -329,20 +332,25 @@ Providers configure which networking backends handle network operations.
 Tenants never choose networking backends — the system selects them based
 on the provider's configuration.
 
-#### FR-7: Per-interface network attachment for bare metal (R7)
+#### FR-7: Single network attachment for bare metal (R7)
 
-Bare-metal servers have multiple physical interfaces. Tenants must be able to
-attach different interfaces to different Subnets based on the interface
-descriptions provided by the template.
+Bare-metal host types may expose multiple physical interfaces. A
+`BaremetalInstance` accepts at most one tenant network attachment, selected
+from the interface descriptions provided by the template. The selected
+attachment supplies the server's tenant IP, default route, and ExternalIP
+DNAT target.
 
 ### 4.2 Non-Functional Requirements
 
-_No non-functional requirements were specified in the original document._
+- Networking resources, attachments, external IPs, and security rules use IPv4
+  only. IPv6 and dual-stack networking are not supported.
 
 ## 5. Acceptance Criteria
 
 ### Core Networking
 
+- [ ] VirtualNetworks, Subnets, ExternalIPs, and SecurityGroup rules accept and
+  provision IPv4 CIDRs only; IPv6 and dual-stack requests are rejected
 - [ ] Resources in different VirtualNetworks cannot communicate (full isolation)
 - [ ] Resources in the same Subnet are in the same L2 broadcast domain
 - [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
@@ -354,7 +362,7 @@ _No non-functional requirements were specified in the original document._
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
 - [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
 - [ ] SecurityGroup enforcement is uniform across all resource types
-- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., bare-metal servers support per-interface attachment, clusters use a single shared attachment)
+- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., BMaaS uses one physical attachment, clusters use a single shared attachment)
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
 
@@ -380,14 +388,13 @@ _No non-functional requirements were specified in the original document._
 
 - [ ] Host types describe available interfaces (name, role, description) for bare-metal servers
 - [ ] Bare-metal network attachments include an optional interface reference that identifies a named interface from the host type
-- [ ] Multiple network attachments are supported for bare-metal servers — one per physical interface
-- [ ] The same interface cannot appear in multiple attachments
+- [ ] Bare-metal servers accept at most one network attachment, using one valid physical interface
 - [ ] All referenced subnets must belong to the same VirtualNetwork
 
 ## 6. Dependencies
 
 - **Unified Networking Design**: [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) — Technical design document fulfilling these requirements
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
-- **Original Networking API**: [/enhancements/OSAC-356-networking](/enhancements/OSAC-356-networking) — VMaaS-only networking API (superseded for multi-service scenarios)
+- **Original Networking API**: OSAC-356 proposal (retired) — VMaaS-only networking API (superseded for multi-service scenarios)
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference
