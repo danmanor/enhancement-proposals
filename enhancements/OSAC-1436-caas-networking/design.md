@@ -25,23 +25,16 @@ CaaS networking provides tenant-controlled cluster node networking via VirtualNe
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how CaaS consumes that architecture.
 
+Shared field types, formats, presence rules, allowed values, and validation
+are defined by the [Unified Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#field-types-formats-and-validation).
+
+The shared networking resource model, IPv4-only scope, and connected
+single-hub deployment boundary are defined by the [Unified Networking
+design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology).
+The shared operation contract is defined by [Supported Operations and
+Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
+
 Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API (BMaaS owns the fabric port move and IP assignment as part of BMI provisioning), and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements and [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full provisioning design.
-Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API (BMaaS owns the fabric port move and IP assignment as part of BMI provisioning), and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements and [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full provisioning design.
-
-## Deployment Topology
-
-This design supports exactly one hub cluster per OSAC deployment. Multi-hub
-deployments are not supported. Cluster networking resources and their
-associated provisioning CRs follow the unified networking reconciliation path
-through that hub. Hosting clusters are workload targets and are not additional
-hubs.
-
-> **Current implementation boundary:** The current OSAC implementation supports
-> connected deployments only; air-gapped deployments are not currently
-> supported. The remainder of this document describes the desired-state
-> architecture.
-All CaaS networking resources, endpoint addresses, and VIP allocation use
-IPv4 only. IPv6 and dual-stack networking are not supported.
 
 ## Motivation
 
@@ -92,22 +85,22 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
 1. **Create VirtualNetwork:**
    ```bash
-   osac create virtualnetwork --network-class moc-bm-1 --cidr 10.0.0.0/16 --name my-net
+   osac create virtualnetwork --cidr 10.0.0.0/16 --name my-net
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_virtual_network`
+   Dispatcher → the configured network manager's `create_virtual_network` operation
 
 2. **Create Subnet:**
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
    ```
-   Dispatcher → TWO jobs: fabric_manager creates VLAN/fabric segment + k8s_manager creates CUDN overlay (if deployment hosts VMs)
+   Dispatcher → the configured manager(s) create the subnet backend(s); when both managers are configured, the Fabric Manager creates the fabric segment and the K8s Manager creates the overlay
 
 3. **Create SecurityGroup:**
    ```bash
    osac create security-group --virtual-network my-net --name my-sg \
-     --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
+     --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
+   Dispatcher → the configured network manager's `create_security_group` operation
 
 #### Phase 2: Tenant Creates Cluster
 
@@ -125,7 +118,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     ```
 
 5. **fulfillment-service:**
-    - If `network_attachment` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
+    - If `network_attachment` is omitted or an empty message: populates both tenant defaults. If present with only one field, defaults only the missing subnet or SecurityGroup list (see Default Networking PRD)
     - Validates network_attachment:
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
@@ -186,8 +179,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
       2. ClusterOrder must have `status.apiEndpoint` populated (VIP allocated by MetalLB, discovered by template in step 7b)
     - Once both are met: reads ClusterOrder's `apiEndpoint` → 10.0.1.200
-    - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
-    - Fabric manager creates DNAT: api-ip (203.0.113.10) → 10.0.1.200
+    - Calls the configured network manager's external-IP attachment operation
+    - The configured network manager creates DNAT: api-ip (203.0.113.10) → 10.0.1.200
     - ExternalIPAttachment transitions from **Pending** to **Ready**
 
 11. Same for ingress ExternalIPAttachment:
@@ -299,8 +292,8 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 
 ```protobuf
 message ClusterNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
+  optional string subnet = 1;           // omitted -> tenant default Subnet
+  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
 }
 // Note: fabric_interface is system-populated ONCE on each node set definition
 // by the fulfillment-service at cluster creation (resolved from the node set's
@@ -313,7 +306,7 @@ message ClusterSpec {
   map<string, ClusterNodeSet> node_sets = 3;
   // ... existing fields ...
   ClusterNetworkAttachment network_attachment = 9;   // NEW, optional, singular
-  bool auto_external_ip_attachment = 10;              // NEW, auto-provision ExternalIP + ExternalIPAttachment for API and ingress
+  bool auto_external_ip_attachment = 10;              // NEW, create-time only; auto-provision ExternalIP + ExternalIPAttachment for API and ingress
 }
 
 message ClusterStatus {
@@ -328,11 +321,11 @@ message ClusterStatus {
 ```go
 type ClusterOrderSpec struct {
     // ... existing fields ...
-    NetworkAttachment *ClusterNetworkAttachment `json:"networkAttachment,omitempty"`
+    NetworkAttachment *ClusterNetworkAttachment `json:"networkAttachment,omitempty"` // empty message -> both tenant defaults
 }
 
 type ClusterNetworkAttachment struct {
-    SubnetRef         string   `json:"subnetRef"`
+    SubnetRef         string   `json:"subnetRef,omitempty"` // resolved before provisioning
     SecurityGroupRefs []string `json:"securityGroupRefs,omitempty"`
 }
 
@@ -365,9 +358,9 @@ Migration adds to clusters table:
 
 #### Server Validation
 
-- network_attachment: subnet exists, is Ready
+- network_attachment: omitted/empty and partial field defaulting follow the shared contract; every resolved Subnet and SecurityGroup exists, is Ready, and belongs to the same VirtualNetwork
 - Each node set's `baremetal_instance_type` must have at least one `network_ports` entry with `role=fabric` for fabric_interface resolution
-- Immutability: the complete network attachment and all network-owned fields are immutable after creation, including SecurityGroup membership
+- Immutability: the complete Cluster attachment and every field, including SecurityGroup membership, are immutable after creation; changing network configuration requires deleting and recreating the Cluster
 - target_endpoint validation on ExternalIPAttachment: required when target is cluster, must be `API` or `INGRESS`
 
 #### Catalog Item interaction
@@ -375,9 +368,9 @@ Migration adds to clusters table:
 Catalog Item v2 may govern the singular `network_attachment` field as a whole
 structured value. It may lock the attachment or make it editable with an
 optional default. Catalog resolution occurs before tenant default networking:
-tenant input wins for an editable policy, then the Catalog default, Template
-defaults, and finally the tenant's default Subnet and SecurityGroup are used
-when the attachment remains unset.
+tenant input wins for an editable policy, then the Catalog default and Template
+defaults are applied. Finally, only missing attachment fields receive the
+tenant's default Subnet and SecurityGroup; supplied fields are preserved.
 
 The Catalog Item governs only the tenant-facing Subnet and SecurityGroup
 references. `fabric_interface` is derived separately for each node set from
@@ -386,6 +379,11 @@ lock or default tenant-local network references; it must leave the attachment
 editable or ungoverned. The normal CaaS rules still apply: one attachment per
 Cluster, all node sets share its Subnet, and all referenced objects belong to
 the same VirtualNetwork.
+
+The editable policy applies only during Cluster creation. After creation, the
+resolved attachment and every network-owned field are read-only. Catalog Item
+definitions and metadata remain governed by Catalog Items v2 and are not
+changed here.
 
 #### Template Changes
 
@@ -412,9 +410,9 @@ the same VirtualNetwork.
 | osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, trigger AAP workflow, aggregate worker status |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
-| AAP template (ocp_4_17_small) | Create HostedCluster+NodePools, provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP |
+| AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents; no agent selection logic), provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP |
 | BMaaS (bare-metal-fulfillment-operator) | Owns full BMI provisioning lifecycle including inventory → OS provisioning → fabric port move (provisioning network → tenant) → reboot → DHCP lease query IP discovery; returns fabric port to provisioning network on BMI deletion |
-| fabric_manager (Ansible role) | move_network_attachment (generic port move, dispatched by BMaaS during BMI provisioning), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| configured network manager(s) | Move network attachments where supported, create/delete external-IP attachments (DNAT), and create/delete NATGateway only when the capability is advertised |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle
@@ -429,7 +427,7 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
-- SecurityGroup rules control cluster node traffic (tenant-configurable via explicit SG or default SG). The default SecurityGroup is hard-coded to permit all traffic. When SecurityGroup rules overlap or contradict, the most specific matching rule wins.
+- SecurityGroup enforcement follows the [Unified Networking SecurityGroup rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics) for explicit and default SecurityGroups.
 
 ### Failure Handling and Recovery
 
@@ -455,8 +453,8 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
+- OPA policies enforce tenant-scoped list/get/create/delete; update and patch of network-owned fields are rejected
+- Tenant User can view auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via the standard API; their network-owned fields are not editable
 
 ### Observability and Monitoring
 

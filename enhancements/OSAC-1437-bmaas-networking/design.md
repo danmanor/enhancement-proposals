@@ -31,27 +31,20 @@ supported.
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how BMaaS consumes that architecture.
 
+Shared field types, formats, presence rules, allowed values, and validation
+are defined by the [Unified Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#field-types-formats-and-validation).
+
+The shared networking resource model, IPv4-only scope, and connected
+single-hub deployment boundary are defined by the [Unified Networking
+design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology).
+The shared operation contract is defined by [Supported Operations and
+Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
+
 BaremetalInstance supports `BareMetalNetworkAttachment` with an optional
 interface selector; its single attachment is implicitly primary. The
 bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the
 selected switch port via dispatcher, and IP address feedback via CR status
 enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
-
-## Deployment Topology
-
-This design supports exactly one hub cluster per OSAC deployment. Multi-hub
-deployments are not supported. BareMetalInstance networking resources and
-their associated provisioning CRs follow the unified networking reconciliation
-path through that hub. Bare-metal servers and fabric switches are data-plane
-infrastructure, not additional hubs.
-
-> **Current implementation boundary:** The current OSAC implementation supports
-> connected deployments only; air-gapped deployments are not currently
-> supported. The remainder of this document describes the desired-state
-> architecture.
-
-All BMaaS networking resources, attachments, and discovered addresses use IPv4
-only. IPv6 and dual-stack networking are not supported.
 
 ## Motivation
 
@@ -206,22 +199,22 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 1. **Create VirtualNetwork:**
    ```bash
-   osac create virtualnetwork --network-class moc --cidr 10.0.0.0/16 --name my-net
+   osac create virtualnetwork --cidr 10.0.0.0/16 --name my-net
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_virtual_network`
+   Dispatcher → the configured network manager's `create_virtual_network` operation
 
 2. **Create Subnet:**
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
    ```
-   Dispatcher → fabric_manager creates VLAN/fabric segment. If the NetworkClass has a k8s_manager: also creates CUDN overlay (but BM doesn't use it — the overlay exists for VMs that may share the same subnet).
+   Dispatcher → the configured manager(s) create the subnet backend(s). BMaaS does not use a K8s overlay, but a combined deployment may create one for VMs sharing the subnet.
 
 3. **Create SecurityGroup:**
    ```bash
    osac create security-group --virtual-network my-net --name my-sg \
-     --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
+     --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
+   Dispatcher → the configured network manager's `create_security_group` operation
 
 #### Phase 2: Tenant Creates BM Server
 
@@ -233,6 +226,8 @@ Same as VMaaS/CaaS — the networking API is uniform.
      --network-attachment interface=data-0,subnet=my-subnet,security-groups=my-sg \
      --name my-server
    ```
+   The CLI's singular `--network-attachment` option populates the repeated
+   `network_attachments` API field with its one allowed entry.
 
    With defaults + auto external access:
    ```bash
@@ -247,7 +242,9 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). The system selects the first interface with role `fabric` from the BareMetalInstanceType as the default interface for the single attachment (matching PRD FR-5).
+   - If `network_attachments` is omitted or empty: populates both tenant defaults (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). For a supplied single entry, defaults only missing subnet, SecurityGroup list, or interface. The system selects the first interface with role `fabric` from the BareMetalInstanceType as the default interface.
+     The effective interface source is the BareMetalInstanceType's
+     `network_ports` list.
    - Validates:
      - Each subnet exists, is Ready
      - All subnets belong to the same VirtualNetwork
@@ -272,7 +269,10 @@ Same as VMaaS/CaaS — the networking API is uniform.
       - Host-side networking is handled by DHCP — the template does NOT configure static IPs, gateway, or DNS. The host receives its IP automatically from the provisioning network DHCP server.
 
    c. **`reconcileNetworking` (runs after provisioning is complete):**
-      - Reads `network_attachments` from the CR spec
+      - Reads the sole entry from the `network_attachments` list in the CR spec
+        (the API keeps the repeated field for compatibility; validation rejects
+        lists with more than one entry)
+      - **Operator dispatches switch-side config:** The operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant network segment name and moves the server's selected fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface name from HostType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
       - **Operator dispatches switch-side config:** The operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant network segment name and moves the server's selected fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface name from BareMetalInstanceType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
       - **Network segment readiness wait:** After the port attach, the move playbook polls the fabric manager until the target network segment reaches active/ready state. This ensures the switch fabric has fully converged before the operator triggers the handoff reboot — without this wait, the host may DHCP on the wrong network.
       - Sets condition: `NetworkAttachmentsReady=True`
@@ -296,7 +296,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```bash
    osac create externalip --pool external-pool-1 --name my-ip
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_external_ip`
+   Dispatcher → the configured network manager's `create_external_ip` operation
 
 9. **Create ExternalIPAttachment:**
     ```bash
@@ -308,8 +308,8 @@ Same as VMaaS/CaaS — the networking API is uniform.
       1. **ExternalIP must be Allocated** (have an allocated address from the fabric manager)
       2. **BaremetalInstance must have its tenant IP** — reads the single `status.networkAttachmentStatuses[].ipAddress` entry. This IP is written by the operator during `reconcileIPDiscovery` (step 7) and synced to the fulfillment-service via the feedback controller.
     - Once both preconditions are met: writes `osac.openshift.io/target-ip` annotation on the ExternalIPAttachment CR
-    - Calls `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
-    - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
+    - Calls the configured network manager's external-IP attachment operation
+    - The configured network manager creates DNAT rule: external IP → BM's primary subnet IP
     - ExternalIPAttachment transitions from Pending to Ready
 
     For auto-provisioned ExternalIPAttachments (`auto_external_ip_attachment=true`), the same flow applies — the attachment is created at API time in Pending state and the controller activates it once the BM's IP becomes known. The wait time depends on `reconcileIPDiscovery` completion (IP discovery by the operator after provisioning completes and the host has received a DHCP lease).
@@ -362,11 +362,10 @@ no internal IP.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
-  string interface = 3;                 // optional, immutable: physical interface
-                                        // from BareMetalInstanceType
-  bool primary = 4;                     // the single attachment is implicitly primary
+  optional string subnet = 1;           // omitted -> tenant default Subnet
+  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  string interface = 3;                 // omitted -> first fabric interface
+  optional bool primary = 4;            // the single attachment is implicitly primary
 }
 
 message BareMetalInstanceSpec {
@@ -377,8 +376,8 @@ message BareMetalInstanceSpec {
   int64 restart_trigger = 5;
   map<string, google.protobuf.Any> template_parameters = 6;  // immutable
   optional BareMetalInstanceImage image = 7;                  // immutable
-  repeated BareMetalNetworkAttachment network_attachments = 8; // NEW, optional; at most one entry
-  bool auto_external_ip_attachment = 9;  // NEW, auto-provision ExternalIP + ExternalIPAttachment
+  repeated BareMetalNetworkAttachment network_attachments = 8; // NEW, optional; at most one entry; immutable after create
+  bool auto_external_ip_attachment = 9;  // NEW, create-time only; auto-provision ExternalIP + ExternalIPAttachment
 }
 
 message BareMetalInstanceStatus {
@@ -394,6 +393,11 @@ message BareMetalNetworkAttachmentStatus {
 }
 ```
 
+The API intentionally retains the repeated `network_attachments` field rather
+than introducing a singular replacement. Its maximum cardinality is one; an
+omitted or empty list invokes default resolution, while a supplied list must
+contain exactly one attachment after field-level defaulting.
+
 #### Operator CRD (bare-metal-fulfillment-operator)
 
 ```go
@@ -403,10 +407,10 @@ type BareMetalInstanceSpec struct {
 }
 
 type BareMetalNetworkAttachment struct {
-    SubnetRef         string   `json:"subnetRef"`
+    SubnetRef         string   `json:"subnetRef,omitempty"` // resolved before provisioning
     SecurityGroupRefs []string `json:"securityGroupRefs,omitempty"`
     Interface         string   `json:"interface,omitempty"`
-    Primary           bool     `json:"primary,omitempty"` // implicitly true for the single attachment
+    Primary           *bool    `json:"primary,omitempty"` // omitted or true for the single attachment
 }
 
 type BareMetalInstanceStatus struct {
@@ -424,8 +428,9 @@ type BareMetalNetworkAttachmentStatus struct {
 
 CEL immutability: `network_attachments` list and every network-owned field are
 immutable after creation, including subnet, SecurityGroup membership, interface,
-and primary designation. BMaaS accepts at most one network attachment, and that
-attachment is implicitly primary.
+and primary designation. `auto_external_ip_attachment` is also create-time only.
+BMaaS accepts at most one network attachment, and that attachment is
+implicitly primary.
 
 CEL validation rule:
 ```yaml
@@ -440,12 +445,13 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 #### Server Validation Rules
 
 - All referenced subnets must belong to the same VirtualNetwork
+- All resolved Subnets and SecurityGroups must exist and be Ready before the BaremetalInstance create is accepted
 - The `interface` must reference a valid port name from the BareMetalInstanceType (its network ports list defines available ports)
 - Interfaces with role `lifecycle` are rejected in `network_attachments` — lifecycle interfaces (PXE boot, BMC) are reserved for the provisioning system and are not tenant-attachable
-- At most one network attachment may be specified
+- At most one network attachment may be specified; omitted or empty input is resolved to one default attachment
+- The single attachment is implicitly primary; omission or `true` is accepted and explicit `false` is rejected
 - If the attachment's `interface` is omitted, it defaults to the first port with `role=fabric` from the BareMetalInstanceType
-- The single attachment is implicitly primary; the `primary` field is not used to select among attachments
-- network_attachments are immutable after creation
+- The attachment list and every field, including Subnet, SecurityGroup membership, interface, and primary designation, are immutable after creation; changing network configuration requires deleting and recreating the BaremetalInstance
 
 #### Catalog Item interaction
 
@@ -458,10 +464,15 @@ set in the same VirtualNetwork.
 
 Resolution occurs before the tenant default network is applied. A locked list
 rejects conflicting tenant input; an editable list accepts tenant input,
-otherwise uses its Catalog default, Template defaults, and then the tenant's
-default Subnet, SecurityGroup, and default fabric interface when the list is
-still unset. A shared Catalog Item cannot lock or default tenant-local network
-references.
+otherwise uses its Catalog default and Template defaults, then defaults only
+missing fields from the tenant's default Subnet, SecurityGroup, and fabric
+interface. Supplied fields are preserved. A shared Catalog Item cannot lock or
+default tenant-local network references.
+
+The editable policy applies only during BaremetalInstance creation. After
+creation, the resolved attachment list, every network field, and
+`auto_external_ip_attachment` are read-only. Catalog Item definitions and
+metadata remain governed by Catalog Items v2 and are not changed here.
 
 The provisioning network, lifecycle interfaces, port moves, and DHCP lease
 discovery are infrastructure behavior and are never Catalog-governed fields.
@@ -675,8 +686,8 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control BM inbound traffic (tenant-configurable via explicit SG or default SG)
-- The single BMaaS tenant attachment uses the SecurityGroup rules for its Subnet
+- SecurityGroup enforcement follows the [Unified Networking SecurityGroup rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics) for explicit and default SecurityGroups.
+- The single BMaaS tenant attachment uses the SecurityGroup rules for its Subnet.
 
 ### Failure Handling and Recovery
 
@@ -703,8 +714,8 @@ The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/
 
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
+- OPA policies enforce tenant-scoped list/get/create/delete; update and patch of network-owned fields are rejected
+- Tenant User can view auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via the standard API; their network-owned fields are not editable
 
 ### Observability and Monitoring
 
@@ -871,7 +882,7 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 - No user action required
 
 Minor version upgrades (`x.N → x.N+1`):
-- Tenant User encouraged to migrate to new networking fields via CLI update (`osac-cli` supports the single `--network-attachment` flag with `--interface`)
+- Tenant User encouraged to migrate by creating a replacement BaremetalInstance with the new networking fields (`osac-cli` supports the single `--network-attachment` flag with `--interface`); an existing instance's network fields are not updated
 - No breaking changes — networking fields remain optional
 
 ### Downgrade

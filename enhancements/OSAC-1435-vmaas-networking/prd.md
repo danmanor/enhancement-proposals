@@ -6,10 +6,7 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1435 |
 | Date        | 2026-07-08 |
 
-> This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements; this document defines the service-specific requirements and user stories.
-
-VMaaS networking uses IPv4 CIDRs only. IPv6 and dual-stack networking are not
-supported.
+> This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared networking resources and operation contract; the [Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology) defines the supported IPv4-only, connected single-hub boundary. This document defines the VMaaS-specific requirements and user stories.
 
 ## 1. Problem Statement
 
@@ -41,7 +38,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 ### Tenant Admin Stories
 
-- As a Tenant Admin, I want to inspect and modify the default networking resources (subnet, security group) used when VMs are created without explicit network configuration
+- As a Tenant Admin, I want to inspect the default networking resources (subnet, security group) used when VMs are created without explicit network configuration
 - As a Tenant Admin, I want to see which subnet and security groups each VM is attached to, and the IP address allocated to each interface, so I can audit my organization's network topology
 
 ### Cloud Infrastructure Admin Stories
@@ -63,7 +60,12 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 #### Optional Network Configuration with Defaults
 
-- **FR-3:** Network configuration is optional when creating a VM. When omitted, the system uses the tenant's default subnet and default security group (see Default Networking PRD). The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
+- **FR-3:** Network configuration is optional when creating a VM. When the
+  attachment list is omitted or empty, the system uses both tenant defaults.
+  When an attachment omits only its subnet or SecurityGroup list, only that
+  field is defaulted; supplied fields are preserved. The resolved
+  configuration is stored with the VM so the VM is self-describing after
+  creation. [User]
 
 #### Auto External IP
 
@@ -81,6 +83,13 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 - **FR-7:** Existing VMs continue to work without changes. The platform accepts both old and new network configuration formats during a transition period. If both formats are provided, the create request fails with an error. If the old format is provided alone, it is converted to the new format automatically. [User]
 
+- **FR-8:** The complete resolved network attachment list on a ComputeInstance,
+  including every Subnet, SecurityGroup, and `primary` value, is immutable
+  after creation. Update and patch requests for these fields are rejected;
+  changing network configuration requires deleting and recreating the VM.
+  Standard metadata and non-network VM fields remain governed by their own
+  contracts. [User]
+
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Auto external IP allocation completes synchronously within the create request. If no pool has available capacity, the create request fails with a clear error. [User]
@@ -97,6 +106,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
 - [ ] Creating a VM using the old network configuration format succeeds and is internally converted to the new format
 - [ ] Creating a VM with both old and new configuration formats returns an error
+- [ ] Updating or patching a VM's network attachment list or any attachment field is rejected; changing it requires delete and recreate under the [unified networking operation contract](/enhancements/OSAC-1433-unified-networking/prd.md#network-operation-contract)
 
 ## 6. Assumptions
 

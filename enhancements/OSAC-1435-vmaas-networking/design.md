@@ -24,22 +24,16 @@ This enhancement extends the unified networking API to support VMaaS-specific re
 
 This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
 
+Shared field types, formats, presence rules, allowed values, and validation
+are defined by the [Unified Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#field-types-formats-and-validation).
+
+The shared networking resource model, IPv4-only scope, and connected
+single-hub deployment boundary are defined by the [Unified Networking
+design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology).
+The shared operation contract is defined by [Supported Operations and
+Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
+
 ComputeInstance currently uses a shared `NetworkAttachment` message that lacks a `primary` field, preventing multi-NIC VM provisioning with a designated default gateway. This enhancement introduces `ComputeNetworkAttachment` with a `primary` field, makes `compute_network_attachments` optional (populating with tenant defaults when omitted), and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. See [PRD](prd.md) for detailed requirements.
-
-## Deployment Topology
-
-This design supports exactly one hub cluster per OSAC deployment. Multi-hub
-deployments are not supported. VirtualNetwork, Subnet, SecurityGroup, and
-ExternalIP resources used by VMaaS follow the unified networking
-reconciliation path through that hub. Hosting clusters may still be distinct
-workload targets for the K8s overlay.
-
-> **Current implementation boundary:** The current OSAC implementation supports
-> connected deployments only; air-gapped deployments are not currently
-> supported. The remainder of this document describes the desired-state
-> architecture.
-All VM networking resources and attachments use IPv4 CIDRs only. IPv6 and
-dual-stack networking are not supported.
 
 ## Motivation
 
@@ -54,7 +48,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 ### What Already Works
 
 - `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (subnet refs immutable, security group refs mutable)
+- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (the complete list and every network field are immutable)
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
@@ -90,28 +84,26 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 1. **Tenant creates VirtualNetwork:**
    ```bash
-   osac create virtualnetwork --network-class moc-bm-virt --cidr 10.0.0.0/16 --name my-net
+   osac create virtualnetwork --cidr 10.0.0.0/16 --name my-net
    ```
    - fulfillment-service → creates VirtualNetwork CR
-   - osac-operator VirtualNetwork controller → dispatcher resolves NetworkClass → calls `osac.templates.{{ fabric_manager }}.create_virtual_network`
-   - Fabric manager creates isolated tenant segment on the fabric
+   - osac-operator VirtualNetwork controller → dispatcher resolves the single deployment NetworkClass and its `implementation_strategy`
+   - The configured manager creates the isolated tenant segment
 
 2. **Tenant creates Subnet:**
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
    ```
    - osac-operator Subnet controller → dispatcher resolves NetworkClass → triggers TWO AAP jobs (multi-job tracking per OSAC-1459):
-     - `osac.templates.{{ fabric_manager }}.create_subnet` — creates VLAN / fabric segment
-     - `osac.templates.{{ k8s_manager }}.create_subnet` — creates CUDN overlay on each hosting cluster, bridges to the fabric segment
+     - the configured manager creates the subnet backend; when both managers are configured, the Fabric Manager creates the VLAN/fabric segment and the K8s Manager creates the CUDN overlay and bridge
    - After both complete: subnet is Ready. The CUDN namespace is the deployment target for VMs.
 
 3. **Tenant creates SecurityGroup:**
    ```bash
    osac create security-group --virtual-network my-net --name my-sg \
-     --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
+     --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
    ```
-   - Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
-   - Fabric manager creates ACL rules on the fabric
+   - Dispatcher → the configured network manager's `create_security_group` operation
 
 #### VM Creation
 
@@ -127,8 +119,8 @@ ComputeInstance already participates in the networking API. Today's flow:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
-     - Validates: subnets exist, are Ready, same VN, primary rules
+     - If `compute_network_attachments` is omitted or empty: populates both tenant defaults. For a supplied attachment, defaults only a missing subnet or empty SecurityGroup list (see Default Networking PRD)
+     - Validates: all resolved Subnet and SecurityGroup references exist and are Ready, subnets and groups share one VN, and primary rules are satisfied
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `compute_network_attachments`
 
@@ -172,8 +164,8 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Both start in **Pending** state. The ExternalIPAttachment controller checks two preconditions before dispatching (requeues if either is not met):
      1. ExternalIP must be Allocated (have an allocated address from the fabric manager)
      2. ComputeInstance must have `compute_network_attachment_statuses` populated with the primary attachment's `ip_address` (VM IP discovered from KubeVirt VMI)
-   - Once both are met: dispatcher → `osac.templates.{{ fabric_manager }}.create_external_ip_attachment`
-   - Fabric manager creates DNAT rule: external IP → VM's primary subnet IP (from `compute_network_attachment_statuses`)
+   - Once both are met: dispatcher → the configured network manager's external-IP attachment operation
+   - The configured network manager creates DNAT: external IP → VM's primary subnet IP (from `compute_network_attachment_statuses`)
    - ExternalIPAttachment transitions from Pending to Ready
 
 #### Deletion (reverse order)
@@ -198,16 +190,16 @@ Replace the shared `NetworkAttachment` with `ComputeNetworkAttachment`:
 
 ```protobuf
 message ComputeNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, mutable
-  bool primary = 3;                     // immutable, designates default gateway
+  optional string subnet = 1;           // omitted -> tenant default Subnet
+  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  optional bool primary = 3;            // one attachment is implicitly primary
 }
 
 message ComputeInstanceSpec {
   // ... existing fields ...
   // DEPRECATED: field 14 (old shared NetworkAttachment)
   repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional
-  bool auto_external_ip_attachment = 19;  // NEW, auto-provision ExternalIP + ExternalIPAttachment
+  bool auto_external_ip_attachment = 19;  // NEW, create-time only; auto-provision ExternalIP + ExternalIPAttachment
 }
 
 message ComputeNetworkAttachmentStatus {
@@ -224,8 +216,9 @@ message ComputeInstanceStatus {
 
 #### Operator CRD (osac-operator)
 
-Update `ComputeInstanceSpec.NetworkAttachments` struct:
-- Add `Primary bool` field with CEL immutability validation
+Define/extend `ComputeInstanceSpec.NetworkAttachments` with:
+- `Primary bool` field with CEL immutability validation
+- CEL immutability validation for the complete attachment list and every entry field
 - Add validation: if >1 attachment, exactly one must be `primary: true`
 - `PrimarySubnetRef()` returns the attachment with `primary: true` (falls back to first attachment for backward compat)
 
@@ -255,7 +248,9 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 #### Server Validation (fulfillment-service)
 
 - During migration: accept both old field (14) and new field (18). If both set, reject. If old set, convert internally.
-- Primary validation: if multiple attachments, exactly one primary
+- Attachment resolution: omitted or empty list defaults both fields; a partial entry defaults only its missing subnet or SecurityGroup list; supplied fields are preserved.
+- Reference validation: resolved Subnets and SecurityGroups must exist, be Ready, and belong to one VirtualNetwork.
+- Primary validation: one attachment must omit or set `primary: true`; multiple attachments require exactly one `true`, and explicit `false` on a single attachment is rejected.
 - BM-only deployment check: if the NetworkClass has no k8sManager, reject ComputeInstance creation
 
 #### Catalog Item interaction
@@ -268,9 +263,16 @@ the canonical representation before the same policy is applied.
 
 Catalog resolution happens before tenant default networking. A locked list
 rejects conflicting tenant input. An editable list accepts tenant input,
-otherwise uses its Catalog default, then the Template default, and finally the
-tenant's default Subnet and SecurityGroup when the attachment list remains
-unset.
+otherwise uses its Catalog default, then the Template default, and finally
+defaults only the missing fields from the tenant's default Subnet and
+SecurityGroup. An explicitly supplied subnet or non-empty SecurityGroup list
+is never replaced.
+
+The editable policy applies only while creating the ComputeInstance. After
+creation, the complete resolved attachment list and every network field are
+read-only; changing them requires deleting and recreating the VM. Catalog Item
+definitions and metadata remain governed by Catalog Items v2 and are not
+changed here.
 
 The Catalog list must obey the same Compute rules as direct creation: all
 attachments belong to one VirtualNetwork, one attachment is implicit primary
@@ -298,8 +300,8 @@ Subnet or SecurityGroup references.
 | osac-operator ComputeInstance feedback controller | Watch KubeVirt VMI network status, discover per-attachment IPs, Signal fulfillment-service |
 | osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
 | AAP template (ocp_virt_vm) | Create multi-NIC KubeVirt VM in correct namespace |
-| fabric_manager (Ansible role) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call |
-| k8s_manager (Ansible role) | Create CUDN overlay at subnet creation; no per-VM call |
+| configured network manager(s) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call after subnet setup |
+| k8s_manager (Ansible role, when configured) | Create/bridge the CUDN overlay at subnet creation; no per-VM call |
 
 #### Primary Attachment Resolution
 
@@ -327,7 +329,7 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control VM traffic (tenant-configurable via explicit SG or default SG). The default SecurityGroup is hard-coded to permit all traffic. When SecurityGroup rules overlap or contradict, the most specific matching rule wins.
+- SecurityGroup enforcement follows the [Unified Networking SecurityGroup rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics) for explicit and default SecurityGroups.
 - Multi-NIC VMs on different subnets share the same SecurityGroup enforcement (pod labels apply to all interfaces)
 
 ### Failure Handling and Recovery
@@ -353,7 +355,7 @@ This feature inherits the existing security model:
 
 No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
-- OPA policies enforce tenant-scoped list/get/update/delete
+- OPA policies enforce tenant-scoped list/get/create/delete; update and patch of network-owned fields are rejected
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -480,7 +482,7 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 
 Minor version upgrades (`x.N → x.N+1`):
 - Deprecation warning added for old `network_attachments` field (field 14) in fulfillment-service API responses
-- Tenant User encouraged to migrate to new field via CLI update (`osac-cli` supports new `--network-attachment` flag with `--primary`)
+- Tenant User encouraged to migrate by creating a replacement VM with the new field (`osac-cli` supports new `--network-attachment` flag with `--primary`); the existing VM's network fields are not updated
 - No breaking changes — old field remains functional
 
 ### Downgrade

@@ -34,14 +34,17 @@ OVN overlay that is not directly visible on the physical fabric. The core
 premise of this design is that **VMs are part of the fabric**. Through a
 [K8s manager](#how-vms-join-the-fabric) that bridges the OVN overlay to the
 physical network, VMs become first-class participants in the fabric alongside
-bare-metal servers and cluster nodes. Once on the fabric, all resource types
-are treated uniformly — the fabric manager handles isolation, security, IP
-allocation, DNAT, and SNAT for everything.
+bare-metal servers and cluster nodes. When a Fabric Manager is configured, all
+resource types are treated uniformly on the fabric — that manager handles
+isolation, security, IP allocation, DNAT, and SNAT. In K8s-only mode, the K8s
+Manager provides the supported equivalent for every resource except
+NATGateway.
 
 The design introduces:
 
-- **NetworkClass** with two fields: `fabricManager` (handles all physical
-  networking) and optional `k8sManager` (bridges VMs to the fabric)
+- **NetworkClass** with optional `fabricManager` and `k8sManager` fields; at
+  least one is required, and the manager combination resolves the private
+  `implementation_strategy`
 - **Infrastructure-agnostic subnets** where the same subnet can host VMs,
   BM servers, and cluster nodes
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
@@ -70,6 +73,132 @@ For user stories, goals, and non-goals, see the
 > supported. The remainder of this document describes the desired-state
 > architecture.
 
+## Supported Operations and Immutability
+
+This section defines the user/API operation contract for network-owned data.
+Every network resource is create/read/delete-only: callers may create it, list
+or get it, and delete it subject to dependency and finalizer checks. There is
+no user/API update, patch, or replace operation for a network resource's
+network-owned `spec` fields. A change to those fields requires deleting the
+resource and creating a new one.
+
+The contract is deliberately limited to network-owned data. Standard resource
+metadata semantics, including Catalog Item definitions and metadata, are not
+changed by this design. A Catalog Item may resolve a network value at parent
+resource creation time, but that policy does not make the resulting network
+value editable after creation.
+
+East-west networking (`OSAC-1382`) is excluded from this shared contract because
+it is not implemented. Its operation and field semantics remain governed by
+its own design, which may support update and resize operations.
+
+| Network-owned object or field | Allowed user/API operations | Immutability boundary |
+|---|---|---|
+| `NetworkClass` | Create, read, delete | All provider-selected manager and capability configuration in `spec` is fixed after creation. |
+| `VirtualNetwork` | Create, read, delete | Provider-resolved implementation strategy, CIDR/address-family, and all other network `spec` fields are fixed after creation. |
+| `Subnet` | Create, read, delete | VirtualNetwork reference, CIDR/address-family, and all other network `spec` fields are fixed after creation. |
+| `SecurityGroup` | Create, read, delete | VirtualNetwork reference and the complete rule set are fixed after creation; tenant-created groups require rules at create time, while the system-created fallback group may be empty. |
+| `ExternalIPPool` | Create, read, delete | Address-family, CIDR ranges, and all other pool `spec` fields are fixed after creation. |
+| `ExternalIP` | Create, read, delete | Pool reference, address/allocation identity, and all other network `spec` fields are fixed after creation. |
+| `ExternalIPAttachment` | Create, read, delete | ExternalIP, target, endpoint, and all other binding `spec` fields are fixed after creation; retargeting requires delete and create. |
+| `NATGateway` | Create, read, delete | VirtualNetwork, ExternalIP, and all other gateway `spec` fields are fixed after creation; changing the ExternalIP requires delete and create. |
+| `ComputeInstance.compute_network_attachments` and deprecated `network_attachments` | Set on parent create, read with the parent, delete with the parent | The complete attachment list and every entry field, including Subnet, SecurityGroups, and `primary`, are fixed after parent creation. |
+| `Cluster.network_attachment` | Set on parent create, read with the parent, delete with the parent | The complete attachment and every entry field, including Subnet and SecurityGroups, are fixed after parent creation. |
+| `BaremetalInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The complete list and every entry field, including Subnet, SecurityGroups, interface, and primary designation, are fixed after parent creation; at most one entry is supported. |
+| `auto_external_ip_attachment` on ComputeInstance, Cluster, and BaremetalInstance | Set on parent create, read with the parent, delete with the parent | This network-owned create-time switch is fixed after parent creation; changing automatic external access requires delete and recreate. |
+
+Controllers may update `status`, conditions, readiness and IP-discovery
+results, and may add or remove finalizers as part of reconciliation. Those
+controller-owned transitions are not user/API updates to network-owned
+`spec` fields. Non-network fields on ComputeInstance, Cluster, and
+BaremetalInstance remain governed by their own designs.
+
+## Field Types, Formats, and Validation
+
+The protobuf wire type alone is not the complete API contract. Every
+network-owned field must also have a defined format, presence/default rule,
+allowed-value set, reference scope, and cross-field validation. The following
+is the canonical contract for the currently supported north-south IPv4
+networking surface.
+Service-specific designs inherit these rules and add only their attachment
+cardinality or placement constraints.
+
+### Common formats
+
+| Value | Contract |
+|---|---|
+| IPv4 CIDR | String in canonical dotted-decimal CIDR notation, `a.b.c.d/prefix`, with prefix `0..32` and host bits zero. IPv6 and dual-stack values are rejected. A Subnet CIDR must be contained by its parent VirtualNetwork CIDR and Subnet CIDRs must not overlap within that VirtualNetwork. |
+| IPv4 address | String in dotted-decimal IPv4 notation without a CIDR suffix. Address fields are system/provider results, not alternate encodings of CIDRs. |
+| Resource reference | A reference to an existing resource in the scope defined below; arbitrary strings are invalid. Use the typed local/full reference forms defined by [OSAC-1330](</enhancements/OSAC-1330-type-safe-resource-references/design.md>) as they become available, while preserving the documented resource scope. |
+| Enum | Only the values listed in the relevant table are accepted. Unknown, future, and unspecified values are rejected for user-set fields unless explicitly marked as a status value. |
+| Repeated field | Cardinality, uniqueness, and ordering are part of the field contract. Duplicate references are rejected; ordering is meaningful only where explicitly stated. |
+| Timestamp | If exposed in an API status or audit field, use `google.protobuf.Timestamp` / RFC 3339 semantics in UTC. Timestamps are controller/system fields and are not tenant network configuration. |
+| Metadata name | Standard resource metadata rules apply; metadata is outside the network-owned field contract and is not changed by this design. |
+
+### Network resource fields
+
+| Resource and field | Wire type / presence | Allowed values and validation |
+|---|---|---|
+| `NetworkClass.spec.fabric_manager` | String reference, optional | If present, must name a provider-registered fabric manager. It may be omitted when a K8s manager provides the complete supported networking surface. |
+| `NetworkClass.spec.k8s_manager` | String reference, optional | If present, must name a provider-registered K8s manager. At least one of `fabric_manager` or `k8s_manager` must be present. |
+| `NetworkClass.spec.defaults` | `NetworkDefaults` message, required | There is no enable/disable knob. `virtual_network_cidr` and `ipv4_subnet_cidr` are both required canonical IPv4 CIDRs; the subnet must be contained by the VN. |
+| `NetworkClass.spec.metallb_vip_prefix_length` | `int32`, conditionally required | Required when the deployment advertises CaaS/MetalLB VIP support; no universal default exists. It must be a valid IPv4 prefix more specific than each participating Subnet prefix, and the reserved range must remain inside the Subnet. It is not required for deployments that do not provide CaaS VIP allocation. |
+| `VirtualNetwork.spec.implementation_strategy` | Provider-resolved string, required in persisted state | The caller does not set this field. The operator derives it from the managers in the single deployment NetworkClass and stores it as an immutable provider/private value. There is no tenant-selectable NetworkClass reference. |
+| `VirtualNetwork.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR. Cross-tenant CIDR overlap is allowed only because fabric isolation is explicitly relied upon; Subnet overlap within the VN is rejected. |
+| `Subnet.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
+| `Subnet.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR contained by the parent VirtualNetwork and non-overlapping with sibling Subnets in that VN. |
+| `SecurityGroup.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
+| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for tenant-created groups | Tenant-created SecurityGroups must contain at least one rule. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected when the effective attachment set is resolved. The system-created tenant fallback SecurityGroup may have an empty list because the deployment baseline policy supplies the default permit behavior. |
+| `ExternalIPPool.spec.ip_family` | Enum, required | `IPV4` only. IPv6 and dual-stack values are rejected. |
+| `ExternalIPPool.spec.cidrs` | Repeated IPv4 CIDR strings, required, exactly one supported | The list must contain exactly one canonical IPv4 CIDR. Multi-CIDR pools are not part of the supported contract; create separate pools instead. |
+| `ExternalIP.spec.pool` | Provider/deployment-scoped ExternalIPPool reference, required | The pool must exist, be Ready, and have capacity. The allocated address is selected by the provider/fabric manager; tenants do not supply an arbitrary address. |
+| `ExternalIPAttachmentSpec.external_ip` | Local ExternalIP reference, required | The ExternalIP must exist, be `Allocated`, and cannot already be consumed by another ExternalIPAttachment or NATGateway. |
+| `ExternalIPAttachmentSpec.target` | Required `oneof` | Exactly one of `compute_instance`, `cluster`, or `baremetal_instance` must be set. The target must be in the permitted tenant/project scope and `Ready`; the endpoint address must be populated before DNAT is dispatched. |
+| `ExternalIPAttachmentSpec.target_endpoint` | `ExternalIPAttachmentEndpoint` enum | `API` or `INGRESS` is required for a Cluster target. `UNSPECIFIED` is required for ComputeInstance and BaremetalInstance targets. |
+| `NATGateway.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project; only one NATGateway is allowed per VN. Creation is rejected when no configured manager advertises NATGateway support. |
+| `NATGateway.spec.external_ip` | Local ExternalIP reference, required | Must reference an `Allocated`, unconsumed ExternalIP in the same tenant/project. |
+
+For every reference above, create-time validation first checks existence, type,
+scope, and uniqueness. A caller-created dependent resource is rejected with a
+precondition error when the referenced resource is not yet in the required
+state; the API does not silently create a Pending dependency. The only
+exception is an internal default/auto-provisioning transaction, where the
+system may create dependent resources together in Pending state and controllers
+must requeue until each prerequisite reaches the required state.
+
+### SecurityGroupRule fields
+
+The following is the complete supported value contract. Rule fields are not
+arbitrary strings:
+
+| Field | Contract |
+|---|---|---|
+| `action` | Required enum: `allow` or `deny`. Unknown values are rejected. |
+| `direction` | Required enum: `ingress` or `egress`. Unknown values are rejected. |
+| `protocol` | Required enum: `tcp`, `udp`, `icmp`, or `any`. Protocol matching is case-sensitive; unknown values are rejected. |
+| `port` | Optional `int32`; required for `tcp` and `udp`, omitted for `icmp` and `any`; valid range is `1..65535`. Port ranges are not supported. |
+| `source_cidr` / `destination_cidr` | Exactly one direction-specific field is required. It must be a canonical IPv4 CIDR; `source_cidr` is used for ingress and `destination_cidr` for egress. |
+| Rule evaluation | The provider-owned deployment baseline is an always-present, least-specific `allow` policy and is not part of any tenant `SecurityGroup.spec.rules`. Attached tenant rules are stateful and the most-specific matching rule wins, ordered by CIDR prefix length, exact protocol over `any`, and exact port over an omitted port. Conflicting equal-specificity effective rules are rejected. |
+
+### Workload network fields
+
+| Field | Wire type / presence | Allowed values and validation |
+|---|---|---|
+| `ComputeInstance.compute_network_attachments` | Repeated `ComputeNetworkAttachment`, optional | Missing or empty uses both tenant defaults. A non-empty list contains unique entries; each entry may omit individual fields for field-level defaulting, and all resolved Subnets must belong to one VN. |
+| `ComputeNetworkAttachment.subnet` | Local Subnet reference, optional at request and required after resolution | If omitted, resolve only the tenant default Subnet. If supplied, it must exist and be `Ready`. |
+| `ComputeNetworkAttachment.security_groups` | Repeated local SecurityGroup references, optional | Missing or empty resolves only the tenant default SecurityGroup. A non-empty list uses exactly the supplied groups; every group must be same-VN and `Ready`, with no duplicates. |
+| `ComputeNetworkAttachment.primary` | Optional boolean | With one attachment, omission or `true` makes it primary and explicit `false` is rejected. With multiple attachments, exactly one entry must be `true`; omitted entries are non-primary. |
+| `Cluster.network_attachment` | `ClusterNetworkAttachment`, optional | Missing or an empty message uses both tenant defaults. When present, exactly one resolved attachment applies to every node set; missing subnet and SecurityGroups are defaulted independently. |
+| `BaremetalInstance.network_attachments` | Repeated `BareMetalNetworkAttachment`, optional | Missing or empty uses both tenant defaults. A non-empty list must contain exactly one entry; its subnet and SecurityGroups are defaulted independently when omitted. |
+| `BareMetalNetworkAttachment.interface` | String reference/name, optional | If set, it must identify a valid non-lifecycle port. If omitted, BMaaS selects the first valid `fabric` interface from the effective HostType. |
+| `BareMetalNetworkAttachment.primary` | Optional boolean | The sole BM attachment is implicitly primary; omission or `true` is accepted and explicit `false` is rejected. |
+| `auto_external_ip_attachment` | Boolean, optional | Defaults to `false`; when `true`, the system creates the supported automatic ExternalIP resources. It is create-time-only. |
+
+The service-specific documents must not introduce a different type, format,
+default, or validation rule for these shared fields. Service-specific designs
+may add only placement, cardinality, or lifecycle constraints for their own
+attachment message.
+
 ## Proposal
 
 ### NetworkClass
@@ -78,31 +207,30 @@ NetworkClass is the provider-level CRD that defines which managers handle
 networking for the deployment. Tenants never interact with it. One
 NetworkClass per deployment.
 
-#### Two Managers
+#### Manager combinations
 
 OSAC networking is handled by two managers:
 
-- **Fabric Manager** — a single product (e.g., Netris, Neutron) that manages
-  all physical networking: tenant isolation, ACLs, IP allocation, DNAT, SNAT,
-  and inter-subnet L3 routing within a VirtualNetwork. The physical fabric is
-  one infrastructure — one controller manages it all. When a VN has multiple
-  subnets, the fabric manager provides the L3 gateway for each subnet and
-  routes between them automatically.
+- **Fabric Manager** (optional) — a single product (e.g., Netris, Neutron)
+  that manages physical networking: tenant isolation, ACLs, IP allocation,
+  DNAT, SNAT, and inter-subnet L3 routing within a VirtualNetwork. When a VN
+  has multiple subnets, the fabric manager provides the L3 gateway for each
+  subnet and routes between them automatically.
 
-- **K8s Manager** (optional) — handles everything needed to make VMs part of
-  the fabric: creates the K8s overlay (e.g., CUDN with LocalNet) and bridges
-  it to the fabric segment. Needed for deployments that host VMs — once VMs
-  are on the fabric, the fabric manager handles them identically to
-  bare-metal servers. MetalLB IPAddressPool CRs for CaaS VIP allocation are
-  created by the Subnet controller at subnet creation time (gated on
-  `NetworkClass.spec.vip_prefix_length`), independent of the k8sManager.
+- **K8s Manager** (optional) — creates the K8s overlay (e.g., CUDN with
+  LocalNet) and bridges it to the fabric segment when paired with a Fabric
+  Manager. In K8s-only mode it provides the supported networking resources
+  directly in the OVN/Kubernetes domain. MetalLB IPAddressPool CRs for CaaS
+  VIP allocation are created at subnet creation time when the configured
+  manager advertises that capability (gated on
+  `NetworkClass.spec.metallb_vip_prefix_length`).
 
 #### Why Two Managers?
 
-The fabric is one product. You cannot have Netris handling isolation and
-Neutron handling ACLs on the same switches — splitting into per-action
-drivers does not reflect how physical networking works. A single
-`fabricManager` field captures this reality.
+When a Fabric Manager is present, it is one product. You cannot have Netris
+handling isolation and Neutron handling ACLs on the same switches — splitting
+into per-action drivers does not reflect how physical networking works. The
+single `fabricManager` field captures this reality when that backend is used.
 
 The K8s side is a separate concern: it bridges the OVN overlay to the
 physical fabric. The mechanism depends on the deployment — see
@@ -110,9 +238,21 @@ physical fabric. The mechanism depends on the deployment — see
 options. The goal is always the same: make VMs part of the fabric. A single
 `k8sManager` field captures this.
 
-Once VMs are on the fabric, the fabric manager handles everything for all
-resource types uniformly. There is no VM-vs-BM distinction for security,
-ExternalIP, DNAT, or SNAT.
+When both managers are present, the fabric manager handles the shared
+physical resources uniformly after the k8s manager creates the VM overlay.
+There is no VM-vs-BM distinction for security or ExternalIP operations.
+
+At least one manager is required. A K8s-only manager is a supported
+deployment mode and is authoritative for all supported networking resources:
+VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, and
+ExternalIPAttachment. `NATGateway` is explicitly unsupported in K8s-only
+deployments because the current OVN path cannot provide the required NAT
+gateway behavior. A K8s-only NetworkClass must reject NATGateway creation;
+it must not leave the resource Pending indefinitely.
+
+The operator resolves the manager combination into the private,
+provider-owned `VirtualNetwork.spec.implementation_strategy`. Tenants never
+select a NetworkClass or implementation strategy per VirtualNetwork.
 
 #### NetworkClass Examples
 
@@ -126,6 +266,9 @@ metadata:
 spec:
   fabricManager: netris
   k8sManager: cudn_localnet
+  defaults:
+    virtualNetworkCIDR: 10.0.0.0/16
+    ipv4SubnetCIDR: 10.0.1.0/24
 status:
   capabilities:
     addressFamily: ipv4
@@ -141,6 +284,9 @@ metadata:
 spec:
   fabricManager: neutron
   k8sManager: cudn_localnet
+  defaults:
+    virtualNetworkCIDR: 10.1.0.0/16
+    ipv4SubnetCIDR: 10.1.0.0/24
 status:
   capabilities:
     addressFamily: ipv4
@@ -155,6 +301,27 @@ metadata:
   name: gpu-region-1
 spec:
   fabricManager: netris
+  defaults:
+    virtualNetworkCIDR: 10.2.0.0/16
+    ipv4SubnetCIDR: 10.2.0.0/24
+status:
+  capabilities:
+    addressFamily: ipv4
+```
+
+**K8s-only deployment (no Fabric Manager; no NATGateway):**
+
+```yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkClass
+metadata:
+  name: ovn-only-1
+spec:
+  k8sManager: ovn_networking
+  defaults:
+    virtualNetworkCIDR: 10.0.0.0/16
+    ipv4SubnetCIDR: 10.0.1.0/24
+  metallbVipPrefixLength: 28 # required when CaaS VIP support is advertised
 status:
   capabilities:
     addressFamily: ipv4
@@ -164,9 +331,9 @@ status:
 
 Capabilities are **inferred from the assigned managers** and published in
 the NetworkClass status — the provider does not set them manually. The
-operator computes the intersection of capabilities declared by the fabric
-manager and k8sManager ConfigMaps and populates `status.capabilities`
-automatically.
+operator composes the capabilities and supported-resource declarations from
+the configured managers. It does not require a Fabric Manager when the K8s
+manager declares the complete supported surface.
 
 All networking managers and NetworkClasses expose IPv4-only behavior. IPv6 and
 dual-stack networking are not supported.
@@ -175,6 +342,7 @@ dual-stack networking are not supported.
 |-----------|------|---------|
 | `addressFamily` | enum | `ipv4` |
 | `dpuSupport` | bool | DPU-accelerated networking available |
+| `natGateway` | bool | `true` only when the configured managers support NATGateway; `false` for K8s-only OVN deployments |
 
 The set of capabilities is defined by the operator and is fixed — adding a
 new capability requires an operator update. Managers declare which
@@ -230,13 +398,16 @@ data:
   name: cudn_localnet
   description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
   capabilities: "addressFamily:ipv4"
+  supportedResources: "virtualNetwork,subnet,securityGroup,externalIPPool,externalIP,externalIPAttachment"
 ```
 
 The operator discovers managers by listing ConfigMaps with the appropriate
 labels. When a NetworkClass is created, the operator validates each manager
-assignment against the corresponding ConfigMap. Adding a new manager means
-deploying a new ConfigMap and Ansible role — no API or operator changes
-needed.
+assignment against the corresponding ConfigMap and verifies that the selected
+manager combination covers every resource exposed by the deployment. A
+K8s-only manager must omit `natGateway` from its supported resources because
+the current OVN implementation cannot provide it. Adding a new manager means
+deploying a new ConfigMap and Ansible role — no tenant API changes are needed.
 
 ### How VMs Join the Fabric
 
@@ -282,23 +453,29 @@ resource model are identical regardless of which mechanism is used. All that
 matters is the contract: once the k8sManager has bridged a subnet, VMs on
 that subnet are reachable from the fabric at their subnet IP.
 
+In a K8s-only deployment there is no physical Fabric Manager. The configured
+k8sManager provides the supported VirtualNetwork, Subnet, SecurityGroup,
+ExternalIPPool, ExternalIP, and ExternalIPAttachment behavior directly in the
+OVN/Kubernetes networking domain. The tenant API remains the same, but
+NATGateway is rejected because the OVN implementation does not provide that
+capability.
+
 ### Infrastructure-Agnostic Subnets
 
 VirtualNetwork and Subnet do not carry a scope or service field. Subnets are
-infrastructure-agnostic — the dispatcher provisions both the fabric segment
-and (if the NetworkClass has a k8sManager) the K8s overlay for every subnet.
-Any resource type can be placed on any subnet.
+infrastructure-agnostic — the dispatcher provisions the configured network
+backend(s) for every subnet. Any resource type can be placed on any subnet
+supported by the selected manager combination.
 
 At subnet creation, the dispatcher runs:
 
-1. **Fabric manager** — creates fabric segment (e.g., VLAN, VPC)
+1. **Fabric manager** (if present) — creates fabric segment (e.g., VLAN, VPC)
 2. **K8s manager** (if present) — creates K8s overlay on each hosting
    cluster in the deployment and bridges it to the fabric segment
 
-VMs are placed in the K8s overlay (which is bridged to the fabric), BM
-servers and cluster nodes are placed directly on the fabric segment. The
-fabric is the single source of truth for multi-tenancy and routing — all
-resources, regardless of type, are on the fabric.
+With both managers, VMs are placed in the K8s overlay and BM servers and
+cluster nodes are placed directly on the fabric segment. In K8s-only mode,
+all resource types use the K8s manager's supported OVN networking domain.
 
 ### Dispatcher (Operator Composition Logic)
 
@@ -310,17 +487,17 @@ context as the event payload.
 
 | Operation | Managers called |
 |-----------|----------------|
-| VN create/delete | `fabricManager` |
-| Subnet create/delete | `fabricManager` + `k8sManager` (per hosting cluster) |
-| SecurityGroup create/delete | `fabricManager` |
-| ExternalIP alloc/release | `fabricManager` |
-| ExternalIPAttachment create/delete | `fabricManager` |
-| NATGateway create/delete | `fabricManager` |
+| VN create/delete | `fabricManager` when configured; otherwise `k8sManager` |
+| Subnet create/delete | `fabricManager` + `k8sManager` when both are configured; otherwise the configured manager |
+| SecurityGroup create/delete | `fabricManager` when configured; otherwise `k8sManager` |
+| ExternalIP alloc/release | `fabricManager` when configured; otherwise `k8sManager` |
+| ExternalIPAttachment create/delete | `fabricManager` when configured; otherwise `k8sManager` |
+| NATGateway create/delete | `fabricManager` only; rejected without one |
 
-Everything except subnet creation is handled by the fabric manager alone.
-The k8sManager is only involved at subnet creation (to bridge the overlay)
-— after that, VMs are on the fabric and the fabric manager handles them
-like any other resource.
+In a combined deployment, the Fabric Manager remains the source of truth for
+physical resources and the K8s Manager supplies the overlay. In a K8s-only
+deployment, the K8s Manager owns every supported operation listed above except
+NATGateway, which is rejected at validation time.
 
 The dispatch table above covers **networking resources only**. Compute
 resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
@@ -335,15 +512,15 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 NetworkClass (per deployment, provider-only)
 
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
-  ├── Subnet              → fabricManager + k8sManager
-  ├── SecurityGroup       → fabricManager
-  └── NATGateway          → fabricManager
+  ├── Subnet              → configured manager(s)
+  ├── SecurityGroup       → configured manager
+  └── NATGateway          → fabricManager only
 
 ExternalIPPool (deployment-scoped, provider-managed)
-  └── ExternalIP (tenant-managed) → fabricManager
+  └── ExternalIP (tenant-managed) → configured manager
 
 ExternalIPAttachment (tenant-managed)
-                          → fabricManager
+                          → configured manager
                             references an ExternalIP and a target resource
 ```
 
@@ -355,7 +532,7 @@ environments, the provider creates pools with data-center-routable IPs. In
 internet-connected environments, the pools contain internet-routable IPs.
 The API and flow are identical regardless of the deployment topology.
 
-ExternalIPPools are provider-managed and deployment-scoped. The fabric
+ExternalIPPools are provider-managed and deployment-scoped. The configured
 manager handles ExternalIP allocation — one pool serves all resource types.
 
 ### End-to-End Flows
@@ -366,14 +543,13 @@ K8s manager the provider has deployed.
 
 #### Provider Setup
 
-1. Provider deploys hosting cluster(s) and fabric controller
+1. Provider deploys the configured networking manager(s) and hosting cluster(s)
 2. Provider creates NetworkClass for the deployment (provider-only,
    tenants never see it)
 3. Provider creates ExternalIPPool:
 
 ```bash
 osac admin create externalippool \
-  --network-class moc-region-1 \
   --cidrs 203.0.113.0/24 \
   --ip-family ipv4 \
   --name external-pool-1
@@ -390,11 +566,11 @@ servers.
 **Create VirtualNetwork:**
 
 ```bash
-osac create virtualnetwork --network-class moc-region-1 --cidr 10.0.0.0/16 \
+osac create virtualnetwork --cidr 10.0.0.0/16 \
   --name my-net
 ```
 
-The fabric manager creates an isolated tenant segment on the fabric.
+The configured network manager creates an isolated tenant segment.
 
 **Create Subnet:**
 
@@ -403,28 +579,41 @@ osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
   --name my-subnet
 ```
 
-The fabric manager creates a fabric segment (e.g., VLAN) for the subnet.
-If the NetworkClass has a K8s manager, it also creates a K8s overlay on each
-hosting cluster and bridges it to the fabric segment. After this step, VMs placed in the
-overlay and BM servers with switch ports on the fabric segment are in the
-same L2 domain.
+The configured manager(s) create the subnet backend. If both managers are
+configured, the Fabric Manager creates a fabric segment and the K8s Manager
+creates an overlay on each hosting cluster and bridges it to that segment.
 
 **Create SecurityGroup:**
 
 ```bash
 osac create security-group --virtual-network my-net --name my-sg \
-  --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
+  --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
 ```
 
-The fabric manager creates ACL rules on the fabric.
+The configured network manager creates the ACL rules in its backend.
 
 #### SecurityGroup Rule Semantics
 
 SecurityGroup behavior is uniform across VMaaS, CaaS, and BMaaS and is
-enforced by the selected network backend. The default SecurityGroup is
-hard-coded to permit all traffic. When SecurityGroup rules overlap or
-contradict, the most specific matching rule wins. These semantics apply to
-both ingress and egress.
+enforced by the selected network backend.
+
+The deployment has one provider-owned baseline ACL policy that is always
+present and permits traffic when no more-specific tenant rule matches. This
+baseline is not a tenant `SecurityGroup`, is not stored in
+`SecurityGroup.spec.rules`, and remains active even when a tenant explicitly
+attaches one or more SecurityGroups.
+
+The tenant default SecurityGroup is a tenant-scoped fallback resource. It is
+attached only when an attachment omits its SecurityGroups; it is not the
+deployment baseline. The system-created fallback group may have an empty
+rule list because the deployment baseline supplies the default permit. A
+tenant-created SecurityGroup must contain at least one explicit rule.
+
+Tenant rules have an explicit `allow` or `deny` action. When the baseline and
+attached tenant rules overlap or contradict, the most-specific matching rule
+wins. Specificity is ordered by longest remote CIDR prefix, exact protocol
+over `any`, and exact port over an omitted port. Conflicting equal-specificity
+rules are rejected. These semantics apply to both ingress and egress.
 
 #### Resource Creation (Differs by Type)
 
@@ -491,8 +680,10 @@ Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
 The tenant specifies which subnet to use (one per cluster); the system maps it to the
 correct physical interfaces based on each node set's host type.
 
-In all cases, the resource ends up on the fabric. The fabric manager sees
-all resources equally — there is no VM-vs-BM distinction.
+With a Fabric Manager, the resource ends up on the fabric and the manager sees
+all resources equally. In K8s-only mode, the configured K8s Manager provides
+the equivalent supported networking domain; there is still no VM-vs-BM API
+distinction.
 
 #### Catalog Item integration
 
@@ -510,8 +701,10 @@ The resource-specific Catalog fields are:
 | BaremetalInstance | `network_attachments` (at most one attachment) | Provisioning-network handoff and switch-side port operations |
 
 At Create, Catalog policy and tenant input are resolved first, followed by
-Template defaults. If the resulting tenant-facing attachment is still unset,
-the tenant's default networking is applied. The final value is then checked
+Template defaults. Default networking is then resolved field by field: an
+omitted or empty attachment receives both tenant defaults, while a supplied
+attachment receives a default only for each missing subnet or SecurityGroup
+field. Supplied fields are never replaced. The final value is then checked
 with the ordinary subnet, SecurityGroup, VirtualNetwork, cardinality, primary,
 and interface rules for that resource type.
 
@@ -527,18 +720,21 @@ resulting side effect remains resource-specific: one automatically attached
 ExternalIP for Compute and Bare Metal, and the API and ingress ExternalIPs for
 Cluster.
 
-Catalog governance ends after the resource is created. Later resource updates
-follow the networking lifecycle rules below; in particular, immutable
-attachment structure is distinct from mutable SecurityGroup membership.
+Catalog governance ends after the resource is created. The resolved network
+value is immutable after creation, including the SecurityGroup membership.
+Later changes require deleting and recreating the parent resource. Catalog
+Item definitions and metadata remain governed by the Catalog Items design and
+are outside this networking change.
 
 See [Catalog Items v2](/enhancements/OSAC-3538-catalog-items-v2/design.md)
 for the typed policy representation and reference lifecycle.
 
 #### External Access (Same for All Resource Types)
 
-Since all resources are on the fabric, external access operations are
-uniform. There is no VM-vs-BM distinction — the fabric manager handles
-DNAT and SNAT identically for all resource types.
+External access operations are uniform across resource types. With a Fabric
+Manager, it handles DNAT and SNAT identically for all resource types. In
+K8s-only mode, the K8s Manager handles supported DNAT/IP operations and
+NATGateway remains unavailable.
 
 **Allocate ExternalIP:**
 
@@ -546,7 +742,8 @@ DNAT and SNAT identically for all resource types.
 osac create externalip --pool external-pool-1 --name my-ip
 ```
 
-The fabric manager allocates an IP from its IPAM (e.g., 203.0.113.45).
+The configured network manager allocates an IP from its IPAM (e.g.,
+203.0.113.45).
 
 **Attach for inbound access (DNAT):**
 
@@ -564,7 +761,8 @@ osac create externalipattachment --externalip my-ip \
   --cluster my-cluster --target-endpoint api --name api-att
 ```
 
-The fabric manager creates a DNAT rule: external IP → resource's subnet IP.
+The configured network manager creates a DNAT rule: external IP → resource's
+subnet IP.
 Each resource (ComputeInstance, BaremetalInstance) is associated with one
 subnet and has one fabric IP — the DNAT targets that IP directly. For BMaaS,
 that is the IP of the single tenant network attachment.
@@ -647,8 +845,8 @@ precondition checks and requeue:
   - **Target resource must have a known IP.** The required IP depends
     on the target type (see below). If not yet available, the
     controller requeues.
-- Once both preconditions are met, the controller dispatches to AAP →
-  fabric manager creates the DNAT rule → ExternalIPAttachment
+- Once both preconditions are met, the controller dispatches to AAP → the
+  configured network manager creates the DNAT rule → ExternalIPAttachment
   transitions to **Ready**
 
 *ExternalIPAttachment controller preconditions per target type:*
@@ -780,9 +978,9 @@ osac create natgateway --virtual-network my-net --externalip nat-ip \
   --name my-nat
 ```
 
-The fabric manager creates a SNAT rule for the VN: all egress traffic from
-the VN's CIDR is source-NATted to the ExternalIP. Applies to all resources
-in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
+The Fabric Manager creates a SNAT rule for the VN: all egress traffic from
+the VN's CIDR is source-NATted to the ExternalIP. NATGateway is unavailable
+in K8s-only OVN deployments.
 
 ### API Extensions
 
@@ -790,12 +988,36 @@ in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 
 ```protobuf
 message VirtualNetworkSpec {
-  string network_class = 1; // required, immutable
-  string ipv4_cidr = 2;     // required, immutable
+  string implementation_strategy = 1; // provider-resolved/private, immutable
+  string ipv4_cidr = 2;               // required, immutable
 }
 ```
 
 No scope or service field — subnets are infrastructure-agnostic.
+
+`implementation_strategy` is populated by the provider/operator from the
+single deployment NetworkClass and is not accepted from a tenant create
+request.
+
+#### SecurityGroup
+
+```protobuf
+message SecurityGroupRule {
+  SecurityGroupRuleAction action = 1; // required: ALLOW or DENY
+  SecurityGroupRuleDirection direction = 2; // required: INGRESS or EGRESS
+  SecurityGroupRuleProtocol protocol = 3; // required: TCP, UDP, ICMP, or ANY
+  optional int32 port = 4; // required for TCP/UDP; 1..65535; no ranges
+  oneof remote_cidr {
+    string source_cidr = 5;      // required for ingress
+    string destination_cidr = 6; // required for egress
+  }
+}
+```
+
+The default tenant fallback SecurityGroup is system-created and may have an
+empty `rules` list. Tenant-created SecurityGroups require at least one rule.
+The deployment-wide baseline permit policy is provider-owned and is not
+serialized as a `SecurityGroupRule`.
 
 #### HostType and BareMetalInstanceType
 
@@ -869,18 +1091,17 @@ interfaces, but BMaaS does not attach them to the tenant network.
 
 Each resource type has its own network attachment message. The core fields
 (`subnet`, `security_groups`) are shared, but each type adds
-resource-specific fields. The attachment list or singular attachment,
-subnet, interface, and primary designation are immutable after resource
-creation. SecurityGroup membership remains mutable where the resource-specific
-design permits it.
+resource-specific fields. The attachment list or singular attachment and
+every field in every entry are immutable after resource creation, including
+SecurityGroup membership.
 
 **ComputeNetworkAttachment** (for ComputeInstance):
 
 ```protobuf
 message ComputeNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
-  bool primary = 3;                     // optional, immutable: designates default gateway
+  optional string subnet = 1;           // omitted -> tenant default Subnet
+  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  optional bool primary = 3;            // one-entry attachment is implicitly primary
 }
 ```
 
@@ -892,10 +1113,10 @@ for primary designation and default gateway semantics.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
-  string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
-  bool primary = 4;                     // the single attachment is implicitly primary
+  optional string subnet = 1;           // omitted -> tenant default Subnet
+  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  string interface = 3;                 // omitted -> first fabric interface
+  optional bool primary = 4;            // the sole attachment is implicitly primary
 }
 ```
 
@@ -909,8 +1130,8 @@ does not imply support for multiple tenant network attachments.
 
 ```protobuf
 message ClusterNetworkAttachment {
-  string subnet = 1;                    // Subnet ID, required, immutable
-  repeated string security_groups = 2;  // SecurityGroup IDs, optional, mutable
+  optional string subnet = 1;           // omitted -> tenant default Subnet
+  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
 }
 ```
 
@@ -1170,10 +1391,11 @@ behavior is defined by the VMaaS design. The deprecated shared
 `network_attachments` field is a migration compatibility path, not the
 canonical Catalog policy field.
 
-BaremetalInstance accepts at most one `network_attachment`. When present,
-that attachment is implicitly primary and supplies the default gateway,
-ExternalIP DNAT target, and NATGateway source address. There is no secondary
-BMaaS attachment or tenant-facing multi-homing behavior.
+BaremetalInstance retains the repeated `network_attachments` API field for
+compatibility, but accepts at most one entry. When present, that entry is
+implicitly primary and supplies the default gateway, ExternalIP DNAT target,
+and NATGateway source address. There is no secondary BMaaS attachment or
+tenant-facing multi-homing behavior.
 
 Cluster supports a single `network_attachment` — one subnet for all node
 sets. Per-node-set subnet placement is not supported in v0.2. All subnets
@@ -1185,8 +1407,8 @@ fabric's DHCP server assigns an IP on the network segment. The provisioning
 template does NOT configure host-side networking (no static IP, gateway, or
 DNS configuration) — DHCP handles it automatically.
 
-**ExternalIPAttachment:** For BMaaS, the fabric manager creates a DNAT rule
-to the single attachment's subnet IP. The tenant does not select an
+**ExternalIPAttachment:** For BMaaS, the configured network manager creates a
+DNAT rule to the single attachment's subnet IP. The tenant does not select an
 interface for the DNAT target because BMaaS has only one tenant attachment.
 
 **Cluster networking:** `ClusterNetworkAttachment` is a single attachment
@@ -1209,6 +1431,11 @@ SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
 NATGateway) are reconciled through that hub, and their `status.hub` fields
 identify the deployment's hub.
 
+The currently supported deployment boundary is connected deployments only;
+air-gapped deployments are not currently supported. All shared networking
+resources and manager integrations use IPv4; IPv6 and dual-stack networking
+are not supported.
+
 Hosting clusters are distinct from the hub. Where a `k8sManager` is
 configured, subnet creation provisions the K8s overlay on each hosting cluster
 and bridges it to the fabric segment. VMs on different hosting clusters share
@@ -1227,13 +1454,13 @@ template roles create DNS records. A DNS API is a separate enhancement.
 
 #### BM-Only Deployments
 
-If a NetworkClass has no k8sManager, the deployment does not support VMs.
-ComputeInstance creation is rejected if the target NetworkClass has no
-k8sManager — there is no K8s overlay to place the VM on.
+If the single deployment NetworkClass has no k8sManager, the deployment does
+not support VMs. ComputeInstance creation is rejected when there is no K8s
+manager because there is no K8s overlay to place the VM on.
 
 CaaS clusters work without a k8sManager. MetalLB IPAddressPool creation
 is handled by the Subnet controller (gated on
-`NetworkClass.spec.vip_prefix_length`), not by the k8sManager. BM-only
+`NetworkClass.spec.metallb_vip_prefix_length`), not by the k8sManager. BM-only
 CaaS deployments provision clusters with fabric-level networking and
 MetalLB VIP allocation without requiring a K8s overlay.
 
@@ -1302,8 +1529,8 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 4. **One NATGateway per VN.** Multiple gateways are ambiguous. Per-subnet
    NAT is a future enhancement.
 
-5. **ExternalIPPool shared.** The fabric manager handles ExternalIP allocation
-   for all resource types. One pool per deployment.
+5. **ExternalIPPool shared.** The configured network manager handles ExternalIP
+   allocation for all resource types. One pool per deployment.
 
 6. **Multiple hosting clusters.** Subnet creation provisions K8s overlay
    on each hosting cluster. VMs on different clusters share the subnet
@@ -1317,10 +1544,9 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    internet-connected deployments.
 
 9. **Attachment immutability.** Attachment cardinality, Subnet, interface,
-   and primary designation are immutable after resource creation. SecurityGroup
-   membership remains mutable where the resource-specific design permits it.
-   Changing the immutable attachment structure requires recreating the
-   resource.
+   primary designation, SecurityGroup membership, and every other
+   network-attachment field are immutable after resource creation. Changing
+   any of them requires deleting and recreating the resource.
 
 10. **Security enforcement.** The fabric is the single enforcement point
     for SecurityGroups. No separate K8s-level ACL needed — VMs are on the
