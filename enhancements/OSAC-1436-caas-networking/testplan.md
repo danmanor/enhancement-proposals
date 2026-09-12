@@ -119,7 +119,10 @@
 ##### Expected results
 
 - Each worker request contains one BM attachment.
-- Subnet and SecurityGroups come from the Cluster attachment.
+- `ClusterOrder.spec.networkAttachment` is the singular private-CR field.
+- Subnet and SecurityGroups come from the Cluster attachment as typed local
+  references; no `networkAttachments[0]`, `subnetRef`, or `securityGroupRefs`
+  representation is accepted.
 - Physical interface comes from immutable node-set resolution.
 - Primary is implicit/true.
 - BMaaS revalidates scope, same-VN, readiness, instance type, and lifecycle
@@ -127,7 +130,26 @@
 - Worker reconciliation never appends a second attachment or silently chooses
   another interface.
 
-#### TC-R3-02: Worker deletion protects network dependencies
+#### TC-R3-02: On-demand BMaaS lifecycle owns port movement and IP discovery
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E | critical | automated |
+
+##### Expected results
+
+- CaaS creates each worker through the BMaaS private API on demand; it does
+  not consume a pre-booted agent pool.
+- BMaaS provisions the host on the provisioning network, moves the selected
+  port to the tenant network after provisioning, reboots it, and discovers
+  the tenant IP through the fabric DHCP lease API.
+- CaaS watches Agent objects only for MAC correlation and worker/NodePool
+  binding. It does not treat Agent status as the source of the tenant IP.
+- A worker is not Ready before the BMaaS networking handoff and IP discovery
+  complete; failed handoff or missing DHCP lease requeues/fails the worker
+  without a partial ClusterOrder success.
+
+#### TC-R3-03: Worker deletion protects network dependencies
 
 | Test type | Priority | Automation |
 |---|---|---|

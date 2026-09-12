@@ -178,7 +178,13 @@ The [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types)
 - CaaS resolves the fabric interface from `BareMetalInstanceType.network_ports[].role=fabric`
 - `BareMetalInstanceType.host_label_selector` provides direct inventory matching (OSAC-1201), replacing the former HostType reverse lookup
 
-> **CaaS network attachment source:** For CaaS bare-metal workers, the network attachment originates from `ClusterOrder.spec.networkAttachments[0]` (`ClusterNetworkAttachment`) and is enriched per-BMI by the `BareMetalWorkerReconciler`, using the immutable `fabric_interface` resolved once by fulfillment-service from the node set's `BareMetalInstanceType.network_ports[]` (first port with `role=fabric`). See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full enrichment flow.
+> **CaaS network attachment source:** For CaaS bare-metal workers, the typed
+> network attachment originates from `ClusterOrder.spec.networkAttachment`
+> (`ClusterNetworkAttachment`) and is enriched per-BMI by the
+> `BareMetalWorkerReconciler`, using the immutable `fabric_interface` resolved
+> once by fulfillment-service from the node set's `BareMetalInstanceType.network_ports[]`
+> (first port with `role=fabric`). See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md)
+> for the full enrichment flow.
 
 #### Interface Role Convention
 
@@ -272,7 +278,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
       - Reads the sole entry from the `network_attachments` list in the CR spec
         (the API keeps the repeated field for compatibility; validation rejects
         lists with more than one entry)
-      - **Operator dispatches switch-side config:** The operator dispatches the `osac-move-network-attachment` job, which resolves `subnetRef` → tenant network segment name and moves the server's selected fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface name from BareMetalInstanceType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
+      - **Operator dispatches switch-side config:** The operator dispatches the `osac-move-network-attachment` job, which resolves the typed `subnet` reference → tenant network segment name and moves the server's selected fabric port **provisioning network → tenant network** via `osac.templates.{{ fabric_manager }}.move_network_attachment` (`host_name` = fabric server name from ExternalHostID, `logical_interface_name` = interface name from BareMetalInstanceType, `from_vnet_name` = provisioning network, `to_vnet_name` = tenant network segment). See [Provisioning Network and Port Moves](#provisioning-network-and-port-moves).
       - **Network segment readiness wait:** After the port attach, the move playbook polls the fabric manager until the target network segment reaches active/ready state. This ensures the switch fabric has fully converged before the operator triggers the handoff reboot — without this wait, the host may DHCP on the wrong network.
       - Sets condition: `NetworkAttachmentsReady=True`
 
@@ -333,11 +339,12 @@ Same as VMaaS/CaaS — the networking API is uniform.
 **BMaaS-specific deletion dependency guard:**
 
 The Subnet controller gates its deprovision job on the complete removal
-of all BareMetalInstance CRs with `spec.networkAttachments[].subnetRef`
+of all BareMetalInstance CRs with `spec.networkAttachments[].subnet`
 referencing the subnet. This prevents the infrastructure backend from
 rejecting the subnet deletion because bare-metal servers are still
-attached to it. The guard lists BMI CRs in the namespace and filters by
-`subnetRef` in-memory, requeuing every 10 seconds until all BMIs are gone.
+attached to it. The guard lists BMI CRs in the namespace and filters by the
+resolved local reference in-memory, requeuing every 10 seconds until all BMIs
+are gone.
 See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)
 for the full guard table covering all networking resources.
 
@@ -361,8 +368,8 @@ no internal IP.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  optional string subnet = 1;           // omitted -> tenant default Subnet
-  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
+  repeated SecurityGroupLocalReference security_groups = 2; // empty -> tenant default SecurityGroup
   string interface = 3;                 // omitted -> first fabric interface
   optional bool primary = 4;            // the single attachment is implicitly primary
 }
@@ -386,7 +393,7 @@ message BareMetalInstanceStatus {
 
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;
-  string subnet_ref = 2;
+  SubnetLocalReference subnet = 2;      // Controller-owned resolved reference
   string ip_address = 3;  // Discovered after DHCP assignment, synced to fulfillment-service via feedback
   bool primary = 4;
 }
@@ -406,10 +413,10 @@ type BareMetalInstanceSpec struct {
 }
 
 type BareMetalNetworkAttachment struct {
-    SubnetRef         string   `json:"subnetRef,omitempty"` // resolved before provisioning
-    SecurityGroupRefs []string `json:"securityGroupRefs,omitempty"`
-    Interface         string   `json:"interface,omitempty"`
-    Primary           *bool    `json:"primary,omitempty"` // omitted or true for the single attachment
+    Subnet         *SubnetLocalReference         `json:"subnet,omitempty"` // resolved before provisioning
+    SecurityGroups []SecurityGroupLocalReference `json:"securityGroups,omitempty"`
+    Interface      string                        `json:"interface,omitempty"`
+    Primary        *bool                         `json:"primary,omitempty"` // omitted or true for the single attachment
 }
 
 type BareMetalInstanceStatus struct {
@@ -419,7 +426,7 @@ type BareMetalInstanceStatus struct {
 
 type BareMetalNetworkAttachmentStatus struct {
     Interface  string `json:"interface,omitempty"`
-    SubnetRef  string `json:"subnetRef,omitempty"`
+    Subnet      *SubnetLocalReference `json:"subnet,omitempty"`
     IPAddress  string `json:"ipAddress,omitempty"` // Discovered after DHCP assignment
     Primary    bool   `json:"primary,omitempty"` // implicitly true for the single attachment
 }
@@ -638,7 +645,7 @@ move_network_attachment(host_name, logical_interface_name,
   retries and unexpected state); attach fails if the target segment or port
   cannot be resolved.
 - It operates purely against the fabric manager — **no Subnet CR lookup inside
-  the role**. Callers resolve a `subnetRef` → tenant network segment name and
+  the role**. Callers resolve the typed `subnet` reference → tenant network segment name and
   pass the provisioning network name from configuration.
 - The primitive is backend-/lifecycle-agnostic: callers decide what the segments
   mean (tenant, provisioning, …), so CaaS can reuse it for its own
@@ -650,7 +657,7 @@ move_network_attachment(host_name, logical_interface_name,
 deprovision. It derives direction from the CR: a resource carrying
 `metadata.deletionTimestamp` is **offboarding** (tenant → provisioning network);
 otherwise it is **onboarding** (provisioning network → tenant). The tenant network
-segment is resolved from the single attachment's `subnetRef` (Subnet CR
+segment is resolved from the single attachment's typed `subnet` reference (Subnet CR
 `metadata.name` == fabric network segment name); the provisioning network name comes from
 configuration. The
 bare-metal-fulfillment-operator therefore points **both** its networking-provision
@@ -714,7 +721,11 @@ the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
 
 #### IP Discovery
 
-IP discovery is decoupled from switch port configuration. The `move_network_attachment` role is switch-side only — it moves the server's fabric port onto the tenant subnet's network segment during `reconcileNetworking`, before the host boots. It does not query DHCP leases or return an IP address.
+IP discovery is decoupled from switch port configuration. The
+`move_network_attachment` role is switch-side only — it moves the server's
+fabric port onto the tenant subnet's network segment during
+`reconcileNetworking`, after OS provisioning and before the handoff reboot. It
+does not query DHCP leases or return an IP address.
 
 After `reconcileProvisioning` completes and the host has received a DHCP lease from the fabric's DHCP server, the operator runs `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the single subnet reference and the server's selected port MAC address. The role queries the fabric manager's DHCP lease API for the subnet, matches the port MAC to find the corresponding DHCP-assigned IP, and returns it. The operator writes the discovered IP to the single `status.networkAttachmentStatuses[].ipAddress` entry on the BaremetalInstance CR.
 

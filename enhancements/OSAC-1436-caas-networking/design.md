@@ -65,14 +65,21 @@ Per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/desi
 4. BMaaS discovers the tenant-network IP via DHCP lease query (`reconcileIPDiscovery`)
 5. The full assisted-installer cluster installation begins on the tenant network: the host registers as an Agent with assisted-service, performs hardware discovery, runs the OpenShift installation, and reports progress — all from scratch on the tenant network
 
-The `BareMetalWorkerReconciler` reads the first entry in `ClusterOrder.spec.networkAttachments` (a `ClusterNetworkAttachment` carrying `subnetRef` + `securityGroupRefs`) and enriches it into a per-BMI `BareMetalNetworkAttachment` using the immutable `fabric_interface` stored on the node set by the fulfillment-service. CaaS never dispatches `move_network_attachment` directly — that is BMaaS's responsibility as part of BMI provisioning. On cluster deletion, the controller calls `BareMetalInstances.Delete`; BMaaS handles full host cleanup including returning the fabric port to the provisioning network.
+The `BareMetalWorkerReconciler` reads the singular typed attachment from
+`ClusterOrder.spec.networkAttachment` and enriches it into a per-BMI
+`BareMetalNetworkAttachment` using the immutable `fabric_interface` stored on
+the node set by the fulfillment-service. CaaS never dispatches
+`move_network_attachment` directly — that is BMaaS's responsibility as part of
+BMI provisioning. On cluster deletion, the controller calls
+`BareMetalInstances.Delete`; BMaaS handles full host cleanup including
+returning the fabric port to the provisioning network.
 
 ### Non-Goals
 
 - VMaaS or BMaaS networking (this EP covers CaaS only)
 - VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
 - DNS API (DNS record creation stays inline in the template until DNS API is implemented)
-- Multi-NIC cluster nodes (v0.2: one attachment per cluster → one subnet; each node set resolves its own fabric interface from its BareMetalInstanceType)
+- Provider-side physical interface resolution (one tenant attachment per cluster → one subnet; each node set resolves its fabric interface from its BareMetalInstanceType)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
 
 ## Proposal
@@ -125,7 +132,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - For each node_set: resolves `baremetal_instance_type` → BareMetalInstanceType → picks first port with `role=fabric` from `network_ports[]` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-created: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
-    - Creates ClusterOrder CR with the resolved attachment in `networkAttachments[0]` in spec
+    - Creates ClusterOrder CR with the resolved singular typed attachment in `networkAttachment` in spec
 
 6. **osac-operator ClusterOrder controller:**
     - Creates namespace, ServiceAccount, RoleBindings (same as today)
@@ -134,12 +141,12 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     **b. `BareMetalWorkerReconciler`** (runs after the ClusterDeployment exists, per OSAC-2135):
     - Creates a cluster-specific `InfraEnv` CR for discovery ignition
-    - For each bare-metal worker requested, creates a `BareMetalInstance` via the BMaaS private gRPC API, passing `network_attachments` enriched from `ClusterOrder.spec.networkAttachments[0]` with the immutable `fabric_interface` already stored on the node set by the fulfillment-service (step 5) — the controller does not re-resolve from BareMetalInstanceType to avoid divergence if the profile changes after cluster creation
+    - For each bare-metal worker requested, creates a `BareMetalInstance` via the BMaaS private gRPC API, passing `network_attachments` enriched from `ClusterOrder.spec.networkAttachment` with the immutable `fabric_interface` already stored on the node set by the fulfillment-service (step 5) — the controller does not re-resolve from BareMetalInstanceType to avoid divergence if the profile changes after cluster creation
     - BMaaS provisions each host (DiskImage + ignition), moves its fabric port from provisioning network → tenant network, reboots, and discovers the tenant-network IP via DHCP lease query — all as part of BMI provisioning (inventory → provisioning → networking → reboot → IP discovery)
     - The controller correlates registered Agents to BMIs via MAC address and labels them for NodePool selection
     - If an Agent does not register within a configurable timeout (default: 30 minutes), the controller sets the worker phase to `Failed` with reason `AgentRegistrationTimeout` and retries with escalating backoff (see OSAC-2135 for full retry logic)
 
-    > **Tenant-network reachability prerequisites.** After the port move, cluster installation runs entirely on the tenant network. The tenant V-Net and the management cluster are in separate VPCs with no direct network path — all communication between them traverses the external network: outbound via NATGateway/SNAT from the tenant V-Net, inbound to the management cluster's external ingress. This applies to assisted-service registration, container image pulls, and post-installation kubelet-to-kube-apiserver heartbeats. All dependencies (container images, RHCOS, OCP release payload) must be pullable from the tenant network via the same egress path. SecurityGroup egress rules must allow outbound `:443`. `AgentRegistrationTimeout` catches tenant-to-assisted-service egress failures (the agent cannot register if it cannot reach assisted-service). A future disconnected installation flow would pre-stage dependencies locally, removing the egress requirement.
+    > **Tenant-network reachability prerequisites.** After the port move, cluster installation runs entirely on the tenant network. The tenant V-Net and the management cluster are in separate VPCs with no direct network path — all communication between them traverses the external network: outbound via NATGateway/SNAT from the tenant V-Net, inbound to the management cluster's external ingress. This applies to assisted-service registration, container image pulls, and post-installation kubelet-to-kube-apiserver heartbeats. All dependencies (container images, RHCOS, OCP release payload) must be pullable from the tenant network via the same egress path. SecurityGroup egress rules must allow outbound `:443`. `AgentRegistrationTimeout` catches tenant-to-assisted-service egress failures (the agent cannot register if it cannot reach assisted-service).
 
 7. **CaaS template creates the HostedCluster + NodePool; BareMetalWorkerReconciler provisions workers.**
 
@@ -292,8 +299,8 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 
 ```protobuf
 message ClusterNetworkAttachment {
-  optional string subnet = 1;           // omitted -> tenant default Subnet
-  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
+  repeated SecurityGroupLocalReference security_groups = 2; // empty -> tenant default SecurityGroup
 }
 // Note: fabric_interface is system-populated ONCE on each node set definition
 // by the fulfillment-service at cluster creation (resolved from the node set's
@@ -325,8 +332,8 @@ type ClusterOrderSpec struct {
 }
 
 type ClusterNetworkAttachment struct {
-    SubnetRef         string   `json:"subnetRef,omitempty"` // resolved before provisioning
-    SecurityGroupRefs []string `json:"securityGroupRefs,omitempty"`
+    Subnet         *SubnetLocalReference           `json:"subnet,omitempty"` // resolved before provisioning
+    SecurityGroups []SecurityGroupLocalReference   `json:"securityGroups,omitempty"`
 }
 
 type ClusterOrderStatus struct {
@@ -380,7 +387,7 @@ again before creating any private BMaaS worker request.
   be IPv4, be in the effective tenant/project, and belong to one
   VirtualNetwork. Duplicated SecurityGroup references and cross-VirtualNetwork
   combinations are rejected.
-- The resolved attachment is stored once in `ClusterOrder.spec.networkAttachments[0]`.
+- The resolved attachment is stored once in `ClusterOrder.spec.networkAttachment`.
   The worker controller must not append a second tenant attachment while
   enriching worker requests.
 
@@ -485,7 +492,7 @@ changed here.
 - Remove: `osac.service.cluster_infra` call
 - Remove: `osac.service.external_access` call
 - Remove: agent selection logic (moved to operator)
-- Add: create HostedCluster + NodePools referencing pre-selected agents from ClusterOrder status
+- Add: create HostedCluster + NodePools; the worker reconciler binds Agents after on-demand BMaaS provisioning
 - Add: MetalLB VIP provisioning (create LoadBalancer Services, discover VIPs, write to ClusterOrder status)
 
 **osac.templates.ocp_4_17_small/delete.yaml:**
@@ -500,11 +507,11 @@ changed here.
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate `network_attachment` (singular), resolve fabric_interface per node set from BareMetalInstanceType, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
-| osac-operator BareMetalWorkerReconciler | Create on-demand BareMetalInstances via BMaaS private gRPC API with enriched `network_attachments` (subnet from ClusterOrder `networkAttachments[0]` + immutable `fabric_interface` from the node set, resolved once by fulfillment-service); correlate Agents to BMIs via MAC; delete BMIs on scale-down/cluster deletion. BMaaS owns the fabric port move and IP discovery as part of BMI provisioning (OSAC-2135) |
-| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, trigger AAP workflow, aggregate worker status |
+| osac-operator BareMetalWorkerReconciler | Create on-demand BareMetalInstances via BMaaS private gRPC API with enriched `network_attachments` (typed subnet/SecurityGroup references from ClusterOrder `networkAttachment` + immutable `fabric_interface` from the node set, resolved once by fulfillment-service); correlate Agents to BMIs via MAC; delete BMIs on scale-down/cluster deletion. BMaaS owns the fabric port move and IP discovery as part of BMI provisioning (OSAC-2135) |
+| osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, trigger AAP workflow, aggregate worker status; the AAP template does not receive pre-selected agents |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
-| AAP template (ocp_4_17_small) | Create HostedCluster+NodePools (with pre-selected agents; no agent selection logic), provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP |
+| AAP template (ocp_4_17_small) | Create HostedCluster+NodePools; the worker reconciler provisions and binds on-demand BMIs/Agents, while the template provisions MetalLB VIPs and writes VIPs to ClusterOrder status |
 | BMaaS (bare-metal-fulfillment-operator) | Owns full BMI provisioning lifecycle including inventory → OS provisioning → fabric port move (provisioning network → tenant) → reboot → DHCP lease query IP discovery; returns fabric port to provisioning network on BMI deletion |
 | configured network manager(s) | Move network attachments where supported, create/delete external-IP attachments (DNAT), and create/delete NATGateway only when the capability is advertised |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
@@ -553,12 +560,16 @@ No RBAC or tenancy changes. All new resources (Cluster with new fields, auto-pro
 ### Observability and Monitoring
 
 New structured log events:
-- ClusterOrder controller: `AgentSelectionCompleted` (info), `AgentSelectionFailed` (error), `NetworkAttachmentsConfigured` (info), `VIPsDiscovered` (info)
+- ClusterOrder controller: `WorkerProvisioningStarted` (info),
+  `AgentBindingCompleted` (info), `AgentBindingFailed` (error),
+  `NetworkAttachmentsConfigured` (info), `VIPsDiscovered` (info)
 - fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error), `VIPFeedbackProcessed` (info)
 
 New Kubernetes events on ClusterOrder:
-- `AgentsSelected`: agent selection succeeded
-- `AgentSelectionFailed`: agent selection failed (no suitable agents)
+- `AgentsBound`: an on-demand worker Agent was correlated to its BMI and bound
+  to the cluster NodePool
+- `AgentBindingFailed`: an Agent could not be correlated or bound to its
+  on-demand worker
 - `NetworkingConfigured`: network attachments (switch ports) configured
 - `NetworkingFailed`: network attachment configuration failed
 - `VIPsDiscovered`: API and ingress VIPs written to status
@@ -616,13 +627,17 @@ Instead of implementing VIP feedback loop, require tenants to manually create Ex
 
 ## Open Questions
 
-### ~~1. How does the operator select agents?~~ — Resolved
+### ~~1. How does the operator correlate and bind worker agents?~~ — Resolved
 
 Resolved: Per OSAC-2135, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API. Agents register automatically after BMI provisioning and are correlated to BMIs via MAC address. The static pre-boot agent pool is removed.
 
 ### ~~2. NMState NNCP configuration~~ — Resolved
 
-Resolved: DHCP handles host-side networking for CaaS agents. NMState NNCP configuration is no longer needed — agents receive their IP, gateway, and DNS from the fabric's DHCP server when they boot on the network segment. The template does not configure static networking.
+Resolved: DHCP handles host-side networking for CaaS agents. NMState NNCP
+configuration is no longer needed — BMaaS provisions the host on the
+provisioning network, moves the selected port to the tenant segment, reboots
+the host, and the host receives its tenant IP, gateway, and DNS from the
+fabric's DHCP server. The template does not configure static networking.
 
 ### ~~3. MetalLB IP pools~~ — Resolved
 
@@ -799,7 +814,7 @@ Consequences:
 | Immutability validation | OSAC-1503 | New |
 | DB migration for Cluster networking fields | OSAC-2079 | New |
 | Server validation | OSAC-1504 | New |
-| ClusterOrder CRD: networkAttachments | OSAC-1505 | New |
+| ClusterOrder CRD: singular networkAttachment | OSAC-1505 | New |
 | ClusterOrder CRD: api/ingress endpoint status | OSAC-2080 | New |
 | VIP discovery flow (feedback) | OSAC-1506 | New |
 | CaaS template: accept network_attachment + per-node config | OSAC-1507 | New |

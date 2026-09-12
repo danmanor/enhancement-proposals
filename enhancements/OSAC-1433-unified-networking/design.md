@@ -68,10 +68,9 @@ IPv6 and dual-stack networking are not supported.
 For user stories, goals, and non-goals, see the
 [Requirements Document (PRD)](prd.md).
 
-> **Current implementation boundary:** The current OSAC implementation supports
-> connected deployments only; air-gapped deployments are not currently
-> supported. The remainder of this document describes the desired-state
-> architecture.
+> **Current implementation boundary:** OSAC supports connected deployments only.
+> Air-gapped deployments are rejected before networking resources are provisioned.
+> The contracts below describe the current supported behavior.
 
 ## Supported Operations and Immutability
 
@@ -129,7 +128,7 @@ cardinality or placement constraints.
 |---|---|
 | IPv4 CIDR | String in canonical dotted-decimal CIDR notation, `a.b.c.d/prefix`, with prefix `0..32` and host bits zero. IPv6 and dual-stack values are rejected. A Subnet CIDR must be contained by its parent VirtualNetwork CIDR and Subnet CIDRs must not overlap within that VirtualNetwork. |
 | IPv4 address | String in dotted-decimal IPv4 notation without a CIDR suffix. Address fields are system/provider results, not alternate encodings of CIDRs. |
-| Resource reference | A reference to an existing resource in the scope defined below; arbitrary strings are invalid. Use the typed local/full reference forms defined by [OSAC-1330](</enhancements/OSAC-1330-type-safe-resource-references/design.md>) as they become available, while preserving the documented resource scope. |
+| Resource reference | A reference to an existing resource in the scope defined below; arbitrary strings are invalid. Use the typed local/full reference forms defined by [OSAC-1330](</enhancements/OSAC-1330-type-safe-resource-references/design.md>) for every reference-bearing network field, while preserving the documented resource scope. |
 | Enum | Only the values listed in the relevant table are accepted. Unknown, future, and unspecified values are rejected for user-set fields unless explicitly marked as a status value. |
 | Repeated field | Cardinality, uniqueness, and ordering are part of the field contract. Duplicate references are rejected; ordering is meaningful only where explicitly stated. |
 | Timestamp | If exposed in an API status or audit field, use `google.protobuf.Timestamp` / RFC 3339 semantics in UTC. Timestamps are controller/system fields and are not tenant network configuration. |
@@ -148,7 +147,7 @@ cardinality or placement constraints.
 | `Subnet.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
 | `Subnet.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR contained by the parent VirtualNetwork and non-overlapping with sibling Subnets in that VN. |
 | `SecurityGroup.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
-| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for tenant-created groups | Tenant-created SecurityGroups must contain at least one rule. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected when the effective attachment set is resolved. The system-created tenant fallback SecurityGroup may have an empty list because the deployment baseline policy supplies the default permit behavior. |
+| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for tenant-created groups | Tenant-created SecurityGroups must contain at least one rule. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected when the effective attachment set is resolved. The system-created tenant fallback SecurityGroup may have an empty list because the deployment baseline policy supplies the configured default action. |
 | `ExternalIPPool.spec.ip_family` | Enum, required | `IPV4` only. IPv6 and dual-stack values are rejected. |
 | `ExternalIPPool.spec.cidrs` | Repeated IPv4 CIDR strings, required, exactly one supported | The list must contain exactly one canonical IPv4 CIDR. Multi-CIDR pools are not part of the supported contract; create separate pools instead. |
 | `ExternalIP.spec.pool` | Provider/deployment-scoped ExternalIPPool reference, required | The pool must exist, be Ready, and have capacity. The allocated address is selected by the provider/fabric manager; tenants do not supply an arbitrary address. |
@@ -178,7 +177,7 @@ arbitrary strings:
 | `protocol` | Required enum: `tcp`, `udp`, `icmp`, or `any`. Protocol matching is case-sensitive; unknown values are rejected. |
 | `port` | Optional `int32`; required for `tcp` and `udp`, omitted for `icmp` and `any`; valid range is `1..65535`. Port ranges are not supported. |
 | `source_cidr` / `destination_cidr` | Exactly one direction-specific field is required. It must be a canonical IPv4 CIDR; `source_cidr` is used for ingress and `destination_cidr` for egress. |
-| Rule evaluation | The provider-owned deployment baseline is an always-present, least-specific `allow` policy and is not part of any tenant `SecurityGroup.spec.rules`. Attached tenant rules are stateful and the most-specific matching rule wins, ordered by CIDR prefix length, exact protocol over `any`, and exact port over an omitted port. Conflicting equal-specificity effective rules are rejected. |
+| Rule evaluation | The provider-owned deployment baseline is an always-present, least-specific policy with a configured `permit` or `deny` default action; it is not part of any tenant `SecurityGroup.spec.rules`. Attached tenant rules are stateful and the most-specific matching rule wins, ordered by CIDR prefix length, exact protocol over `any`, and exact port over an omitted port. Conflicting equal-specificity effective rules are rejected. |
 
 ### Workload network fields
 
@@ -187,7 +186,7 @@ arbitrary strings:
 | `ComputeInstance.compute_network_attachments` | Repeated `ComputeNetworkAttachment`, optional | Missing or empty uses both tenant defaults. A supplied list contains zero or one entry only; more than one entry is rejected. The entry may omit individual fields for field-level defaulting. |
 | `ComputeNetworkAttachment.subnet` | Local Subnet reference, optional at request and required after resolution | If omitted, resolve only the tenant default Subnet. If supplied, it must exist and be `Ready`. |
 | `ComputeNetworkAttachment.security_groups` | Repeated local SecurityGroup references, optional | Missing or empty resolves only the tenant default SecurityGroup. A non-empty list uses exactly the supplied groups; every group must be same-VN and `Ready`, with no duplicates. |
-| `ComputeNetworkAttachment.primary` | Optional boolean | With the supported single attachment, omission or `true` makes it primary; explicit `false` is rejected. Multi-interface primary selection is deferred. |
+| `ComputeNetworkAttachment.primary` | Optional boolean | With the supported single attachment, omission or `true` makes it primary; explicit `false` is rejected. Multi-interface primary selection is unsupported. |
 | `Cluster.network_attachment` | `ClusterNetworkAttachment`, optional | Missing or an empty message uses both tenant defaults. When present, exactly one resolved attachment applies to every node set; missing subnet and SecurityGroups are defaulted independently. |
 | `BaremetalInstance.network_attachments` | Repeated `BareMetalNetworkAttachment`, optional | Missing or empty uses both tenant defaults. A non-empty list must contain exactly one entry; its subnet and SecurityGroups are defaulted independently when omitted. |
 | `BareMetalNetworkAttachment.interface` | String reference/name, optional | If set, it must identify a valid non-lifecycle port. If omitted, BMaaS selects the first valid `fabric` port from the effective BareMetalInstanceType. |
@@ -344,14 +343,15 @@ provision an ambiguous address space.
   detection. Two normalized identical rules are duplicates even if their input
   text used different equivalent formatting;
 - reject conflicting equal-specificity rules after normalization. A
-  least-specific deployment baseline permit is not a tenant rule and is not
+  least-specific deployment baseline policy is not a tenant rule and is not
   considered a conflicting tenant rule;
 - reject a rule whose source/destination field does not match its direction,
   including ingress with only `destination_cidr` or egress with only
   `source_cidr`; and
 - keep the complete rule list immutable after create. The runtime evaluator
   must apply the provider baseline plus attached tenant groups without
-  allowing an attached tenant group to remove the baseline permit.
+  allowing an attached tenant group to change the provider-owned baseline
+  policy.
 
 **ExternalIPPool.** The provider-scoped pool validation must:
 
@@ -811,10 +811,9 @@ ExternalIPAttachment (tenant-managed)
 ### ExternalIPPool
 
 "External" in ExternalIPPool/ExternalIP means **external to the
-VirtualNetwork** — not necessarily internet-routable. In air-gapped
-environments, the provider creates pools with data-center-routable IPs. In
-internet-connected environments, the pools contain internet-routable IPs.
-The API and flow are identical regardless of the deployment topology.
+VirtualNetwork**. In the supported connected deployment boundary, the
+provider supplies the routable addresses and the configured manager allocates
+them. Air-gapped deployment behavior is outside the supported contract.
 
 ExternalIPPools are provider-managed and deployment-scoped. The configured
 manager handles ExternalIP allocation — one pool serves all resource types.
@@ -882,15 +881,16 @@ SecurityGroup behavior is uniform across VMaaS, CaaS, and BMaaS and is
 enforced by the selected network backend.
 
 The deployment has one provider-owned baseline ACL policy that is always
-present and permits traffic when no more-specific tenant rule matches. This
-baseline is not a tenant `SecurityGroup`, is not stored in
-`SecurityGroup.spec.rules`, and remains active even when a tenant explicitly
-attaches one or more SecurityGroups.
+present and applies its configured `permit` or `deny` action when no
+more-specific tenant rule matches. This baseline is not a tenant
+`SecurityGroup`, is not stored in `SecurityGroup.spec.rules`, and remains
+active even when a tenant explicitly attaches one or more SecurityGroups.
 
 The tenant default SecurityGroup is a tenant-scoped fallback resource. It is
 attached only when an attachment omits its SecurityGroups; it is not the
 deployment baseline. The system-created fallback group may have an empty
-rule list because the deployment baseline supplies the default permit. A
+rule list because the deployment baseline supplies the configured default
+action. A
 tenant-created SecurityGroup must contain at least one explicit rule.
 
 Tenant rules have an explicit `allow` or `deny` action. When the baseline and
@@ -951,8 +951,8 @@ osac create cluster --template ocp_4_17_small \
   --node-set workers=large,size=3 --name my-cluster
 ```
 
-For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
-are architecturally possible but deferred. The fulfillment-service resolves
+For the current supported release, **CaaS supports BM node sets only**.
+VM-based cluster node sets are not supported. The fulfillment-service resolves
 the interface from the BareMetalInstanceType (`fabric_interface` — first port
 with role `fabric`). The BareMetalWorkerReconciler passes that resolved
 interface to BMaaS, which owns the network attachment and switch-port
@@ -1080,10 +1080,13 @@ osac get cluster my-cluster -o yaml
 # ingress_endpoint: 10.0.1.50
 ```
 
-ExternalIPAttachments can be created before or after the cluster. If
-created before (Pending state), the controller activates them once the
-cluster's endpoint VIPs are available. If created after, the DNAT rule
-is configured immediately.
+A caller-created ExternalIPAttachment may be created only after its
+ExternalIP is Allocated and its target is Ready with the required endpoint.
+The sole forward-reference exception is the internal auto-provisioning
+transaction described below: it creates the Pending ExternalIP and Pending
+attachment atomically with the parent workload. The asynchronous controller
+then waits for both dependencies before programming DNAT and marking the
+attachment Ready.
 
 **Auto-provisioning lifecycle (auto_external_ip_attachment):**
 
@@ -1167,7 +1170,7 @@ IP discovery mechanism per service type:
 | Service | Discovery source | Who writes status | Status field |
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
-| CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
+| CaaS | Cluster API/Ingress VIPs from ClusterOrder status; worker host IPs are not an ExternalIP target | Template writes VIPs to ClusterOrder status; the feedback controller syncs service endpoints. Agent watching is limited to MAC correlation and worker binding | `Cluster.status.api_endpoint` / `ingress_endpoint`; per-agent IP is not used for the shared ExternalIP flow |
 | BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
 The fabric manager's `move_network_attachment` role is switch-side
@@ -1177,7 +1180,7 @@ detach are the **same primitive**: on provision the port moves from a
 **provisioning network** to the tenant subnet's network segment; on deletion it
 moves back to the provisioning network. The role operates purely against the
 fabric (no Subnet CR lookup) and is keyed on plain segment names, so the caller
-resolves a `subnetRef` → tenant segment name and supplies the provisioning
+resolves the typed Subnet reference to a tenant segment name and supplies the provisioning
 network name from configuration. Detach is a no-op if the port is not on the
 named segment, so re-runs and unexpected states are safe.
 
@@ -1190,9 +1193,13 @@ move differs per service:
   network → move to tenant network → reboot so the OS re-DHCPs on the tenant
   network). This achieves isolation-until-ready: the tenant cannot reach the
   server during imaging/first-boot.
-- **CaaS:** Move happens **BEFORE provisioning** (agents are pre-booted on the
-  provisioning network, so the port is moved to the tenant network before cluster
-  creation begins; no in-deploy switch needed).
+- **CaaS:** BMaaS creates each worker on demand and provisions it on the
+  provisioning network. After OS provisioning, BMaaS moves the selected port
+  to the tenant network, reboots the host so it requests DHCP there, and
+  discovers the tenant IP through the fabric DHCP lease API. CaaS watches
+  Agent objects only to correlate the booted worker to its BMI and bind it to
+  the NodePool; it does not use Agent status as the network-IP discovery
+  source.
 
 Once on the tenant network, the host receives an IP from the fabric's DHCP server
 automatically. A single AAP job template serves both directions, deriving onboard
@@ -1302,8 +1309,9 @@ message SecurityGroupRule {
 
 The default tenant fallback SecurityGroup is system-created and may have an
 empty `rules` list. Tenant-created SecurityGroups require at least one rule.
-The deployment-wide baseline permit policy is provider-owned and is not
-serialized as a `SecurityGroupRule`.
+The deployment-wide baseline policy is provider-owned and is not
+serialized as a `SecurityGroupRule`; its configured default action is not
+serialized in the tenant SecurityGroup either.
 
 #### BareMetalInstanceType and Interface Resolution
 
@@ -1325,8 +1333,8 @@ message BareMetalNetworkPortSpec {
 Every BareMetalInstanceType used for networking must expose at least one
 `fabric` port. Ports are ordered; when multiple ports share a role, the first
 one is the default for that role. `host_label_selector` is used for inventory
-matching; no separate HostType interface catalog is used for CaaS or BMaaS
-network attachment resolution.
+matching; CaaS and BMaaS resolve network attachments directly from
+BareMetalInstanceType, with no separate interface catalog.
 
 | Role | Meaning |
 |------|---------|
@@ -1355,16 +1363,20 @@ tenant network.
 
 Each resource type has its own network attachment message. The core fields
 (`subnet`, `security_groups`) are shared, but each type adds
-resource-specific fields. The attachment list or singular attachment and
-every field in every entry are immutable after resource creation, including
-SecurityGroup membership.
+resource-specific fields. Resource references use the typed local-reference
+messages defined by [OSAC-1330](/enhancements/OSAC-1330-type-safe-resource-references/design.md):
+`SubnetLocalReference` and `SecurityGroupLocalReference`. In JSON, a local
+reference is an object such as `{ "name": "app-subnet" }` or
+`{ "id": "subnet-123" }`; a raw identifier string is not a valid wire value.
+The attachment list or singular attachment and every field in every entry are
+immutable after resource creation, including SecurityGroup membership.
 
 **ComputeNetworkAttachment** (for ComputeInstance):
 
 ```protobuf
 message ComputeNetworkAttachment {
-  optional string subnet = 1;           // omitted -> tenant default Subnet
-  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
+  repeated SecurityGroupLocalReference security_groups = 2; // empty -> tenant default SecurityGroup
   optional bool primary = 3;            // one-entry attachment is implicitly primary
 }
 ```
@@ -1380,8 +1392,8 @@ for the service-specific validation.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  optional string subnet = 1;           // omitted -> tenant default Subnet
-  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
+  repeated SecurityGroupLocalReference security_groups = 2; // empty -> tenant default SecurityGroup
   string interface = 3;                 // omitted -> first fabric interface
   optional bool primary = 4;            // the sole attachment is implicitly primary
 }
@@ -1397,8 +1409,8 @@ catalog does not imply support for multiple tenant network attachments.
 
 ```protobuf
 message ClusterNetworkAttachment {
-  optional string subnet = 1;           // omitted -> tenant default Subnet
-  repeated string security_groups = 2;  // empty -> tenant default SecurityGroup
+  SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
+  repeated SecurityGroupLocalReference security_groups = 2; // empty -> tenant default SecurityGroup
 }
 ```
 
@@ -1484,7 +1496,7 @@ visibility and ExternalIPAttachment DNAT target resolution.
 
 ```protobuf
 message ComputeNetworkAttachmentStatus {
-  string subnet_ref = 1;               // Subnet ID (echoed from spec)
+  SubnetLocalReference subnet = 1;     // Controller-owned resolved reference
   string ip_address = 2;               // Discovered from KubeVirt VMI network status
   bool primary = 3;                     // Echoed from spec
 }
@@ -1506,7 +1518,7 @@ reference, and fires Signal RPC to fulfillment-service.
 ```protobuf
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;                 // Physical interface name (echoed from spec)
-  string subnet_ref = 2;               // Subnet ID (echoed from spec)
+  SubnetLocalReference subnet = 2;      // Controller-owned resolved reference
   string ip_address = 3;               // Discovered via query_dhcp_lease role after provisioning (matches port MAC to DHCP lease)
   bool primary = 4;                     // Echoed from spec
 }
@@ -1606,7 +1618,7 @@ of their own deletion state), the controller requeues with a short interval
 | Controller | Gate deprovision on |
 |---|---|
 | VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
-| Subnet | No ComputeInstance CRs with `spec.computeNetworkAttachments[].subnetRef`, no ClusterOrder CRs with `spec.networkAttachment.subnetRef`, and no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see the per-service designs) |
+| Subnet | No ComputeInstance CRs with `spec.computeNetworkAttachments[].subnet`, no ClusterOrder CRs with `spec.networkAttachment.subnet`, and no BareMetalInstance CRs with `spec.networkAttachments[].subnet` referencing this Subnet (see the per-service designs) |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
@@ -1650,7 +1662,7 @@ network reference continues to protect the network object, while
 #### NATGateway Scope
 
 One NATGateway per VirtualNetwork. All subnets in the VN use the gateway.
-Per-subnet NAT association is a future enhancement.
+Per-subnet NAT association is unsupported.
 
 #### Attachment cardinality and primary behavior
 
@@ -1745,8 +1757,8 @@ VirtualNetwork at creation time.
 |------|--------|------------|
 | Fabric manager complexity | One Ansible role handles all networking concerns | Clear interface contract per operation; tested independently per manager |
 | K8s-to-fabric bridge failure | VMs unreachable from fabric | k8sManager validates bridge connectivity at subnet creation; subnet stays Pending until bridge is confirmed |
-| CaaS prerequisite ordering | ExternalIPs may be needed before cluster | Pending state for attachments; template validates its own prerequisites |
-| ExternalIPAttachment target validation | Target may not exist yet (CaaS) or may be deleted | Pending state for forward references; attachment tracks target lifecycle |
+| CaaS prerequisite ordering | Internal auto-provisioning reserves ExternalIP capacity before the cluster endpoint exists | The internal path creates Pending records atomically; the controller waits for allocation and endpoint readiness before DNAT |
+| ExternalIPAttachment target validation | A caller-created attachment may reference a target that is not Ready or may be deleted | Direct create rejects non-Ready references; only the internal auto-provisioning path may create a Pending forward reference, and deletion is handled by the parent cleanup flow |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
 
 ### Drawbacks
@@ -1797,7 +1809,7 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    resource (either ExternalIPAttachment or NATGateway, not both).
 
 4. **One NATGateway per VN.** Multiple gateways are ambiguous. Per-subnet
-   NAT is a future enhancement.
+   NAT association is unsupported.
 
 5. **ExternalIPPool shared.** The configured network manager handles ExternalIP
    allocation for all resource types. One pool per deployment.
@@ -1809,9 +1821,9 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 7. **Internal IP pools.** Managed by managers with sensible defaults. Not
    part of the tenant API or NetworkClass spec.
 
-8. **ExternalIP naming.** "External" means external to the VirtualNetwork —
-   not necessarily internet-routable. Applies equally to air-gapped and
-   internet-connected deployments.
+8. **ExternalIP naming.** "External" means external to the VirtualNetwork.
+   The supported deployment boundary is connected only; air-gapped behavior is
+   rejected and is not part of this design.
 
 9. **Attachment immutability.** Attachment cardinality, Subnet, interface,
    primary designation, SecurityGroup membership, and every other

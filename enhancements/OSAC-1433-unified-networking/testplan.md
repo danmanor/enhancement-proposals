@@ -10,8 +10,9 @@
 - **Operation contract:** create, read/list, and delete only for network-owned
   fields. Network-owned update, patch, and replace operations are unsupported.
 - **Excluded:** East-west networking is not implemented and is governed by its
-  own design. Future multi-interface, IPv6, dual-stack, multi-hub,
-  air-gapped, and VN-peering behavior is not a graduation target.
+  own design. Unsupported in the current boundary: multi-interface, IPv6,
+  dual-stack, multi-hub, air-gapped, and VN-peering behavior. These are
+  negative-test cases, not supported scenarios.
 
 ## Execution strategy
 
@@ -183,8 +184,8 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - duplicate normalized rule;
 - conflicting equal-specificity rule;
 - tenant-created empty rule list;
-- system-created fallback SecurityGroup with an empty list and provider
-  baseline permit policy.
+- system-created fallback SecurityGroup with an empty list and the provider
+  baseline policy configured with either `permit` or `deny`.
 
 ##### Expected results
 
@@ -231,6 +232,33 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - Direct tenant creates cannot persist a Pending dependency graph.
 - All resolved references are Ready, same-scope, same-VirtualNetwork, and
   unique before persistence.
+
+#### TC-R4-03: Typed local-reference wire format is enforced
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated |
+
+##### Cases
+
+- `subnet` supplied as `{ "name": "subnet-a" }`;
+- `subnet` supplied as `{ "id": "subnet-123" }`;
+- `security_groups` supplied as `[{ "name": "web" }]` or
+  `[{ "id": "sg-123" }]`;
+- both `id` and `name` supplied and resolving to the same resource;
+- raw string values such as `"subnet-a"` or `["sg-123"]`;
+- `id` and `name` supplied but resolving to different resources;
+- typed Subnet/SecurityGroup references from a different tenant/project.
+
+##### Expected results
+
+- Valid local-reference objects resolve and are canonicalized with both `id`
+  and `name` before persistence.
+- Raw strings, mismatched `id`/`name`, wrong reference types, and
+  cross-scope references are rejected with a field-specific error.
+- The same nested representation is used by Compute, Cluster, BMaaS, Catalog
+  materialization, private ClusterOrder handoff, and direct CR validation.
+- No invalid parent, child, worker request, or backend operation is created.
 
 #### TC-R4-02: Service cardinality restrictions are enforced centrally
 
