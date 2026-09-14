@@ -74,11 +74,17 @@ Pure consumer of the existing private `ExternalIPPools` service
 #### NAT Gateway Field in Virtual Network
 
 One NAT Gateway per VirtualNetwork (`design.md`, Resolved Question 4).
+The absence of an attached gateway does not by itself mean that attachment is
+available. The UI must first use the deployment's resolved networking
+capability: `natGateway: true` permits the Attach action; `natGateway: false`
+(including K8s-only OVN) hides or disables Attach and explains that NATGateway
+is unsupported. A stale or unavailable capability must not enable the action;
+the server's capability precondition remains authoritative.
 
 - **VirtualNetworksPage table:** a **NAT Gateway** column showing the attached NAT
   Gateway's external IP address and status (`NatGatewayStatusLabel`) when present, or an
   empty-state dash when not. Row action depends on state:
-  - **No NAT Gateway:** **Attach NAT Gateway** — opens a modal to select an available
+  - **No NAT Gateway and `natGateway: true`:** **Attach NAT Gateway** — opens a modal to select an available
     External IP
     (`useExternalIPs({ filter: 'this.status.state == EXTERNAL_IP_STATE_ALLOCATED && this.status.attached == false' })`
     — only unattached allocated IPs, per the ownership rule in `design.md` that an
@@ -86,15 +92,20 @@ One NAT Gateway per VirtualNetwork (`design.md`, Resolved Question 4).
     the NAT Gateway for that row's VirtualNetwork via `useCreateNatGateway()`.
   - **NAT Gateway attached:** **Detach** — confirmation modal, calls
     `useDeleteNatGateway()`.
+  - **No NAT Gateway and `natGateway: false` or unavailable:** no Attach action;
+    show the unsupported/unavailable capability state.
 - **VirtualNetworkDetailPage:** a **NAT Gateway** field showing the same external IP +
-  status, with the same state-dependent action next to it: **Attach NAT Gateway** when
-  empty (same attach modal as the list page's row action, scoped to this VirtualNetwork),
-  or **Detach** when a NAT Gateway exists.
+  status, with the same capability- and state-dependent action next to it:
+  **Attach NAT Gateway** only when empty and `natGateway: true`, no Attach
+  action when the capability is false or unavailable, or **Detach** when a NAT
+  Gateway exists.
 
 **Fetching:** the list page fetches NAT Gateways once (`NatGateways.List`, unfiltered) and
-indexes the results by `spec.virtual_network.id` for row rendering, avoiding an N+1 request
-per row. The detail page uses `useNatGatewayForVirtualNetwork(vnId)` (`NatGateways.List`,
-filtered `this.spec.virtual_network.id == "<vnId>"`, first result).
+indexes the results by `spec.virtual_network.name` for row rendering, avoiding an N+1 request
+per row. The detail page uses `useNatGatewayForVirtualNetwork(vnName)` (`NatGateways.List`,
+filtered `this.spec.virtual_network.name == "<vnName>"`, first result). This follows the
+canonical local-reference and CEL examples; the resolved `id` may still be displayed but is
+not the UI's reference filter key.
 
 `NATGatewaySpec.external_ip` is immutable server-side, and `NatGateways.Update` only covers
 metadata (labels/annotations) — changing a VirtualNetwork's NAT Gateway to a different
@@ -113,6 +124,7 @@ in-place edit.
 
 | Scenario | UI behavior |
 |---|---|
+| NAT Gateway unsupported or capability unavailable | Attach is hidden/disabled before submission; explain that the deployment does not advertise NATGateway support. |
 | NAT Gateway attach: selected ExternalIP already consumed | Server rejection shown as a form-level error in the attach modal. |
 | NAT Gateway detach fails | Server error shown in the confirmation modal; row's Detach stays available for retry. |
 | External IP create: pool exhausted | Server's `RESOURCE_EXHAUSTED`/`FAILED_PRECONDITION` shown as a form-level error. |
@@ -121,6 +133,19 @@ in-place edit.
 | Pool update: concurrent write | Server's `FAILED_PRECONDITION`/`ABORTED` shown; admin re-fetches and retries. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
+
+## Required UI Tests
+
+- Render the Attach action only when the resolved deployment capability contains
+  `natGateway: true` and the VirtualNetwork has no NATGateway.
+- Render no Attach action, with an explanatory unsupported state, for K8s-only
+  OVN (`natGateway: false`) and while the capability is unavailable.
+- Verify that a capability-precondition response from a stale Attach attempt is
+  shown as a form-level error and does not create a NATGateway.
+- Verify that NAT Gateway list indexing and detail filtering use the canonical
+  `spec.virtual_network.name` local-reference path.
+- Verify that changing the NAT Gateway ExternalIP is represented as delete plus
+  create, never as an Update of the immutable network binding.
 
 ## Implementation details
 
