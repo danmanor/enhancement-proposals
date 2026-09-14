@@ -624,8 +624,11 @@ IPv4 CIDR parsing, `--cidrs` exactly-one behavior, enum values, repeated
 unknown flags or malformed key/value pairs. For the provider-only
 `osac admin create networkclass` command, verify that at least one of
 `--fabric-manager` and `--k8s-manager` is required, both default CIDRs are
-required and canonical/contained, and each of fabric-only, k8s-only, and
-combined-manager configurations resolves the documented implementation
+required and canonical/contained, using the exact
+`--virtual-network-cidr` and `--ipv4-subnet-cidr` flags, and `--name` is
+required. Test omission of each required NetworkClass flag, malformed values,
+and a subnet outside the VirtualNetwork. Verify each of fabric-only, k8s-only,
+and combined-manager configurations resolves the documented implementation
 strategy. Verify that neither manager is rejected, `--metallb-vip-prefix-length`
 is required only for the CaaS/MetalLB capability path, and
 `implementation_strategy` is derived rather than caller-set. Verify tenant
@@ -672,7 +675,8 @@ private handlers. Verify field paths and `InvalidArgument`,
 `FailedPrecondition`, `PermissionDenied`, or visibility-safe `NotFound`
 behavior matches direct API requests. Verify no rejected request persists a
 resource or invokes a manager. Verify the NetworkClass provider command is
-provider-scoped and the CLI and direct API enforce the same conditional
+provider-scoped, requires `--name`, `--virtual-network-cidr`, and
+`--ipv4-subnet-cidr`, and the CLI and direct API enforce the same conditional
 MetalLB/default validation. Verify each shared command's field-specific
 validation, readiness, scope, and dependency error without persistence.
 
@@ -697,8 +701,9 @@ other supported IPv4 resource workflows remain available.
 
 **Unit:** Verify one optional `--network-attachment` maps to VM/BM repeated
 `network_attachments` or Cluster singular `network_attachment`; repeated
-attachment options, unsupported keys, `interface` on VM/Cluster, and
-`primary` on any workload are rejected by the CLI (the API-compatibility
+attachment options, the deprecated plural `--network-attachments` option,
+unsupported keys, `interface` on VM/Cluster, and `primary` on any workload
+are rejected by the CLI (the API-compatibility
 `primary` field is implicit and the CLI does not emit it). Verify repeated
 `security-groups=<name>` keys remain one attachment with multiple groups.
 
@@ -710,8 +715,9 @@ VM/BM use their resource-specific message types and Cluster uses
 **E2E:** Create one VM, one BM, and one Cluster using explicit and defaulted
 CLI attachments, inspect the resolved fields, and verify delete succeeds.
 Attempt a second attachment, an invalid interface, `primary=false`, IPv6,
-multi-CIDR, and a non-Ready reference; verify the expected error and no
-partial resource or backend side effect.
+multi-CIDR, the deprecated plural `--network-attachments` option, and a
+non-Ready reference; verify the expected error and no partial resource or
+backend side effect.
 
 #### TC-R10-03: CLI operation and external-access restrictions
 

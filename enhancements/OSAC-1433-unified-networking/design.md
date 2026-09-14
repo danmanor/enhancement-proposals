@@ -950,6 +950,7 @@ canonical create shape is:
 
 ```bash
 osac admin create networkclass \
+  --name <networkclass-name> \
   --fabric-manager <name> \
   --k8s-manager <name> \
   --virtual-network-cidr <ipv4-cidr> \
@@ -957,8 +958,10 @@ osac admin create networkclass \
   [--metallb-vip-prefix-length <prefix>]
 ```
 
-`--fabric-manager` and `--k8s-manager` are independently optional, but at
-least one must be present. The two default CIDRs are required and canonical;
+`--name` is required and identifies the provider-owned NetworkClass in the
+deployment. `--fabric-manager` and `--k8s-manager` are independently
+optional, but at least one must be present. The two default CIDRs are required
+and canonical;
 the subnet CIDR must be contained by the VirtualNetwork CIDR. The MetalLB
 prefix is supplied only when CaaS VIP allocation is supported and must satisfy
 the shared prefix and containment validation. `implementation_strategy` is

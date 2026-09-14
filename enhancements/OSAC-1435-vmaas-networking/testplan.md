@@ -329,8 +329,9 @@
 
 **Unit:** Verify one optional `--network-attachment` maps to repeated
 `spec.network_attachments` containing `ComputeNetworkAttachment`. Verify
-repeated attachment options, `interface=...`, explicit `primary=false`,
-unknown keys, invalid CIDRs, and malformed typed references are rejected.
+repeated attachment options, the deprecated plural `--network-attachments`
+option, `interface=...`, explicit `primary=false`, unknown keys, invalid
+CIDRs, and malformed typed references are rejected.
 Verify omitted/partial Subnet and SecurityGroup keys preserve the shared
 defaulting matrix.
 
@@ -346,8 +347,8 @@ not consume pool capacity. Verify the switch cannot be updated.
 defaulting, and with no attachment, both with and without
 `--external-ip-attachment`. Inspect the resolved plural field, create-time
 switch, automatic ExternalIP state, and status. Attempt a second attachment,
-an update/patch, and an unsupported multi-NIC value; verify rejection and no
-side effect.
+the deprecated plural `--network-attachments` option, an update/patch, and an
+unsupported multi-NIC value; verify rejection and no side effect.
 
 ## Graduation gate
 

@@ -392,8 +392,9 @@
 
 **Unit:** Verify one optional `--network-attachment` maps to singular
 `spec.network_attachment` containing `ClusterNetworkAttachment`. Verify
-repeated options, `interface=...`, `primary=...`, per-node-set values, unknown
-keys, invalid CIDRs, and malformed references are rejected.
+repeated options, the deprecated plural `--network-attachments` option,
+`interface=...`, `primary=...`, per-node-set values, unknown keys, invalid
+CIDRs, and malformed references are rejected.
 
 **Integration:** Verify omitted, partial, and complete CLI attachments use the
 shared defaulting/readiness rules and reach the private BMaaS handoff with
@@ -407,9 +408,10 @@ and consumes no pool capacity. Verify the switch is immutable.
 one shared Subnet and resolved per-node-set interfaces, with the external
 access flag both present and omitted, then delete it. Verify the present form
 creates API and ingress external access while the omitted form creates none.
-Attempt multi-attachment, tenant-selected interface, primary, network-field
-update, and invalid target/reference requests; verify no partial Cluster,
-worker, VIP, IP, or port-move state.
+Attempt multi-attachment, the deprecated plural `--network-attachments` option,
+tenant-selected interface, primary, network-field update, and invalid
+target/reference requests; verify no partial Cluster, worker, VIP, IP, or
+port-move state.
 
 ## Graduation gate
 

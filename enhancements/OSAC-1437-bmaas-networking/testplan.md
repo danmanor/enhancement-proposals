@@ -381,7 +381,8 @@
 `spec.network_attachments` containing `BareMetalNetworkAttachment`. Verify
 the compound `interface=<port-name>` key, repeated SecurityGroup keys,
 omitted interface selection, invalid/lifecycle interfaces, repeated
-attachments, and explicit `primary=false` behavior.
+attachments, the deprecated plural `--network-attachments` option, and
+explicit `primary=false` behavior.
 
 **Integration:** Verify CLI requests use typed local references and the same
 readiness, same-VirtualNetwork, capability, and rollback rules as direct API
@@ -394,8 +395,9 @@ switch is immutable and there is no separate `--interface` syntax.
 with partial networking, and with no attachment, with the external-access flag
 both present and omitted. Verify the resolved list, create-time switch, port
 move, reboot, DHCP discovery, automatic ExternalIP behavior, and cleanup.
-Attempt a second attachment, an invalid interface, update/patch, IPv6, and
-malformed references; verify no partial BM, port move, or allocation remains.
+Attempt a second attachment, the deprecated plural `--network-attachments`
+option, an invalid interface, update/patch, IPv6, and malformed references;
+verify no partial BM, port move, or allocation remains.
 
 ## Graduation gate
 
