@@ -72,7 +72,7 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 | R1 NetworkClass defaults | 2 | Yes | Yes | Rejection path |
 | R2 Tenant onboarding | 3 | Yes | Yes | Yes |
 | R3 Readiness/recovery | 2 | Yes | Yes | Yes |
-| R4 Workload default resolution and immutability | 2 | Yes | Yes | Yes |
+| R4 Workload default resolution and immutability | 3 | Yes | Yes | Yes |
 | R5 Automatic ExternalIP lifecycle | 2 | Yes | Yes | Yes |
 | R6 Unsupported behavior | 1 | Yes | Yes | Rejection paths |
 | R7 CLI defaulting and automatic external access | 1 | Yes | Yes | Yes |
