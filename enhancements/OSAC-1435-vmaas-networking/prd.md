@@ -61,7 +61,7 @@ creation flows while VMs require explicit networking details on every create.
 
 #### Single-Interface VMs
 
-- **FR-1:** The `compute_network_attachments` list of `ComputeNetworkAttachment` values accepts zero or one entry. A request with more than one entry is rejected. [User]
+- **FR-1:** The `network_attachments` list of `ComputeNetworkAttachment` values accepts zero or one entry. A request with more than one entry is rejected. [User]
 - **FR-2:** When the list contains one attachment, omission or `primary: true` makes it primary; explicit `primary: false` is rejected. Multi-interface primary selection is unsupported. [User]
 
 #### Optional Network Configuration with Defaults
@@ -95,7 +95,7 @@ creation flows while VMs require explicit networking details on every create.
 
 #### API Shape Change
 
-- **FR-7:** Before release, the VM networking field changes from the shared `NetworkAttachment` message to the resource-specific `ComputeNetworkAttachment` message. Only `compute_network_attachments` is accepted; no old/new dual-field compatibility or conversion period is provided because there are no users or persisted resources yet. [User]
+- **FR-7:** Before release, the VM networking field changes from the shared `NetworkAttachment` message to the resource-specific `ComputeNetworkAttachment` message. Only `network_attachments` is accepted; no old/new dual-field compatibility or conversion period is provided because there are no users or persisted resources yet. [User]
 
 - **FR-8:** The complete resolved network attachment list on a ComputeInstance,
   including every Subnet, SecurityGroup, and `primary` value, is immutable
@@ -126,7 +126,7 @@ creation flows while VMs require explicit networking details on every create.
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a `osac.openshift.io/auto-created: "true"` label
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
-- [ ] The VM API accepts only the resource-specific `compute_network_attachments` field and rejects the replaced shared attachment format
+- [ ] The VM API accepts only the resource-specific `network_attachments` field and rejects the replaced shared attachment format
 - [ ] Creating a VM with `primary: false` on its sole attachment returns a single-interface validation error
 - [ ] Updating or patching a VM's network attachment list or any attachment field is rejected; changing it requires delete and recreate under the [unified networking operation contract](/enhancements/OSAC-1433-unified-networking/prd.md#network-operation-contract)
 

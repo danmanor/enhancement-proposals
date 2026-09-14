@@ -399,8 +399,8 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 
 - [ ] Network resources expose create, read/list, and delete operations only; user/API update, patch, and replace requests for network-owned `spec` fields are rejected or not exposed
 - [ ] All network-owned `spec` fields on NetworkClass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway are immutable after creation
-- [ ] `ComputeInstance.compute_network_attachments` is immutable as a complete list, including every attachment field
-- [ ] `ComputeInstance.compute_network_attachments` retains a list-shaped API but accepts zero or one entry only; requests with more than one entry are rejected
+- [ ] `ComputeInstance.network_attachments` is immutable as a complete list, including every attachment field
+- [ ] `ComputeInstance.network_attachments` retains a list-shaped API but accepts zero or one entry only; requests with more than one entry are rejected
 - [ ] `Cluster.network_attachment` and `BaremetalInstance.network_attachments` are immutable, including every attachment field
 - [ ] `auto_external_ip_attachment` is immutable after workload creation; changing it requires delete and recreate
 - [ ] Every network-owned field documents its wire type, format, presence/default behavior, allowed values, reference scope, and cross-field validation
@@ -437,7 +437,7 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 
 ### Resource-Specific (VMaaS)
 
-- [ ] `ComputeInstance.compute_network_attachments` remains a repeated/list field but accepts zero or one entry only
+- [ ] `ComputeInstance.network_attachments` remains a repeated/list field but accepts zero or one entry only
 - [ ] A single VM attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one entry are rejected
 - [ ] Multi-interface VM requests are unsupported and rejected by the current contract
 

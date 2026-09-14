@@ -103,7 +103,7 @@ its own design, which may support update and resize operations.
 | `ExternalIP` | Create, read, delete | Pool reference, address/allocation identity, and all other network `spec` fields are fixed after creation. |
 | `ExternalIPAttachment` | Create, read, delete | ExternalIP, target, endpoint, and all other binding `spec` fields are fixed after creation; retargeting requires delete and create. |
 | `NATGateway` | Create, read, delete | VirtualNetwork, ExternalIP, and all other gateway `spec` fields are fixed after creation; changing the ExternalIP requires delete and create. |
-| `ComputeInstance.compute_network_attachments` | Set on parent create, read with the parent, delete with the parent | The list-shaped field accepts zero or one entry only. The complete list and every entry field, including Subnet, SecurityGroups, and `primary`, are fixed after parent creation. |
+| `ComputeInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The list-shaped field accepts zero or one entry only. The complete list and every entry field, including Subnet, SecurityGroups, and `primary`, are fixed after parent creation. |
 | `Cluster.network_attachment` | Set on parent create, read with the parent, delete with the parent | The complete attachment and every entry field, including Subnet and SecurityGroups, are fixed after parent creation. |
 | `BaremetalInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The complete list and every entry field, including Subnet, SecurityGroups, interface, and primary designation, are fixed after parent creation; at most one entry is supported. |
 | `auto_external_ip_attachment` on ComputeInstance, Cluster, and BaremetalInstance | Set on parent create, read with the parent, delete with the parent | This network-owned create-time switch is fixed after parent creation; changing automatic external access requires delete and recreate. |
@@ -146,13 +146,14 @@ wire values; the field names below are the canonical API names:
 
 | Resource | API field | Value type | Supported shape |
 |---|---|---|---|
-| `ComputeInstance` | `spec.compute_network_attachments` | repeated `ComputeNetworkAttachment` | zero or one entry |
+| `ComputeInstance` | `spec.network_attachments` | repeated `ComputeNetworkAttachment` | zero or one entry |
 | `Cluster` | `spec.network_attachment` | `ClusterNetworkAttachment` | omitted or one structured message |
 | `BaremetalInstance` | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` | zero or one entry |
 
 The generic-looking `network_attachment` and `network_attachments` names are
-intentional API field names retained for the Cluster and BaremetalInstance
-contracts. `cluster_network_attachment` and
+intentional API field names shared by the workload contracts. The plural field
+is used by both ComputeInstance and BaremetalInstance, with a different
+resource-specific element type in each contract. `cluster_network_attachment` and
 `bare_metal_network_attachments` are not alternate field names and must not be
 introduced as additional API fields. Internal CRDs may use their established
 camelCase mappings (`networkAttachment` and `networkAttachments`), but their
@@ -215,7 +216,7 @@ arbitrary strings:
 
 | Field | Wire type / presence | Allowed values and validation |
 |---|---|---|
-| `ComputeInstance.compute_network_attachments` | Repeated `ComputeNetworkAttachment`, optional | Missing or empty uses both tenant defaults. A supplied list contains zero or one entry only; more than one entry is rejected. The entry may omit individual fields for field-level defaulting. |
+| `ComputeInstance.network_attachments` | Repeated `ComputeNetworkAttachment`, optional | Missing or empty uses both tenant defaults. A supplied list contains zero or one entry only; more than one entry is rejected. The entry may omit individual fields for field-level defaulting. |
 | `ComputeNetworkAttachment.subnet` | Local Subnet reference, optional at request and required after resolution | If omitted, resolve only the tenant default Subnet. If supplied, it must exist and be `Ready`. |
 | `ComputeNetworkAttachment.security_groups` | Repeated local SecurityGroup references, optional | Missing or empty resolves only the tenant default SecurityGroup. A non-empty list uses exactly the supplied groups; every group must be same-VN and `Ready`, with no duplicates. |
 | `ComputeNetworkAttachment.primary` | Optional boolean | With the supported single attachment, omission or `true` makes it primary; explicit `false` is rejected. Multi-interface primary selection is unsupported. |
@@ -1076,7 +1077,7 @@ The resource-specific Catalog fields are:
 
 | Resource | Catalog-governed network field | System-resolved networking |
 |---|---|---|
-| ComputeInstance | `compute_network_attachments` (the canonical per-resource field) | CUDN/NAD placement and the hosting namespace |
+| ComputeInstance | `network_attachments` (the canonical per-resource field) | CUDN/NAD placement and the hosting namespace |
 | Cluster | `network_attachment` (one attachment for the cluster) | `fabric_interface` for each node set |
 | BaremetalInstance | `network_attachments` (at most one attachment) | Provisioning-network handoff and switch-side port operations |
 
@@ -1524,11 +1525,11 @@ and stored on the node set definition. The tenant does not set this field.
 ```protobuf
 message ComputeInstanceSpec {
   // ... existing fields ...
-  repeated ComputeNetworkAttachment compute_network_attachments = 18; // list-shaped, zero or one supported
+  repeated ComputeNetworkAttachment network_attachments = 18; // list-shaped, zero or one supported
 }
 ```
 
-`compute_network_attachments` is the only supported ComputeInstance attachment
+`network_attachments` is the only supported ComputeInstance attachment
 field. The former shared `NetworkAttachment` field is replaced before this API
 is released and is not accepted. No dual-field compatibility or migration
 period is part of this design.
@@ -1769,7 +1770,7 @@ Per-subnet NAT association is unsupported.
 
 #### Attachment cardinality and primary behavior
 
-ComputeInstance exposes repeated `compute_network_attachments` to preserve a
+ComputeInstance exposes repeated `network_attachments` to preserve a
 list-shaped API, but accepts zero or one entry only. A supplied entry is
 implicitly primary when `primary` is omitted; explicit `primary: false` and a
 list with more than one entry are rejected. Multi-interface VM support is not

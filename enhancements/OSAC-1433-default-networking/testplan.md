@@ -404,7 +404,7 @@ service-specific VM/CaaS/BMaaS networking test plans.
 
 | Request | Expected result and assertion |
 |---|---|
-| VM `compute_network_attachments` omitted | One resolved attachment: Subnet `default-ipv4`, SecurityGroup `default-sg`, `primary=true`. |
+| VM `network_attachments` omitted | One resolved attachment: Subnet `default-ipv4`, SecurityGroup `default-sg`, `primary=true`. |
 | VM attachment list empty | Same result as omitted; no second attachment is created. |
 | Cluster `network_attachment` omitted | One cluster attachment containing both defaults. |
 | Cluster attachment message empty | Same result as omitted; no arbitrary Subnet is selected. |

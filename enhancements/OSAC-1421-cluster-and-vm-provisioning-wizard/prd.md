@@ -29,7 +29,7 @@ superseded-by:
 
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
-- **VM networking** — wizard submits one list-shaped `compute_network_attachments` entry carrying a `ComputeNetworkAttachment` (one VN, one subnet, security groups); no add/remove NIC rows
+- **VM networking** — wizard submits one list-shaped `network_attachments` entry carrying a `ComputeNetworkAttachment` (one VN, one subnet, security groups); no add/remove NIC rows
 - **Tenant-defined cluster hardware** — the wizard does not create, remove, or replace node sets or their `baremetal_instance_type`; the resolved ClusterTemplate owns that structure. The wizard may collect node-set sizes according to Catalog Item policy.
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
 
@@ -54,7 +54,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 | Configuration   | `spec.user_data`          | User data (cloud-init / Ignition)        | Text (multiline)                       | Optional |
 | Configuration   | `spec.boot_disk.size_gib` | Boot disk size (GiB)                     | Number                                 | ?        |
 | Configuration   | `spec.run_strategy`       | Run strategy                             | Select (`Always`, `Halted`)            | Required |
-| Networking      | `spec.compute_network_attachments` | Virtual network, subnet, security groups | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
+| Networking      | `spec.network_attachments` | Virtual network, subnet, security groups | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
 
 **Notes:**
 
@@ -64,7 +64,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 - **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** as a typed reference containing the selected name; the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/OSAC-46-vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog `field_definitions` for this path are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
 - **Disks**: wizard collects `spec.boot_disk.size_gib` only unless [§5](#5-open-decisions) chooses `spec.additional_disks`.
 - **`spec.ssh_key`**: optional on the General step — prefill from catalog `default` when defined ([§2.1.2](#212-catalog-overlay-and-defaults)); tenant may edit when `editable: true` or clear the field. Omit from the client create payload only when the field is blank after catalog selection or user edits. Include the parsed plain string in the payload when the wizard holds a value (prefilled default or user entry).
-- **Networking**: pickers assemble a single `spec.compute_network_attachments` entry; raw JSON not shown. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
+- **Networking**: pickers assemble a single `spec.network_attachments` entry; raw JSON not shown. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
 - The direct VM API permits an omitted or empty attachment list and applies the
   normal tenant-default resolution. The v1 wizard intentionally requires a
   picker selection and always emits one entry; it does not expose a separate
@@ -104,8 +104,8 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 For each static **non-picker** field, match `field_definitions` by `path` (spec-relative paths such as `ssh_key`, `boot_disk.size_gib`, or `spec.image.source_ref` — fulfillment accepts both forms). **General basics** paths (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) and **Configuration** / **Networking** non-picker paths participate in overlay. Non-matching paths are **ignored** (not on Review, not in payload).
 
 **Picker-backed fields (v1):** `spec.instance_type` and
-`spec.compute_network_attachments` (including nested paths such as
-`spec.compute_network_attachments[0].subnet`) load options from list APIs
+`spec.network_attachments` (including nested paths such as
+`spec.network_attachments[0].subnet`) load options from list APIs
 ([§2.1.5](#215-vm-instance-type-picker-api),
 [§2.1.4](#214-vm-networking-picker-apis)). Cluster `spec.node_sets` is
 template-backed: `ClusterTemplates.Get` supplies the map and typed
@@ -164,7 +164,7 @@ this.spec.virtual_network.name == "<vn-name>"
 | Subnet | `metadata.name` | `SubnetLocalReference` containing `name` |
 | Security group | `metadata.name` | `SecurityGroupLocalReference` containing `name` (multi-select) |
 
-**Create payload assembly** — one `spec.compute_network_attachments` element:
+**Create payload assembly** — one `spec.network_attachments` element:
 
 ```json
 {
@@ -175,7 +175,7 @@ this.spec.virtual_network.name == "<vn-name>"
 
 Per `ComputeNetworkAttachment` in `compute_instance_type.proto` and the
 typed-reference contract in OSAC-1330. The wizard does not send virtual
-network ID in `compute_network_attachments`; placement is implied by the
+network ID in `network_attachments`; placement is implied by the
 Subnet reference (SecurityGroups must belong to the same VirtualNetwork).
 
 **Load order:** virtual network list → on selection, load filtered subnet and security group lists → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
@@ -278,7 +278,7 @@ flowchart LR
 - Five-step flow: Catalog Item → General → Configuration → Networking → Review; submit from Review.
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
 - Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on Configuration and Networking **non-picker** fields and General **basics** fields; picker-backed paths ignore `field_definitions` in v1; catalog `default` prefills matching wizard fields on catalog selection; non-editable fields without `default` appear blank and read-only; non-editable fields with `default` appear read-only with value and are included in the client payload.
-- VM: single `compute_network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
+- VM: single `network_attachments` entry assembled from picker APIs; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
 - Cluster: `node_sets` comes from the resolved ClusterTemplate; the wizard displays template node-set names and typed `baremetal_instance_type` references read-only and applies Catalog Item policies only to `size`; it does not add/remove rows or select hardware from `BareMetalInstanceTypes.List`.
 - All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
 - On Next click, validate all fields on the current step (including untouched fields); surface hidden inline errors; show an alert if invalid; do not advance until the step is valid.
@@ -307,7 +307,7 @@ Resolve before implementation.
 
 ### Catalog overlay on picker-backed fields (deferred)
 
-**Resolved for v1:** Ignore catalog `field_definitions` for VM picker-backed paths (`spec.instance_type`, `spec.compute_network_attachments`, and nested networking paths). Cluster `spec.node_sets` is template-backed, not picker-backed; its Catalog policy applies to `size` as defined by Catalog Items v2.
+**Resolved for v1:** Ignore catalog `field_definitions` for VM picker-backed paths (`spec.instance_type`, `spec.network_attachments`, and nested networking paths). Cluster `spec.node_sets` is template-backed, not picker-backed; its Catalog policy applies to `size` as defined by Catalog Items v2.
 
 **Deferred:** Catalog overlay on picker fields (including `display_name`, `editable`, `default`, `validation_schema`, catalog-default vs auto-select precedence, and defaults not present in list API options) is out of scope for v1 and may be addressed in a later release.
 

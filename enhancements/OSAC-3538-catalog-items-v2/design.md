@@ -253,7 +253,7 @@ flowchart TD
 
 A **Template** defines how a resource is provisioned. It may supply defaults for first-class resource fields and defines its own Template parameters.
 
-A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `compute_network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern.
+A **resource field** is a field in the resource API whose type and valid domain are owned by OSAC, for example `ComputeInstance.spec.instance_type`, `boot_disk.size_gib`, or `network_attachments`. A **governable resource field** is one of the supported resource fields a Catalog Item may govern.
 
 A **Template parameter** is an input defined by the selected Template, not by the resource API. Its name, type, requiredness, and default come from that Template.
 
@@ -270,7 +270,7 @@ resource-specific message types as direct resource creation:
 
 | Resource | Catalog field | Value type | Supported shape |
 |---|---|---|---|
-| `ComputeInstance` | `compute_network_attachments` | repeated `ComputeNetworkAttachment` | zero or one item |
+| `ComputeInstance` | `network_attachments` | repeated `ComputeNetworkAttachment` | zero or one item |
 | `Cluster` | `network_attachment` | `ClusterNetworkAttachment` | one structured value, or unset |
 | `BareMetalInstance` | `network_attachments` | repeated `BareMetalNetworkAttachment` | zero or one item |
 
@@ -591,7 +591,7 @@ Governable lists keep their ordinary `repeated` shape. A `repeated` field has no
 | `boot_disk.size_gib` | Int32 | Value only |
 | `run_strategy` | Enum | Value only |
 | `user_data` | String | Value only |
-| `compute_network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list | Subnet, SecurityGroup |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The governable Compute fields collect into one `Fields` message, one policy per field:
@@ -604,7 +604,7 @@ message ComputeInstanceCatalogItemFields {
   ComputeInstanceBootDiskFieldPolicies boot_disk = 4;
   ComputeInstanceRunStrategyFieldPolicy run_strategy = 5;
   StringFieldPolicy user_data = 6;
-  ComputeNetworkAttachmentListFieldPolicy compute_network_attachments = 7;
+  ComputeNetworkAttachmentListFieldPolicy network_attachments = 7;
   BoolFieldPolicy auto_external_ip_attachment = 8;
 }
 
@@ -629,7 +629,7 @@ A tenant-owned item that exercises every Compute policy shape, from a locked ima
     "boot_disk": { "size_gib": { "editable": { "default_value": 50 } } },
     "run_strategy": { "locked": "COMPUTE_INSTANCE_RUN_STRATEGY_ALWAYS" },
     "user_data": { "editable": {} },
-    "compute_network_attachments": {
+    "network_attachments": {
       "editable": {
         "default_value": {
           "items": [
@@ -678,7 +678,7 @@ Notes on the fields above:
 
   `ComputeInstanceSpec.run_strategy` and `ComputeInstanceTemplateSpecDefaults.run_strategy` remain optional, and a supplied value must be defined and non-zero. The config-as-code client maps the friendly value in `meta/osac.yaml` to the enum, and the Ansible metadata stays unchanged.
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
-- `compute_network_attachments` is the only supported Compute networking field. Catalog policy governs this complete list of `ComputeNetworkAttachment` values.
+- `network_attachments` is the only supported Compute networking field. Catalog policy governs this complete list of `ComputeNetworkAttachment` values.
 - Compute attachment policy governs the complete list. The field remains list-shaped but accepts zero or one attachment only. A single attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one attachment are rejected. Catalog validation applies the same rule as direct Compute creation.
 - Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups.
 
@@ -880,7 +880,7 @@ Catalog resolution requires the effective tenant and project, so Create attribut
 
 Resource-specific default-network resolution runs after Catalog and Template precedence has been resolved and applies the shared field-level defaulting matrix to the resulting tenant-facing attachment:
 
-- An omitted or empty `compute_network_attachments` or `network_attachments` list, or an empty `network_attachment` message, receives both tenant defaults.
+- For ComputeInstance and BaremetalInstance, an omitted or empty `network_attachments` list receives both tenant defaults; for Cluster, an empty `network_attachment` message receives both tenant defaults.
 - A supplied attachment entry or non-empty `network_attachment` message receives a default only for each missing subnet or SecurityGroup field (and the applicable Bare Metal interface field). Supplied non-empty fields are preserved.
 - An empty repeated network policy is therefore treated as unset. An empty structured Cluster policy is also treated as unset; a partial structured policy remains partial and is completed field-by-field rather than being replaced wholesale.
 
@@ -921,7 +921,7 @@ apply the following rules:
   resource field. A malformed wrapper, missing required policy `oneof`, wrong
   typed reference, malformed IPv4/CIDR, unknown enum, or unsupported list
   element is rejected at Catalog Item Create/Update.
-- A Compute `compute_network_attachments` policy remains list-shaped; its
+- A Compute `network_attachments` policy remains list-shaped; its
   `items` field contains `ComputeNetworkAttachment` values and accepts zero or
   one entry only. More than one item and an item
   with explicit `primary: false` are rejected. Omitted `primary` and

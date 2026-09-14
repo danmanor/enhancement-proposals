@@ -6,7 +6,7 @@
   Attachments, and Auto External Access
 - **Source design:** [design.md](design.md)
 - **Shared contract:** [Unified Networking test plan](../OSAC-1433-unified-networking/testplan.md)
-- **Current support boundary:** `compute_network_attachments` remains a list
+- **Current support boundary:** `network_attachments` remains a list
   but accepts zero or one entry. Multi-interface VM support is not supported.
 - **API shape:** the resource-specific `ComputeNetworkAttachment` replaces the
   shared attachment format before release; no dual-field compatibility or
@@ -62,7 +62,7 @@
 
 - Each request is rejected before reference lookup, defaulting, capacity
   reservation, persistence, or template dispatch.
-- Error identifies `spec.compute_network_attachments` or the precise primary
+- Error identifies `spec.network_attachments` or the precise primary
   field.
 - Unknown nested attachment fields, malformed typed Subnet/SecurityGroup
   references, and malformed `primary` presence/encoding are rejected by the
@@ -120,7 +120,7 @@
 
 1. Create a valid ComputeInstance with one resolved attachment.
 2. Inspect the private ComputeInstance CR and verify that public
-   `spec.compute_network_attachments` was converted to the CRD's
+   `spec.network_attachments` was converted to the CRD's
    `spec.networkAttachments` resource-specific message, with no legacy shared
    attachment field.
 3. Observe the operator/template input and inspect the resulting

@@ -80,7 +80,7 @@ does not permit updating the resolved network attachment or any other
 network-owned field after the workload is created.
 
 The field is resource-specific: Compute uses
-`compute_network_attachments` with at most one entry, Cluster uses the singular
+`network_attachments` with at most one entry, Cluster uses the singular
 `network_attachment`, and BaremetalInstance uses `network_attachments` with
 at most one attachment. Catalog validation uses the same readiness, VirtualNetwork,
 cardinality, primary, and physical-interface rules as direct resource creation.
@@ -143,15 +143,15 @@ ExternalIP provisioning.
 
 4. **Tenant User creates VM without networking parameters:**
    ```bash
-   # No compute_network_attachments specified
+   # No network_attachments specified
    osac create computeinstance --template ocp_virt_vm --name my-vm
    ```
    - fulfillment-service:
-     - Detects `compute_network_attachments` field is omitted or empty
+     - Detects `network_attachments` field is omitted or empty
      - Queries tenant's default Subnet and default SecurityGroup (labeled `osac.openshift.io/default: "true"`)
-     - Populates `compute_network_attachments` with default Subnet + default SecurityGroup
+     - Populates `network_attachments` with default Subnet + default SecurityGroup
      - Stores resolved attachments in spec
-   - Creates ComputeInstance CR with resolved `compute_network_attachments`
+   - Creates ComputeInstance CR with resolved `network_attachments`
    - osac-operator reconciles normally (VM provisioned on default subnet)
 
 5. **Tenant User retrieves resource and sees resolved defaults:**
@@ -161,7 +161,7 @@ ExternalIP provisioning.
    Output shows:
    ```yaml
    spec:
-     compute_network_attachments:
+     network_attachments:
        - subnet: { name: "default-subnet" }
          security_groups: [{ name: "default-sg" }]
          primary: true
@@ -175,7 +175,7 @@ ExternalIP provisioning.
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - Resolves `compute_network_attachments` using the shared omitted/empty/partial field-level defaulting rules
+     - Resolves `network_attachments` using the shared omitted/empty/partial field-level defaulting rules
      - Reads `auto_external_ip_attachment: true`
      - Auto-selects an IPv4 ExternalIPPool (READY, most available capacity)
      - Creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically.
@@ -371,7 +371,7 @@ an alternative resource or attachment contract.
 - The deployment-wide baseline policy is provider-owned and follows the hard-coded `permit` action defined by Unified Networking; it is not stored in the tenant default SecurityGroup
 
 **Resource creation with optional network attachments:**
-- For ComputeInstance, if `compute_network_attachments` is omitted or empty, resolve both the tenant's default Subnet and SecurityGroup (labeled `osac.openshift.io/default: "true"`). A supplied list may contain at most one entry; default only that entry's missing subnet or missing/empty SecurityGroup list, and reject a second entry.
+- For ComputeInstance, if `network_attachments` is omitted or empty, resolve both the tenant's default Subnet and SecurityGroup (labeled `osac.openshift.io/default: "true"`). A supplied list may contain at most one entry; default only that entry's missing subnet or missing/empty SecurityGroup list, and reject a second entry.
 - For Cluster, if `network_attachment` is omitted or an empty message, resolve both defaults. If the message supplies only one field, default only the other field.
 - For BaremetalInstance, if `network_attachments` is omitted or empty, resolve both defaults and the first default fabric interface from the BareMetalInstanceType. For a supplied single entry, default only missing subnet, SecurityGroup list, or interface.
 - If no defaults exist (should not occur — defaults are mandatory on NetworkClass): return error `No default networking resources available. Please contact your administrator.`
@@ -699,7 +699,7 @@ Tech Preview criteria:
 - [ ] NetworkClass defaults field implemented in fulfillment-service and osac-operator
 - [ ] fulfillment-service creates default VN/IPv4 Subnet/SG and NATGateway only when the manager capability supports it
 - [ ] Tenant DefaultNetworkingReady condition functional
-- [ ] Resource-specific network attachment fields are optional on all three resource types (`compute_network_attachments`, `network_attachment`, `network_attachments`)
+- [ ] Resource-specific network attachment fields are optional on all three resource types (`network_attachments` for ComputeInstance, `network_attachment` for Cluster, and `network_attachments` for BaremetalInstance)
 - [ ] BMaaS default networking resolves exactly one tenant network attachment
 - [ ] Auto ExternalIP attachment (auto_external_ip_attachment) functional for VM and BM
 - [ ] Auto ExternalIP attachment for Cluster functional

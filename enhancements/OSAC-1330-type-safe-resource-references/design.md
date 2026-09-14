@@ -133,7 +133,7 @@ project.
      "metadata": { "name": "my-vm" },
      "spec": {
        "catalog_item": { "name": "standard-vm" },
-       "compute_network_attachments": [
+       "network_attachments": [
          {
            "subnet": { "name": "app-subnet" },
            "security_groups": [{ "name": "app-sg" }]
@@ -156,13 +156,13 @@ project.
    - Looks up the resource via the corresponding DAO using the caller's tenant
      context.
    - If the resource does not exist, collects an error with the field path
-     (e.g., `spec.compute_network_attachments[0].subnet.name`).
+     (e.g., `spec.network_attachments[0].subnet.name`).
 
 4. If any reference is invalid, the interceptor returns `InvalidArgument` with
    all invalid references listed in the error details. The user sees:
    ```
    InvalidArgument: invalid references:
-     spec.compute_network_attachments[0].subnet.name: Subnet "app-subnet" not found
+     spec.network_attachments[0].subnet.name: Subnet "app-subnet" not found
    ```
 
 5. If all references are valid, the request proceeds to the
@@ -325,7 +325,7 @@ attachments use the resource-specific messages defined by Unified Networking:
 
 | Resource | Canonical field | Canonical message | Typed reference fields |
 |---|---|---|---|
-| ComputeInstance | `spec.compute_network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
+| ComputeInstance | `spec.network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
 | Cluster | `spec.network_attachment` | `ClusterNetworkAttachment` (singular) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
 | BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `BareMetalInstanceSpec.catalog_item: BareMetalInstanceCatalogItemReference`; `BareMetalInstanceSpec.instance_type: BareMetalInstanceTypeReference`; attachment `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
 
@@ -336,8 +336,9 @@ they do not reintroduce the shared attachment type.
 
 The names in the `Canonical field` column are API field names, not message
 type names. In particular, `spec.network_attachment` carries a
-`ClusterNetworkAttachment`, and `spec.network_attachments` carries repeated
-`BareMetalNetworkAttachment` values. The API does not define
+`ClusterNetworkAttachment`, while `spec.network_attachments` carries repeated
+`ComputeNetworkAttachment` values for ComputeInstance and repeated
+`BareMetalNetworkAttachment` values for BaremetalInstance. The API does not define
 `cluster_network_attachment` or `bare_metal_network_attachments` fields.
 
 **Operational impact:** None. This is a schema change with no new controllers,
@@ -362,7 +363,7 @@ structure.
 | `ip-management.ts` `useCreatePublicIPAttachment` body | `spec: { publicIp: string, target: { case, value } }` | `spec: { public_ip: { name: ipName }, compute_instance: { name: vmName } }` | Oneof becomes separate fields with reference messages |
 | `ip-management.ts` `useCreateExternalIPAttachment` body | `spec: { externalIp: string, target: { case, value } }` | `spec: { external_ip: { name: ipName }, compute_instance: { name: vmName } }` | Same oneof pattern |
 | `cluster.ts` `CreateClusterInput.spec.catalogItem` | `spec: { catalogItem: string }` | `spec: { catalog_item: { name: catalogName } }` | |
-| `compute-instance-wire.ts` `buildComputeInstanceCreateBody` | `spec: { template: "id", catalog_item: "id", subnet: "id", security_groups: ["id"] }` | `spec: { template: { name: "tpl" }, catalog_item: { name: "ci" }, compute_network_attachments: [{ subnet: { name: "s" }, security_groups: [{ name: "sg" }] }] }` | Most complex change; wire builder must wrap strings |
+| `compute-instance-wire.ts` `buildComputeInstanceCreateBody` | `spec: { template: "id", catalog_item: "id", subnet: "id", security_groups: ["id"] }` | `spec: { template: { name: "tpl" }, catalog_item: { name: "ci" }, network_attachments: [{ subnet: { name: "s" }, security_groups: [{ name: "sg" }] }] }` | Most complex change; wire builder must wrap strings |
 
 **Known deviation:** The `@temp-api` attachment types
 (`useCreatePublicIPAttachment`, `useCreateExternalIPAttachment`) use a
@@ -724,7 +725,7 @@ field behaves the same as in public references.
 returning, so the user sees every problem in a single error response. It
 constructs a `google.rpc.BadRequest` status detail with one `FieldViolation`
 per invalid reference, where the `field` is the proto field path (e.g.,
-`spec.compute_network_attachments[0].subnet.name`) and the `description` is a
+`spec.network_attachments[0].subnet.name`) and the `description` is a
 human-readable message.
 
 **Provider/deployment-scoped resources.** Resources like NetworkClass,
@@ -832,8 +833,8 @@ osac compute-instance create --name my-vm --catalog-item standard-vm \
   --subnet app-subnet --security-group app-sg
 
 # The CLI internally constructs:
-# compute_network_attachments[0].subnet: { name: "app-subnet" }
-# compute_network_attachments[0].security_groups[0]: { name: "app-sg" }
+# network_attachments[0].subnet: { name: "app-subnet" }
+# network_attachments[0].security_groups[0]: { name: "app-sg" }
 ```
 
 **For full references with project or shared scope:**

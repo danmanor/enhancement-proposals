@@ -33,7 +33,7 @@ design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology
 The shared operation contract is defined by [Supported Operations and
 Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
 
-ComputeInstance exposes the repeated `compute_network_attachments` API field,
+ComputeInstance exposes the repeated `network_attachments` API field,
 whose values are `ComputeNetworkAttachment` messages. The field remains
 optional and list-shaped while
 accepting at most one entry, and `auto_external_ip_attachment` enables fully
@@ -47,13 +47,13 @@ being replaced by the shared dispatcher was:
 
 1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
-3. Tenant creates ComputeInstance with `compute_network_attachments` (resource-specific message, single-interface only)
+3. Tenant creates ComputeInstance with `network_attachments` (resource-specific message, single-interface only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
 5. AAP template (`osac.templates.ocp_virt_vm`) creates KubeVirt VirtualMachine with one `l2bridge` interface in the subnet's CUDN namespace
 
 ### What Already Works
 
-- `compute_network_attachments` is the ComputeInstanceSpec attachment field
+- `network_attachments` is the ComputeInstanceSpec attachment field for ComputeInstance
 - Operator CRD has `NetworkAttachments []ComputeNetworkAttachment` with CEL immutability rules (the complete list and every network field are immutable)
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
@@ -69,7 +69,7 @@ being replaced by the shared dispatcher was:
 
 - Single-interface support with a list-shaped attachment field
 - Resource-specific attachment message (`ComputeNetworkAttachment`) with a `primary` field
-- Optional `compute_network_attachments` field — populate with tenant defaults when omitted
+- Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - BM-only deployment validation to reject VM provisioning when no k8s_manager is available
 
@@ -122,10 +122,10 @@ being replaced by the shared dispatcher was:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `compute_network_attachments` is omitted or empty: populates both tenant defaults. For a supplied attachment, defaults only a missing subnet or empty SecurityGroup list (see Default Networking PRD)
+     - If `network_attachments` is omitted or empty: populates both tenant defaults. For a supplied attachment, defaults only a missing subnet or empty SecurityGroup list (see Default Networking PRD)
      - Validates: at most one attachment, all resolved Subnet and SecurityGroup references exist and are Ready, and the single-entry primary rule is satisfied
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
-   - Creates ComputeInstance CR with `compute_network_attachments`
+   - Creates ComputeInstance CR with `network_attachments`
 
 5. **osac-operator ComputeInstance controller:**
 
@@ -139,7 +139,7 @@ being replaced by the shared dispatcher was:
 
 6. **AAP template (`osac.templates.ocp_virt_vm`):**
    - Reads `subnet-target-namespace` → deployment namespace
-   - Reads `compute_network_attachments`:
+   - Reads `network_attachments`:
      - Empty list: this is resolved to the tenant defaults before the CR is created
      - Single attachment: creates VM with one `l2bridge` interface in the subnet's CUDN namespace
      - Multiple entries are rejected by fulfillment-service and never reach the template
@@ -155,7 +155,7 @@ being replaced by the shared dispatcher was:
    - Watches KubeVirt VMI (VirtualMachineInstance) network status
    - Reads the assigned IP from the sole `vmi.status.interfaces[].ipAddress`
    - Maps the interface to the sole `ComputeNetworkAttachment` value from
-     `compute_network_attachments` by CUDN NAD reference
+     `network_attachments` by CUDN NAD reference
    - Fires Signal RPC to fulfillment-service with per-attachment IP data
    - fulfillment-service writes at most one `compute_network_attachment_statuses` entry on ComputeInstanceStatus (`subnet` typed reference, `ip_address`, `primary`)
    - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows the assigned IP for the attachment
@@ -202,7 +202,7 @@ message ComputeNetworkAttachment {
 
 message ComputeInstanceSpec {
   // ... existing fields ...
-  repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional; zero or one supported
+  repeated ComputeNetworkAttachment network_attachments = 18; // optional; zero or one supported
   optional bool auto_external_ip_attachment = 19; // NEW, create-time only; omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment
 }
 
@@ -220,7 +220,7 @@ message ComputeInstanceStatus {
 
 #### Operator CRD (osac-operator)
 
-The public fulfillment API field `spec.compute_network_attachments` maps to the
+The public fulfillment API field `spec.network_attachments` maps to the
 operator CRD field `spec.networkAttachments` (Go field
 `ComputeInstanceSpec.NetworkAttachments`). Fulfillment-service performs this
 API-to-CRD conversion when it creates the private CR; the operator does not
@@ -267,7 +267,7 @@ Template-based, and Catalog-based ComputeInstance create path.
 
 **Request shape validation:**
 
-- `compute_network_attachments` must contain zero or one entry. A second entry is
+- `network_attachments` must contain zero or one entry. A second entry is
   rejected before reference lookup, defaulting, capacity reservation, or CR
   creation with a single-interface cardinality error.
 - The optional `primary` presence bit is significant. Omitted and `true` are
@@ -368,14 +368,14 @@ Template-based, and Catalog-based ComputeInstance create path.
   resolved network spec or make an unready Subnet/SecurityGroup usable.
 
 Any validation failure above is surfaced with a field path where possible,
-for example `spec.compute_network_attachments[1]`,
-`spec.compute_network_attachments[0].subnet`, or
-`spec.compute_network_attachments[0].primary`. The request is not persisted
+for example `spec.network_attachments[1]`,
+`spec.network_attachments[0].subnet`, or
+`spec.network_attachments[0].primary`. The request is not persisted
 when the failure is found during create.
 
 #### Catalog Item interaction
 
-Catalog Item v2 governs the canonical `compute_network_attachments` field as
+Catalog Item v2 governs the canonical `network_attachments` field as
 one complete list. It may lock the list or make it editable with an optional
 default. The field is the only supported ComputeInstance networking input.
 
@@ -401,7 +401,7 @@ default tenant-local Subnet or SecurityGroup references.
 
 #### Template Changes (osac-aap)
 
-- `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: consume the single resolved entry from `compute_network_attachments`
+- `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: consume the single resolved entry from `network_attachments`
 - The entry maps to one KubeVirt interface with `l2bridge` binding referencing the attachment's subnet's CUDN NAD
 - The sole attachment supplies the IP, default gateway, and DNS via DHCP
 
@@ -411,7 +411,7 @@ default tenant-local Subnet or SecurityGroup references.
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate `compute_network_attachments`, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
+| fulfillment-service | Validate `network_attachments`, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
 | osac-operator ComputeInstance controller | Resolve subnet → namespace, trigger AAP, clean up auto-provisioned resources |
 | osac-operator ComputeInstance feedback controller | Watch the sole KubeVirt VMI interface status, discover the attachment IP, Signal fulfillment-service |
 | osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
@@ -436,7 +436,7 @@ default tenant-local Subnet or SecurityGroup references.
 The ComputeInstance networking API changes from the shared
 `NetworkAttachment` shape to the resource-specific
 `ComputeNetworkAttachment` shape before release. Only
-`compute_network_attachments` is accepted. The previous shared field and
+`network_attachments` is accepted. The previous shared field and
 message are not exposed as a compatibility path because no users or persisted
 resources depend on them yet.
 
@@ -557,7 +557,7 @@ plan](../OSAC-1433-unified-networking/testplan.md).
 Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
-- [ ] API fields (`compute_network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
+- [ ] API fields (`network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] Operator CRD updated with `Primary` field and CEL validation
 - [ ] Single-interface template support (`osac.templates.ocp_virt_vm`) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
@@ -621,7 +621,7 @@ kubectl describe computeinstance <name> -n <namespace>
 **Cause:** The request supplied more than one entry, or set `primary: false` on the sole entry
 
 **Resolution:**
-1. Submit zero or one entry in `compute_network_attachments`
+1. Submit zero or one entry in `network_attachments`
 2. Omit `primary` or set it to `true`; multi-interface placement is not supported yet
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after ComputeInstance deletion
