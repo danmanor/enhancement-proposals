@@ -682,20 +682,21 @@ The CLI must exercise the same defaulting and validation contract as the API;
 it must not introduce a second defaulting path.
 
 **Unit:** Parse `osac create computeinstance`, `osac create
-baremetalinstance`, and `osac create cluster` with no `--network-attachment`,
-with an empty compound attachment, with only `subnet=...`, with only
+baremetalinstance`, and `osac create cluster` with no
+`--network-attachment`, with only `subnet=...`, with only
 `security-groups=...`, and with all supported fields. Verify that the parser
 preserves omitted fields for server-side defaulting, maps the resource-specific
-typed attachment message, and rejects unknown keys, empty values, IPv6 CIDRs,
-multiple attachment options, `primary=false`, and unsupported interface fields
-for VM/Cluster. Verify `--external-ip-attachment` is a create-time boolean and
-has no update/patch form.
+typed attachment message, and rejects empty compound values, unknown keys,
+empty keys/values, IPv6 CIDRs, multiple attachment options, `primary=false`,
+and unsupported interface fields for VM/Cluster. The API-level empty attachment
+message remains covered by R4. Verify `--external-ip-attachment` is a
+create-time boolean and has no update/patch form.
 
 **Integration:** Submit each parsed request through the public and private
 validation paths and compare it with the equivalent direct API request:
 
-- omitted attachment and an explicitly empty attachment resolve both fields
-  from the tenant defaults;
+- omitted CLI attachment resolves both fields from the tenant defaults, while
+  the equivalent empty attachment message follows the API-level R4 case;
 - an attachment containing only Subnet or only SecurityGroups fills only the
   missing field from the default;
 - a complete attachment preserves the explicit references;
@@ -715,10 +716,12 @@ Cluster for each of these two states:
 2. The flag omitted: verify the switch is `false`, no automatic ExternalIP or
    attachment is created, and no pool capacity is consumed.
 
-For both states, exercise omitted, empty, partial, and complete networking
-attachments. Attempt a conflicting explicit reference, a second attachment,
-and a network-owned update/patch; verify the expected validation error, no
-fallback over an invalid explicit value, and no partial resource graph.
+For both states, exercise omitted, partial, and complete CLI networking
+attachments. Attempt an empty compound value, a conflicting explicit
+reference, a second attachment, and a network-owned update/patch; verify the
+expected validation error, no fallback over an invalid explicit value, and no
+partial resource graph. The API-level empty attachment message is covered by
+the R4 matrix.
 
 ## Graduation gate
 
