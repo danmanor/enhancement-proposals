@@ -56,7 +56,7 @@ This design addresses both gaps: it establishes the admin navigation pattern tha
 
 ## Proposal
 
-The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly `Gallery` of `CatalogItemCard` cards (the same card-based layout as the tenant user `CatalogPage`) with search, scope badges, publication status, and kebab actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (resource-specific network policies) → Access (ssh_key, pull_secret). The Networking step follows Catalog Items v2: Cluster uses `network.pod_cidr`, `network.service_cidr`, singular `network_attachment`, and `auto_external_ip_attachment`; VM uses list-shaped `compute_network_attachments` and `auto_external_ip_attachment`; Bare Metal uses list-shaped `network_attachments` and `auto_external_ip_attachment`. VM and Bare Metal lists accept zero or one attachment only. Network references use the typed local-reference shapes from OSAC-1330, and physical interfaces are never selected in the Catalog UI. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
+The design adds four new page types under a new "Administration > Catalog Management" sidebar section: a list page, a create wizard, an edit wizard, and a detail page. These pages are visible only to `providerAdmin` and `tenantAdmin` roles. The list page uses three tabs (Clusters, Virtual Machines, Bare Metal) — one per resource type — each showing a PatternFly `Gallery` of `CatalogItemCard` cards (the same card-based layout as the tenant user `CatalogPage`) with search, scope badges, publication status, and kebab actions (edit, publish/unpublish, delete). Each tab has its own "Create" button that navigates directly to the kind-specific create wizard, so the resource type is implicit and does not need to be selected in the wizard. The create flow uses a multi-step wizard whose steps mirror the provisioning wizard: General (name, description, scope, template) → Configuration (resource spec field definitions) → Networking (resource-specific network policies) → Access (ssh_key, pull_secret). The Networking step follows Catalog Items v2: Cluster uses `network.pod_cidr`, `network.service_cidr`, singular `network_attachment` carrying `ClusterNetworkAttachment`, and `auto_external_ip_attachment`; VM uses list-shaped `compute_network_attachments` carrying `ComputeNetworkAttachment` values and `auto_external_ip_attachment`; Bare Metal uses list-shaped `network_attachments` carrying `BareMetalNetworkAttachment` values and `auto_external_ip_attachment`. VM and Bare Metal lists accept zero or one attachment only. Network references use the typed local-reference shapes from OSAC-1330, and physical interfaces are never selected in the Catalog UI. The edit wizard reuses the same steps with template locked as read-only. The detail page shows read-only configuration, field definitions, and related provisioned resources.
 
 Each wizard step is a separate per-kind component with static, hardcoded fields — the same pattern as the tenant user provisioning wizard. Individual fields reuse shared field definition primitives (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that each render an editable toggle, a type-appropriate default value input, and type-specific validation options. `node_sets` (Cluster only) is not one of these primitives — it has a dedicated `NodeSetsFieldEditor` (see §8) that is **template-driven** rather than freely composed: fulfillment-service rejects any `node_sets` entry whose map key or `baremetal_instance_type` differs from the selected `ClusterTemplate`, so the editor renders one fixed row per template node set with the hardware reference read-only and only collects a default `size` per row — no add/remove, no hardware picker. Shared page-level components (`CatalogItemGeneralFields`, `CatalogItemCard`, `CatalogItemActionsMenu`) are composed via JSX into kind-specific wizard/detail pages — each page explicitly owns its Formik wiring, validation, and submission logic.
 
@@ -69,7 +69,7 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope, and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template. **Scope:** CSP Admin selects between **General** (visible to all tenants) or **Organization** (scoped to a specific tenant, selected from a tenant dropdown).
 5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for setting a default `size` per node set defined in the selected template (`baremetal_instance_type` is read-only, inherited from the template) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
-6. **Step 3 — Networking:** The per-kind networking step exposes only the fields governed by Catalog Items v2. Cluster exposes `pod_cidr`, `service_cidr`, `network_attachment`, and `auto_external_ip_attachment`; VM exposes `compute_network_attachments` and `auto_external_ip_attachment`; Bare Metal exposes `network_attachments` and `auto_external_ip_attachment`. The VM and Bare Metal attachment controls remain list-shaped but reject more than one entry and explicit `primary: false`. Cluster exposes one structured attachment, not a repeated list. Shared Catalog Items may not provide tenant-local network defaults; they can expose those references as editable tenant inputs. Tenant-owned items may use same-scope typed Subnet and SecurityGroup references, subject to the authoritative networking validation.
+6. **Step 3 — Networking:** The per-kind networking step exposes only the fields governed by Catalog Items v2. Cluster exposes `pod_cidr`, `service_cidr`, `network_attachment` (`ClusterNetworkAttachment`), and `auto_external_ip_attachment`; VM exposes `compute_network_attachments` (`ComputeNetworkAttachment` values) and `auto_external_ip_attachment`; Bare Metal exposes `network_attachments` (`BareMetalNetworkAttachment` values) and `auto_external_ip_attachment`. The VM and Bare Metal attachment controls remain list-shaped but reject more than one entry and explicit `primary: false`. Cluster exposes one structured attachment, not a repeated list. Shared Catalog Items may not provide tenant-local network defaults; they can expose those references as editable tenant inputs. Tenant-owned items may use same-scope typed Subnet and SecurityGroup references, subject to the authoritative networking validation.
 7. **Step 4 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
 8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
@@ -230,12 +230,12 @@ const ClusterCatalogItemCreatePage = () => {
 
 // ComputeInstanceCatalogItemCreatePage.tsx — 4 steps (including Networking)
 // Uses VMConfigurationStep and VMAccessStep.
-// compute_network_attachments and auto_external_ip_attachment are owned by
-// the VM Networking step.
+// compute_network_attachments (ComputeNetworkAttachment values) and
+// auto_external_ip_attachment are owned by the VM Networking step.
 // BareMetalInstanceCatalogItemCreatePage.tsx — 4 steps (including Networking)
 // Uses BMConfigurationStep and BMAccessStep.
-// network_attachments and auto_external_ip_attachment are owned by the
-// Bare Metal Networking step.
+// network_attachments (BareMetalNetworkAttachment values) and
+// auto_external_ip_attachment are owned by the Bare Metal Networking step.
 ```
 
 Each kind-specific page calls its own typed hooks (`useClusterTemplates`, `useComputeInstanceTemplates`, `useBareMetalInstanceTemplates`) and passes data down to step components. Per-kind differences are explicit in each step component's static field list, not driven by configuration arrays.
@@ -332,7 +332,10 @@ Each kind-specific create page uses a PatternFly Wizard with Formik + Yup that e
 
 **Wizard steps — mirror the provisioning wizard structure:**
 
-The wizard steps are kind-specific: VM and Bare Metal have three steps (General, Configuration, Access). Cluster has four steps (General, Configuration, Networking, Access). Resource type is not shown as a field — it is determined by the tab the admin clicked "Create" from and encoded in the route.
+The wizard steps are kind-specific, and all three resource kinds have four
+steps: General, Configuration, Networking, and Access. Resource type is not
+shown as a field — it is determined by the tab the admin clicked "Create" from
+and encoded in the route.
 
 **Step 1: General**
 - Name (`NameField`, required) — reuses the existing osac-ui `NameField` component with standard naming validation
@@ -353,9 +356,11 @@ Each resource type has its own configuration step component with static, hardcod
 **Step 3: Networking** (all resource kinds)
 
 `ClusterNetworkingStep` contains `pod_cidr`, `service_cidr`, the singular
-`network_attachment`, and `auto_external_ip_attachment`. `VMNetworkingStep`
-contains `compute_network_attachments` and `auto_external_ip_attachment`.
-`BMNetworkingStep` contains `network_attachments` and
+`network_attachment` field carrying a `ClusterNetworkAttachment`, and
+`auto_external_ip_attachment`. `VMNetworkingStep` contains
+`compute_network_attachments`, a list of `ComputeNetworkAttachment` values,
+and `auto_external_ip_attachment`. `BMNetworkingStep` contains
+`network_attachments`, a list of `BareMetalNetworkAttachment` values, and
 `auto_external_ip_attachment`. The two list-shaped attachment fields accept
 zero or one entry only. Each entry uses typed local Subnet and SecurityGroup
 references; the UI never exposes a physical interface selector. Shared items
@@ -497,21 +502,22 @@ Each step component is a static form that explicitly lists its fields using the 
 
 **Cluster:**
 - `ClusterConfigurationStep` — `release_image` (`StringFieldDefinition`), `node_sets` (`NodeSetsFieldEditor`)
-- `ClusterNetworkingStep` — `pod_cidr` (`StringFieldDefinition`), `service_cidr` (`StringFieldDefinition`)
+- `ClusterNetworkingStep` — `pod_cidr` (`StringFieldDefinition`), `service_cidr` (`StringFieldDefinition`), `network_attachment` (`ClusterNetworkAttachment`), `auto_external_ip_attachment` (`BooleanFieldDefinition`)
 - `ClusterAccessStep` — `ssh_public_key` (`StringFieldDefinition`, default editable), `pull_secret` (`StringFieldDefinition`, default editable)
 
 **VM (ComputeInstance):**
 - `VMConfigurationStep` — `instance_type` (`ResourceSelectorFieldDefinition`, endpoint: `/v1/instance_types`), `cores` (`NumberFieldDefinition`), `memory_gib` (`NumberFieldDefinition`), `image` (`ResourceSelectorFieldDefinition`), `boot_disk.size_gib` (`NumberFieldDefinition`), `additional_disks` (array of `NumberFieldDefinition` for `size_gib`), `run_strategy` (`StringFieldDefinition` with enum: "Always"/"Halted"), `user_data` (`StringFieldDefinition` textarea), `is_windows` (`BooleanFieldDefinition`)
 - `VMAccessStep` — `ssh_key` (`StringFieldDefinition`, default editable)
-- VM Networking uses `compute_network_attachments` and
+- VM Networking uses `compute_network_attachments` (`ComputeNetworkAttachment`)
+  and
   `auto_external_ip_attachment`; the attachment list accepts zero or one
   typed entry.
 
 **Bare Metal (BareMetalInstance):**
 - `BMConfigurationStep` — `run_strategy` (`StringFieldDefinition` with enum: "ALWAYS"/"HALTED"), `user_data` (`StringFieldDefinition` textarea)
 - `BMAccessStep` — `ssh_public_key` (`StringFieldDefinition`, default editable)
-- Bare Metal Networking uses `network_attachments` and
-  `auto_external_ip_attachment`; the attachment list accepts zero or one
+- Bare Metal Networking uses `network_attachments` (`BareMetalNetworkAttachment`)
+  and `auto_external_ip_attachment`; the attachment list accepts zero or one
   typed entry.
 
 **Example — ClusterConfigurationStep:**
@@ -526,8 +532,10 @@ const ClusterConfigurationStep = () => (
 ```
 
 **Network attachment handling:** The Catalog UI uses the canonical
-resource-specific fields: `compute_network_attachments` for ComputeInstance,
-singular `network_attachment` for Cluster, and `network_attachments` for
+resource-specific field/type pairs: `compute_network_attachments` carrying
+`ComputeNetworkAttachment` values for ComputeInstance, singular
+`network_attachment` carrying `ClusterNetworkAttachment` for Cluster, and
+`network_attachments` carrying `BareMetalNetworkAttachment` values for
 BareMetalInstance. The VM and Bare Metal fields retain their list-shaped API
 forms but accept zero or one entry only. Each entry is built from typed local
 references (`subnet.name` and `security_groups[].name`); IDs alone are not

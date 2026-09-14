@@ -40,8 +40,10 @@ design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology
 The shared operation contract is defined by [Supported Operations and
 Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
 
-BaremetalInstance supports `BareMetalNetworkAttachment` with an optional
-interface selector; its single attachment is implicitly primary. The
+BaremetalInstance exposes the repeated `network_attachments` API field, whose
+values are `BareMetalNetworkAttachment` messages. The field remains
+list-shaped for API compatibility but accepts zero or one entry; its single
+attachment is implicitly primary. The
 bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the
 selected switch port via dispatcher, and IP address feedback via CR status
 enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
@@ -406,7 +408,8 @@ message BareMetalNetworkAttachmentStatus {
 ```
 
 The API intentionally retains the repeated `network_attachments` field rather
-than introducing a singular replacement. Its maximum cardinality is one; an
+than introducing a singular or resource-name-prefixed replacement. Its values
+are `BareMetalNetworkAttachment` messages and its maximum cardinality is one; an
 omitted or empty list invokes default resolution, while a supplied list must
 contain exactly one attachment after field-level defaulting.
 

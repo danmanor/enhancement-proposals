@@ -265,6 +265,19 @@ A **Catalog Item** builds a curated offering on top of one Template. For a suppo
 
 At Create, fulfillment combines the policies, tenant input, Template defaults, and normal resource and system defaults into an ordinary resource spec. Afterward the Catalog Item leaves the resource lifecycle.
 
+For networking, Catalog policy uses the same public field names and
+resource-specific message types as direct resource creation:
+
+| Resource | Catalog field | Value type | Supported shape |
+|---|---|---|---|
+| `ComputeInstance` | `compute_network_attachments` | repeated `ComputeNetworkAttachment` | zero or one item |
+| `Cluster` | `network_attachment` | `ClusterNetworkAttachment` | one structured value, or unset |
+| `BareMetalInstance` | `network_attachments` | repeated `BareMetalNetworkAttachment` | zero or one item |
+
+Catalog Items do not rename these API fields to include the message type. They
+govern the field value and then hand the materialized resource to the owning
+service, whose normal networking validation remains authoritative.
+
 ```text
 Template
   ├── resource-field defaults
@@ -665,7 +678,7 @@ Notes on the fields above:
 
   `ComputeInstanceSpec.run_strategy` and `ComputeInstanceTemplateSpecDefaults.run_strategy` remain optional, and a supplied value must be defined and non-zero. The config-as-code client maps the friendly value in `meta/osac.yaml` to the enum, and the Ansible metadata stays unchanged.
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
-- `compute_network_attachments` is the only supported Compute networking field. Catalog policy governs this complete list.
+- `compute_network_attachments` is the only supported Compute networking field. Catalog policy governs this complete list of `ComputeNetworkAttachment` values.
 - Compute attachment policy governs the complete list. The field remains list-shaped but accepts zero or one attachment only. A single attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one attachment are rejected. Catalog validation applies the same rule as direct Compute creation.
 - Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups.
 
@@ -678,7 +691,7 @@ Notes on the fields above:
 | `pull_secret_secret` | Whole reference | Secret |
 | `network.pod_cidr` | CIDR string | Value only |
 | `network.service_cidr` | CIDR string | Value only |
-| `network_attachment` | Whole structured value | Subnet, SecurityGroup |
+| `network_attachment` | Whole `ClusterNetworkAttachment` value | Subnet, SecurityGroup |
 | `node_sets[name].size` | Int32 | Value only |
 | `auto_external_ip_attachment` | Bool | Value only |
 
@@ -738,7 +751,7 @@ Notes on the fields above:
   hardware or interface catalog. A provisioning wizard must load these node
   sets from the resolved ClusterTemplate; it must not offer a separate
   BareMetalInstanceType picker or tenant-composed node-set rows.
-- `network_attachment` governs the single tenant-facing Cluster attachment. `fabric_interface` is resolved from each node set's BareMetalInstanceType and is not a Catalog field. A shared item leaves tenant-local subnet and SecurityGroup selection editable; an item with a Catalog default may use only references visible in the item's scope.
+- `network_attachment` governs the single tenant-facing `ClusterNetworkAttachment`. `fabric_interface` is resolved from each node set's BareMetalInstanceType and is not a Catalog field. A shared item leaves tenant-local subnet and SecurityGroup selection editable; an item with a Catalog default may use only references visible in the item's scope.
 - Raw `pull_secret` stays ungovernable, because storing it would expose secret material through Catalog Item Get and List. The typed `pull_secret_secret` field is governable: it stores a `SecretLocalReference` that names a Secret in the tenant, so the Catalog Item holds a reference and keeps secret material out. A shared item accepts `editable {}` for it, so each tenant supplies its own Secret at provisioning.
 
 ### BareMetalInstance
@@ -749,7 +762,7 @@ Notes on the fields above:
 | `user_data` | String | Value only |
 | `run_strategy` | Enum | Value only |
 | `image` | Whole structured value | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list of `BareMetalNetworkAttachment` values | Subnet, SecurityGroup |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The Bare Metal `Fields` message covers the OS image, run strategy, credentials, network attachments, and automatic ExternalIP attachment:
@@ -908,16 +921,19 @@ apply the following rules:
   resource field. A malformed wrapper, missing required policy `oneof`, wrong
   typed reference, malformed IPv4/CIDR, unknown enum, or unsupported list
   element is rejected at Catalog Item Create/Update.
-- A Compute `compute_network_attachments` policy remains list-shaped but its
-  `items` list accepts zero or one entry only. More than one item and an item
+- A Compute `compute_network_attachments` policy remains list-shaped; its
+  `items` field contains `ComputeNetworkAttachment` values and accepts zero or
+  one entry only. More than one item and an item
   with explicit `primary: false` are rejected. Omitted `primary` and
   `primary: true` are the only accepted single-entry forms.
-- A Bare Metal `network_attachments` policy accepts zero or one entry and
+- A Bare Metal `network_attachments` policy accepts zero or one
+  `BareMetalNetworkAttachment` entry and
   applies the same implicit-primary rule, while its interface reference must
   be validated against the effective BareMetalInstanceType when the resource
   is materialized. Catalog authoring must not invent a physical interface
   catalog separate from BareMetalInstanceType.
-- A Cluster `network_attachment` policy is one structured attachment. It may
+- A Cluster `network_attachment` policy is one `ClusterNetworkAttachment`
+  structured attachment. It may
   govern only the tenant-facing Subnet and SecurityGroup fields; node-set
   fabric-interface derivation and VIP endpoint values remain system-owned.
 - Empty repeated network policy values and empty structured Cluster attachment

@@ -29,7 +29,7 @@ superseded-by:
 
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
-- **VM networking** — wizard submits one list-shaped `compute_network_attachments` entry (one VN, one subnet, security groups); no add/remove NIC rows
+- **VM networking** — wizard submits one list-shaped `compute_network_attachments` entry carrying a `ComputeNetworkAttachment` (one VN, one subnet, security groups); no add/remove NIC rows
 - **Tenant-defined cluster hardware** — the wizard does not create, remove, or replace node sets or their `baremetal_instance_type`; the resolved ClusterTemplate owns that structure. The wizard may collect node-set sizes according to Catalog Item policy.
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
 
@@ -105,7 +105,7 @@ For each static **non-picker** field, match `field_definitions` by `path` (spec-
 
 **Picker-backed fields (v1):** `spec.instance_type` and
 `spec.compute_network_attachments` (including nested paths such as
-`spec.compute_network_attachments.subnet`) load options from list APIs
+`spec.compute_network_attachments[0].subnet`) load options from list APIs
 ([§2.1.5](#215-vm-instance-type-picker-api),
 [§2.1.4](#214-vm-networking-picker-apis)). Cluster `spec.node_sets` is
 template-backed: `ClusterTemplates.Get` supplies the map and typed

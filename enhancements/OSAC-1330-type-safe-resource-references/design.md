@@ -334,6 +334,12 @@ contracts, but all reference-bearing fields use the typed messages above. The
 service designs define the additional `primary` and physical-interface rules;
 they do not reintroduce the shared attachment type.
 
+The names in the `Canonical field` column are API field names, not message
+type names. In particular, `spec.network_attachment` carries a
+`ClusterNetworkAttachment`, and `spec.network_attachments` carries repeated
+`BareMetalNetworkAttachment` values. The API does not define
+`cluster_network_attachment` or `bare_metal_network_attachments` fields.
+
 **Operational impact:** None. This is a schema change with no new controllers,
 webhooks, or runtime components beyond the interceptor (which replaces existing
 inline validation logic).

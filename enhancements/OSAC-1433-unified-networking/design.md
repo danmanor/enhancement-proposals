@@ -138,6 +138,26 @@ cardinality or placement constraints.
 
 ### Network resource fields
 
+#### Attachment field names and message types
+
+The API field name and the message type carried by that field are separate
+parts of the contract. The resource-specific message types are the canonical
+wire values; the field names below are the canonical API names:
+
+| Resource | API field | Value type | Supported shape |
+|---|---|---|---|
+| `ComputeInstance` | `spec.compute_network_attachments` | repeated `ComputeNetworkAttachment` | zero or one entry |
+| `Cluster` | `spec.network_attachment` | `ClusterNetworkAttachment` | omitted or one structured message |
+| `BaremetalInstance` | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` | zero or one entry |
+
+The generic-looking `network_attachment` and `network_attachments` names are
+intentional API field names retained for the Cluster and BaremetalInstance
+contracts. `cluster_network_attachment` and
+`bare_metal_network_attachments` are not alternate field names and must not be
+introduced as additional API fields. Internal CRDs may use their established
+camelCase mappings (`networkAttachment` and `networkAttachments`), but their
+values must still use the corresponding resource-specific message type.
+
 | Resource and field | Wire type / presence | Allowed values and validation |
 |---|---|---|
 | `NetworkClass.spec.fabric_manager` | String reference, optional | If present, must name a provider-registered fabric manager. It may be omitted when a K8s manager provides the complete supported networking surface. |

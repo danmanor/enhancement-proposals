@@ -33,8 +33,9 @@ design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology
 The shared operation contract is defined by [Supported Operations and
 Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
 
-ComputeInstance uses the resource-specific `ComputeNetworkAttachment` message.
-The `compute_network_attachments` field remains optional and list-shaped while
+ComputeInstance exposes the repeated `compute_network_attachments` API field,
+whose values are `ComputeNetworkAttachment` messages. The field remains
+optional and list-shaped while
 accepting at most one entry, and `auto_external_ip_attachment` enables fully
 connected VMs in a single API call. See [PRD](prd.md) for detailed
 requirements.
@@ -153,7 +154,8 @@ being replaced by the shared dispatcher was:
 7. **osac-operator ComputeInstance feedback controller** discovers VM IPs:
    - Watches KubeVirt VMI (VirtualMachineInstance) network status
    - Reads the assigned IP from the sole `vmi.status.interfaces[].ipAddress`
-   - Maps the interface to the single `compute_network_attachment` by CUDN NAD reference
+   - Maps the interface to the sole `ComputeNetworkAttachment` value from
+     `compute_network_attachments` by CUDN NAD reference
    - Fires Signal RPC to fulfillment-service with per-attachment IP data
    - fulfillment-service writes at most one `compute_network_attachment_statuses` entry on ComputeInstanceStatus (`subnet` typed reference, `ip_address`, `primary`)
    - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows the assigned IP for the attachment

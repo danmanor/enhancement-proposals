@@ -61,7 +61,7 @@ creation flows while VMs require explicit networking details on every create.
 
 #### Single-Interface VMs
 
-- **FR-1:** The `compute_network_attachments` list accepts zero or one entry. A request with more than one entry is rejected. [User]
+- **FR-1:** The `compute_network_attachments` list of `ComputeNetworkAttachment` values accepts zero or one entry. A request with more than one entry is rejected. [User]
 - **FR-2:** When the list contains one attachment, omission or `primary: true` makes it primary; explicit `primary: false` is rejected. Multi-interface primary selection is unsupported. [User]
 
 #### Optional Network Configuration with Defaults

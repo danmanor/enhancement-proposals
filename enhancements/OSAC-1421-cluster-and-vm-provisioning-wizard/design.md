@@ -69,7 +69,7 @@ sequenceDiagram
 | Catalog Item | Shared | `adapter.useCatalogItems()` |
 | General | Shared | Name (required), optional SSH key (catalog `ssh_key` overlay); cluster adds required pull secret and optional `ssh_public_key` overlay |
 | Configuration | Adapter | VM: image, OS family, instance type, user data, boot disk, run strategy. Cluster: release image, template-defined `node_sets` table with Catalog-governed sizes |
-| Networking | Adapter | VM: VN → subnet → SG pickers (single `compute_network_attachments` entry). Cluster: pod/service CIDR |
+| Networking | Adapter | VM: VN → subnet → SG pickers (single `compute_network_attachments` entry carrying `ComputeNetworkAttachment`). Cluster: pod/service CIDR; the optional `network_attachment` field carries a `ClusterNetworkAttachment` and is omitted by the v1 wizard |
 | Review | Shared | `adapter.getReviewSections()` — same labels and values as wizard steps; submit via `buildCreatePayload` |
 
 Register `/vms/create` and `/clusters/create` before `:id` routes. On failure: inline errors on the step; any non-2xx create response stays on Review; deprecated instance type warnings from create response are non-blocking and surfaced after submit.
@@ -115,7 +115,8 @@ Identifier-only values are not accepted under OSAC-1330; `cores` and
 `spec.network.service_cidr` are optional cluster-internal network settings —
 omit them from the payload when empty, and validate format only when a value is
 present. The wizard does not expose the CaaS tenant-facing
-`spec.network_attachment` or `spec.auto_external_ip_attachment` controls in
+`spec.network_attachment` (`ClusterNetworkAttachment`) or
+`spec.auto_external_ip_attachment` controls in
 v1, so it sends neither field. The server applies the normal
 Catalog/Template/default resolution for the omitted attachment (using tenant
 defaults when no higher-precedence value exists) and the normal omitted-value

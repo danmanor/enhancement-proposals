@@ -68,7 +68,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Specification
 
-- **FR-1:** Tenants can specify the repeated `network_attachments` field when creating a bare-metal server, but validation accepts at most one entry. The entry identifies a subnet, security groups, and which physical interface to use (optional). The complete list and every entry field are immutable after creation; the single entry is implicitly the default gateway. [User]
+- **FR-1:** Tenants can specify the repeated `network_attachments` field, carrying `BareMetalNetworkAttachment` values, when creating a bare-metal server, but validation accepts at most one entry. The entry identifies a subnet, security groups, and which physical interface to use (optional). The complete list and every entry field are immutable after creation; the single entry is implicitly the default gateway. [User]
 
 #### BareMetalInstanceType Network Port Discovery
 
