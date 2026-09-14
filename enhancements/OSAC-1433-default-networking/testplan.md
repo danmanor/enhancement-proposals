@@ -75,7 +75,8 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 | R4 Workload default resolution and immutability | 2 | Yes | Yes | Yes |
 | R5 Automatic ExternalIP lifecycle | 2 | Yes | Yes | Yes |
 | R6 Unsupported behavior | 1 | Yes | Yes | Rejection paths |
-| **Total** | **13** | **All applicable** | **All applicable** | **All user-visible flows** |
+| R7 CLI defaulting and automatic external access | 1 | Yes | Yes | Yes |
+| **Total** | **14** | **All applicable** | **All applicable** | **All user-visible flows** |
 
 ## Test cases
 
@@ -669,9 +670,59 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
 3. Assert the rejection includes the expected gRPC status and field path when
    the API contract defines one.
 
+### R7: CLI defaulting and automatic external access
+
+#### TC-R7-01: CLI defaulting, flag mapping, and rejection parity
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E | critical | automated |
+
+The CLI must exercise the same defaulting and validation contract as the API;
+it must not introduce a second defaulting path.
+
+**Unit:** Parse `osac create computeinstance`, `osac create
+baremetalinstance`, and `osac create cluster` with no `--network-attachment`,
+with an empty compound attachment, with only `subnet=...`, with only
+`security-groups=...`, and with all supported fields. Verify that the parser
+preserves omitted fields for server-side defaulting, maps the resource-specific
+typed attachment message, and rejects unknown keys, empty values, IPv6 CIDRs,
+multiple attachment options, `primary=false`, and unsupported interface fields
+for VM/Cluster. Verify `--external-ip-attachment` is a create-time boolean and
+has no update/patch form.
+
+**Integration:** Submit each parsed request through the public and private
+validation paths and compare it with the equivalent direct API request:
+
+- omitted attachment and an explicitly empty attachment resolve both fields
+  from the tenant defaults;
+- an attachment containing only Subnet or only SecurityGroups fills only the
+  missing field from the default;
+- a complete attachment preserves the explicit references;
+- an invalid explicit reference fails instead of silently falling back; and
+- a pending or failed default returns the documented readiness error.
+
+Run each case for VM, BM, and Cluster. Verify that the resolved request uses
+the correct repeated VM/BM field or singular Cluster field and that no
+resource or backend operation is persisted after a rejection.
+
+**E2E:** In a connected single-hub deployment, create one VM, one BM, and one
+Cluster for each of these two states:
+
+1. `--external-ip-attachment` present: verify the stored create-time switch is
+   `true`, VM/BM receive one automatic ExternalIP path, and Cluster receives
+   its API and ingress paths.
+2. The flag omitted: verify the switch is `false`, no automatic ExternalIP or
+   attachment is created, and no pool capacity is consumed.
+
+For both states, exercise omitted, empty, partial, and complete networking
+attachments. Attempt a conflicting explicit reference, a second attachment,
+and a network-owned update/patch; verify the expected validation error, no
+fallback over an invalid explicit value, and no partial resource graph.
+
 ## Graduation gate
 
-- All 13 test cases have explicit implementation references.
+- All 14 test cases have explicit implementation references.
 - Every test case has concrete preconditions, numbered steps or a complete
   input/case table, and observable expected results.
 - Every onboarding and defaulting rule maps to a unit or integration test.

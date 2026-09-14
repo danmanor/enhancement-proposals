@@ -385,14 +385,17 @@ attachments, and explicit `primary=false` behavior.
 
 **Integration:** Verify CLI requests use typed local references and the same
 readiness, same-VirtualNetwork, capability, and rollback rules as direct API
-requests. Verify `--external-ip-attachment` mapping and no separate
-`--interface` syntax.
+requests. Verify `--external-ip-attachment` mapping in both states: present
+sets true and starts automatic external access; omitted sets false, creates no
+automatic ExternalIP/attachment, and consumes no pool capacity. Verify the
+switch is immutable and there is no separate `--interface` syntax.
 
 **E2E:** Create a BM with an explicit interface, with a default interface,
-with partial networking, and with no attachment. Verify the resolved list,
-port move, reboot, DHCP discovery, and cleanup. Attempt a second attachment,
-an invalid interface, update/patch, IPv6, and malformed references; verify no
-partial BM, port move, or allocation remains.
+with partial networking, and with no attachment, with the external-access flag
+both present and omitted. Verify the resolved list, create-time switch, port
+move, reboot, DHCP discovery, automatic ExternalIP behavior, and cleanup.
+Attempt a second attachment, an invalid interface, update/patch, IPv6, and
+malformed references; verify no partial BM, port move, or allocation remains.
 
 ## Graduation gate
 

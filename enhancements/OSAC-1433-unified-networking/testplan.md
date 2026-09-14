@@ -621,20 +621,48 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 ExternalIP, ExternalIPAttachment, and NATGateway commands. Verify canonical
 IPv4 CIDR parsing, `--cidrs` exactly-one behavior, enum values, repeated
 `--rule` parsing, typed local/full reference construction, and rejection of
-unknown flags or malformed key/value pairs.
+unknown flags or malformed key/value pairs. For the provider-only
+`osac admin create networkclass` command, verify that at least one of
+`--fabric-manager` and `--k8s-manager` is required, both default CIDRs are
+required and canonical/contained, and each of fabric-only, k8s-only, and
+combined-manager configurations resolves the documented implementation
+strategy. Verify that neither manager is rejected, `--metallb-vip-prefix-length`
+is required only for the CaaS/MetalLB capability path, and
+`implementation_strategy` is derived rather than caller-set. Verify tenant
+callers cannot invoke this command.
+
+For ExternalIPPool, explicitly test exactly one value for the plural
+`--cidrs` option: a single canonical IPv4 CIDR succeeds; repeating the option,
+providing a comma-separated/multiple value, omitting it, using an IPv6 or
+dual-stack CIDR, using host bits, or passing `--ip-family` other than the
+required `ipv4` fails before persistence. Verify separate pools are used for
+separate CIDRs rather than encoding multiple CIDRs in one pool.
+
+For SecurityGroup, enumerate the complete rule grammar: `allow`/`deny`,
+`ingress`/`egress`, and `tcp`/`udp`/`icmp`/`any` are the only enum values;
+TCP/UDP require one port from 1 through 65535, ICMP/any must omit ports, and
+ingress requires exactly `source-cidr` while egress requires exactly
+`destination-cidr`. Verify canonical IPv4 CIDRs only, no host bits, duplicate
+normalized rules and conflicting equal-specificity rules are rejected, an
+ordinary empty group is rejected, and only the documented onboarding or
+authorized replacement fallback may be empty.
 
 **Integration:** Submit parsed CLI requests through public REST/gRPC and
 private handlers. Verify field paths and `InvalidArgument`,
 `FailedPrecondition`, `PermissionDenied`, or visibility-safe `NotFound`
 behavior matches direct API requests. Verify no rejected request persists a
-resource or invokes a manager.
+resource or invokes a manager. Verify the NetworkClass provider command is
+provider-scoped and the CLI and direct API enforce the same conditional
+MetalLB/default validation. Verify each SecurityGroup and ExternalIPPool
+grammar branch returns the field-specific error without persistence.
 
 #### TC-R10-02: Workload attachment CLI mapping
 
 **Unit:** Verify one optional `--network-attachment` maps to VM/BM repeated
 `network_attachments` or Cluster singular `network_attachment`; repeated
-attachment options, unsupported keys, `interface` on VM/Cluster, `primary` on
-Cluster, and empty values are rejected. Verify repeated
+attachment options, unsupported keys, `interface` on VM/Cluster, and
+`primary` on any workload are rejected by the CLI (the API-compatibility
+`primary` field is implicit and the CLI does not emit it). Verify repeated
 `security-groups=<name>` keys remain one attachment with multiple groups.
 
 **Integration:** Verify omitted, partial, and complete CLI attachments receive
@@ -653,13 +681,18 @@ partial resource or backend side effect.
 **Integration:** Verify CLI create/get/list/delete succeeds, while update,
 patch, replace, network-field mutation, and `auto_external_ip_attachment`
 mutation are rejected. Verify `--external-ip-attachment` maps to the boolean
-for all three workload types and that explicit ExternalIPAttachment requires
+for all three workload types. Run both the present and omitted forms for each
+type: present sets the create-time switch and starts the documented automatic
+flow; omitted sets it false, creates no automatic ExternalIP/attachment, and
+does not consume pool capacity. Verify explicit ExternalIPAttachment requires
 exactly one target and the correct Cluster endpoint flags.
 
 **E2E:** Verify VM/BM external access creates one automatic ExternalIP and
-Cluster creates API and ingress external access. Verify endpoint misuse,
-unallocated IPs, non-Ready targets, unsupported NATGateway capability, and
-cross-scope references fail without orphaned state.
+Cluster creates API and ingress external access. Repeat all three workload
+types with the flag omitted and verify no automatic resources or capacity
+consumption. Verify endpoint misuse, unallocated IPs, non-Ready targets,
+unsupported NATGateway capability, and cross-scope references fail without
+orphaned state.
 
 ## Graduation gate
 

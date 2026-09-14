@@ -1146,6 +1146,30 @@ details on the URI/ARN trade-off.
 - Error scenario: Attempt to create a ComputeInstance with a nonexistent
   Subnet name. Verify the API returns a clear error message.
 
+**CLI tests (osac-cli):**
+
+- Parse a local name-only reference such as `--subnet app-subnet` and verify
+  the CLI emits the corresponding typed `{name: "app-subnet"}` message.
+- Parse an ID-only reference such as `--subnet-id <id>` and verify the CLI
+  rejects it because local references require the name; for a full reference,
+  verify name-only, ID-only, and both-name-and-ID forms follow the documented
+  full-reference grammar.
+- Supply matching name and ID and verify the request is accepted and resolved;
+  supply a conflicting name and ID and verify `InvalidArgument` identifies the
+  reference field and no create occurs.
+- Supply `--<field>-project` and verify project-scoped resolution; supply
+  `--<field>-shared` and verify shared-tenant resolution. Verify local
+  networking references reject project/shared selectors, and project/shared
+  selectors cannot be used together.
+- Run the same cases for typed references nested in VM/BM attachments and the
+  singular Cluster attachment, including repeated SecurityGroup references.
+- Run `describe` on resources containing resolved references and verify it
+  renders the resolved resource names and scope rather than raw IDs only.
+- Pass an unknown reference, malformed ID, empty name, unsupported flag, or
+  malformed compound attachment key and verify a field-specific CLI error,
+  no API call for parser errors, and no persisted resource for server-side
+  reference errors.
+
 Test plan details will be developed during implementation for each delivery
 chunk. Each chunk's tests cover the specific resources migrated in that chunk.
 

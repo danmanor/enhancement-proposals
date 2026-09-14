@@ -337,12 +337,17 @@ defaulting matrix.
 **Integration:** Run CLI-created VM requests through the same public and
 private validation paths as direct API requests. Verify typed local-reference
 serialization, readiness errors, field paths, rollback, and
-`--external-ip-attachment` mapping.
+`--external-ip-attachment` mapping. Run both flag states: when present it
+sets the create-time switch to true and starts automatic external access; when
+omitted it sets false, creates no automatic ExternalIP/attachment, and does
+not consume pool capacity. Verify the switch cannot be updated.
 
 **E2E:** Create a VM with one explicit attachment, with partial attachment
-defaulting, and with no attachment. Inspect the resolved plural field and
-status. Attempt a second attachment, an update/patch, and an unsupported
-multi-NIC value; verify rejection and no side effect.
+defaulting, and with no attachment, both with and without
+`--external-ip-attachment`. Inspect the resolved plural field, create-time
+switch, automatic ExternalIP state, and status. Attempt a second attachment,
+an update/patch, and an unsupported multi-NIC value; verify rejection and no
+side effect.
 
 ## Graduation gate
 

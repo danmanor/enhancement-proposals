@@ -399,10 +399,14 @@ keys, invalid CIDRs, and malformed references are rejected.
 shared defaulting/readiness rules and reach the private BMaaS handoff with
 one enriched `BareMetalNetworkAttachment` per worker. Verify
 `--external-ip-attachment` maps to the create-time boolean and endpoint
-validation remains authoritative.
+validation remains authoritative. Run both flag states: present enables the
+two automatic Cluster external-access paths; omitted sets false, creates none,
+and consumes no pool capacity. Verify the switch is immutable.
 
 **E2E:** Create a Cluster with explicit and defaulted CLI networking, verify
-one shared Subnet and resolved per-node-set interfaces, then delete it.
+one shared Subnet and resolved per-node-set interfaces, with the external
+access flag both present and omitted, then delete it. Verify the present form
+creates API and ingress external access while the omitted form creates none.
 Attempt multi-attachment, tenant-selected interface, primary, network-field
 update, and invalid target/reference requests; verify no partial Cluster,
 worker, VIP, IP, or port-move state.
