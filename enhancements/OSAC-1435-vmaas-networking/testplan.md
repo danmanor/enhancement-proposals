@@ -46,7 +46,7 @@
 - The resolved resource contains exactly one attachment.
 - The sole attachment is implicitly primary.
 
-#### TC-R1-02: Multiple and false-primary inputs are rejected
+#### TC-R1-02: Any multi-entry list and any explicit false-primary input are rejected
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -64,6 +64,9 @@
   reservation, persistence, or template dispatch.
 - Error identifies `spec.compute_network_attachments` or the precise primary
   field.
+- Unknown nested attachment fields, malformed typed Subnet/SecurityGroup
+  references, and malformed `primary` presence/encoding are rejected by the
+  request-shape layer with no normalization or persistence.
 
 ### R2: Attachment defaulting and readiness
 
@@ -116,12 +119,18 @@
 ##### Steps
 
 1. Create a valid ComputeInstance with one resolved attachment.
-2. Observe the operator/template input.
-3. Inspect the resulting VirtualMachine/VMI.
+2. Inspect the private ComputeInstance CR and verify that public
+   `spec.compute_network_attachments` was converted to the CRD's
+   `spec.networkAttachments` resource-specific message, with no legacy shared
+   attachment field.
+3. Observe the operator/template input and inspect the resulting
+   VirtualMachine/VMI.
 
 ##### Expected results
 
 - One `l2bridge` interface is created in the selected CUDN namespace.
+- The CRD/template receives exactly the resolved typed Subnet and
+  SecurityGroup references from the API-to-CRD conversion.
 - No `move_network_attachment` operation is invoked.
 - A malformed CR with multiple entries fails closed rather than using the
   first entry.
@@ -143,8 +152,31 @@
 ##### Expected results
 
 - Only the valid sole interface produces a Ready network status.
+- The status entry contains the resolved typed Subnet reference and
+  `primary=true` for the sole attachment.
 - Invalid or ambiguous status causes retry/failure and never mutates spec or
   reports a false Ready IP.
+
+#### TC-R3-03: VM provisioning and template failures fail closed
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E recovery | high | automated |
+
+##### Cases
+
+- Subnet has no target namespace or its CUDN is not Ready;
+- AAP/template execution failure;
+- controller restart during namespace resolution or template dispatch.
+
+##### Expected results
+
+- The ComputeInstance remains Pending or enters Failed with the documented
+  condition and job reference; it is never reported Ready without a valid
+  resolved attachment and VM interface.
+- Reconciliation retries after the dependency recovers without creating a
+  second VM, interface, or backend operation.
+- A controller restart resumes the existing operation idempotently.
 
 ### R4: Automatic ExternalIP
 
@@ -165,6 +197,10 @@
 ##### Expected results
 
 - Attachment target is the VM and endpoint is `UNSPECIFIED`.
+- Auto-created ExternalIP and ExternalIPAttachment resources carry
+  `osac.openshift.io/auto-created: "true"`; the ExternalIP also carries
+  `osac.openshift.io/auto-created-for: <compute-instance-id>` for orphan
+  cleanup.
 - DNAT dispatch waits for both prerequisites.
 - DNAT uses the discovered sole interface IP, not a tenant-supplied IP.
 
@@ -174,12 +210,42 @@
 |---|---|---|
 | Unit, integration, E2E rejection | critical | automated |
 
+##### Steps
+
+1. Exhaust every Ready IPv4 pool and submit an otherwise valid VM create with
+   `auto_external_ip_attachment=true`.
+2. Repeat with an invalid resolved attachment and with a failure injected after
+   capacity reservation.
+3. Inspect the VM, ExternalIP, ExternalIPAttachment, job, and pool capacity.
+
 ##### Expected results
 
 - Pool selection uses greatest capacity and deterministic ties.
-- Exhaustion or any validation failure leaves no VM, ExternalIP,
+- Create-time exhaustion or validation failure leaves no VM, ExternalIP,
   ExternalIPAttachment, job, or capacity reservation.
 - Cleanup retries attachment before ExternalIP.
+
+#### TC-R4-03: Asynchronous ExternalIP and DNAT failures preserve VM state
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E recovery | critical | automated |
+
+##### Cases
+
+- ExternalIP allocation enters `Failed` after the VM and Pending children are
+  persisted;
+- ExternalIPAttachment/DNAT dispatch fails after the VM is provisioned;
+- transient and permanent auto-created-resource cleanup failure.
+
+##### Expected results
+
+- ExternalIP failure leaves the VM Pending/functional without inbound
+  external access; the VM is not falsely reported as having external access.
+- Attachment failure does not activate DNAT, while the VM remains usable.
+- Transient cleanup retries through the VM finalizer. Permanent cleanup
+  follows the documented orphan/manual-cleanup path without duplicate IPs or
+  attachments.
 
 ### R5: Immutability and cleanup
 

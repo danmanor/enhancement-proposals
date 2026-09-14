@@ -9,6 +9,9 @@
 - **Scope:** Provider registration, sequential fabric-to-CUDN provisioning,
   first-subnet VM support, fabric-only additional Subnets, EVPN connectivity,
   readiness, deletion, and Phase 1 failure recovery.
+- **Inherited boundary:** The shared Unified Networking plan owns IPv4-only,
+  connected single-hub admission, create/read/delete-only operations, and
+  tenant reference/defaulting validation.
 - **Manual prerequisites:** OCP with OVN-Kubernetes, FRR, NMState, VTEP,
   RouteAdvertisements, BGP underlay, gateway MAC coordination, and a real
   Netris fabric. These are installation prerequisites, not tenant API
@@ -42,10 +45,13 @@
 ##### Steps
 
 1. Install the provider ConfigMap declaring `cudn_evpn`.
-2. Verify IPv4 support, IPv6 disabled, single-subnet VM capability, and
-   create/read/delete operations.
+2. Verify IPv4 support, IPv6 disabled, create/read/delete operations, and the
+   separate Phase 1 single-subnet VM-placement validation.
 3. Create a NetworkClass with `fabric_manager=netris` and
    `k8s_manager=cudn_evpn`.
+4. With the Fabric Manager advertising NATGateway support, create a Ready
+   VirtualNetwork and an Allocated, unconsumed ExternalIP, then create a
+   NATGateway through the combined NetworkClass.
 
 ##### Expected results
 
@@ -54,6 +60,9 @@
   available.
 - `cudn_evpn` is not selected as Default Networking's default manager when
   required manual prerequisites are absent.
+- In a combined NetworkClass, NATGateway is accepted through the configured
+  Fabric Manager when that manager advertises NAT support; `cudn_evpn` does
+  not need to advertise the NATGateway operation itself.
 
 #### TC-R1-02: Incomplete or tenant-controlled registration is rejected
 
@@ -67,13 +76,16 @@
 - IPv6/dual-stack capability;
 - missing VTEP/FRR/BGP prerequisite;
 - tenant tries to select manager, VNI, VTEP, gateway MAC, or skip annotation;
-- NATGateway request under Phase 1.
+- NATGateway request in K8s-only mode;
+- NATGateway request in combined mode when the Fabric Manager does not
+  advertise NATGateway support.
 
 ##### Expected results
 
 - Provider misconfiguration or unsupported tenant input fails before backend
   provisioning.
-- NATGateway is rejected because Phase 1 does not advertise it.
+- K8s-only NATGateway requests and combined-manager requests without Fabric
+  NATGateway support are rejected before persistence or dispatch.
 
 ### R2: Sequential fabric-to-CUDN provisioning
 
@@ -193,8 +205,34 @@
 
 - Provider-only skip annotation produces fabric-only provisioning even for a
   first/only Subnet.
-- Tenant cannot set or use the annotation as a hidden API input.
+- Tenant cannot set or use the annotation as a hidden API input. Test both a
+  tenant-facing API request and a direct CR containing the annotation.
+- A provider-authenticated path with valid provenance may set the annotation;
+  a forged or tenant-owned annotation is rejected or ignored.
 - Deletion skips CUDN cleanup for the fabric-only Subnet.
+
+#### TC-R3-05: Persisted Subnet identity determines first-Subnet behavior
+
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2, IC-3 | Unit, integration, E2E-stress | critical | automated |
+
+##### Cases
+
+- Two Subnets are created concurrently and reconciliation observes them in
+  reverse list order.
+- The controller restarts after either Subnet is persisted but before its
+  CUDN decision is reconciled.
+- A later Subnet is reconciled before the earlier-created Subnet.
+
+##### Expected results
+
+- The first Subnet is selected by stable persisted creation sequence, never by
+  unordered list position or reconciliation order.
+- Exactly that Subnet receives the CUDN; later Subnets are fabric-only unless
+  the explicit provider skip rule applies.
+- Restart and retry preserve the same identity without duplicate CUDNs, VNIs,
+  namespaces, or backend jobs.
 
 ### R4: VM placement and connectivity
 
@@ -310,9 +348,10 @@
 - tenant setting provider-only topology controls;
 - CaaS private-worker EVPN port-move integration while transport support is
   TBD;
-- east-west networking;
 - update/patch/replace of network-owned fields;
-- NATGateway under `cudn_evpn`.
+- NATGateway in a K8s-only NetworkClass whose only manager is `cudn_evpn`, or
+  an attempt to dispatch NATGateway directly to `cudn_evpn` instead of through
+  a capable Fabric Manager.
 
 ##### Expected results
 

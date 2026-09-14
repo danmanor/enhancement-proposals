@@ -50,7 +50,7 @@
 - All references are Ready, same scope, same VN, IPv4, and unique.
 - Omitted/true primary is accepted; sole entry is implicitly primary.
 
-#### TC-R1-02: Multiple and false-primary inputs are rejected
+#### TC-R1-02: Any multi-entry list and any explicit false-primary input are rejected
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -61,6 +61,9 @@
 - More than one `network_attachments` entry is rejected before interface
   discovery, persistence, capacity reservation, or dispatch.
 - Explicit `primary: false` is rejected.
+- Unknown nested attachment fields, malformed typed Subnet/SecurityGroup
+  references, and malformed `primary` presence/encoding are rejected before
+  interface discovery or persistence.
 - Direct API, Catalog, private CaaS, CRD, and controller paths agree.
 
 ### R2: BareMetalInstanceType and physical interface
@@ -97,7 +100,9 @@
 - unknown interface;
 - lifecycle, management, storage, or unknown-role port;
 - inventory host lacks the selected port;
-- selected port has no known MAC.
+- selected port has no known MAC;
+- catalog port name, fabric-manager logical interface name, and
+  `osac.openshift.io/interface-macs` annotation key do not match.
 
 ##### Expected results
 
@@ -105,6 +110,33 @@
 - Infrastructure allocation failure remains Pending/Failed and never becomes
   Ready with a different port.
 - No lifecycle or unrelated port is moved.
+- A naming mismatch fails closed before port movement or DHCP lease lookup; the
+  system never targets a different NIC based on list position, display label,
+  or an inconsistent annotation key.
+
+#### TC-R2-03: Deployment capability admission is enforced
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated where user-visible |
+
+##### Cases
+
+- K8s-only NetworkClass with no Fabric Manager;
+- disabled Fabric Manager;
+- Fabric Manager missing `move_network_attachment`;
+- Fabric Manager missing `query_dhcp_lease`;
+- capability becomes unavailable between NetworkClass creation and private
+  CaaS worker dispatch.
+
+##### Expected results
+
+- Standalone, Catalog-based, and private CaaS BM creates fail with
+  `FailedPrecondition` before BM, automatic ExternalIP, attachment, or CR
+  persistence when the required capability set is unavailable.
+- BMaaS does not create a long-lived Pending instance waiting for an
+  unsupported capability.
+- The capability check is repeated before private CaaS worker dispatch.
 
 ### R3: Provisioning network and handoff
 
@@ -118,21 +150,52 @@
 
 1. Allocate an unassigned host on the deployment provisioning network.
 2. Complete inventory and OS provisioning.
-3. Move only the selected fabric port to the tenant Subnet.
-4. Reboot as required for fresh tenant DHCP.
-5. Discover the tenant IP.
+3. Inspect the private BaremetalInstance CR and verify that public
+   `spec.network_attachments` was copied to the CRD's
+   `spec.networkAttachments` resource-specific message, with no dropped
+   attachment or legacy shared message.
+4. Move only the selected fabric port to the tenant Subnet.
+5. Reboot as required for fresh tenant DHCP.
+6. Discover the tenant IP.
 
 ##### Expected results
 
 - Phase order is inventory → provisioning → networking → reboot → IP
   discovery → Ready.
+- Reboot and IP discovery do not begin until the target tenant network segment
+  reports active/ready after the selected port move.
 - Tenant cannot reach the host before the port move and readiness.
 - Port move uses provisioning-network → tenant-network direction and selected
   logical interface only.
+- The CRD contains the same resolved typed Subnet, SecurityGroups, interface,
+  and primary value that passed API validation.
 - Host does not retain the provisioning network after handoff.
 - Deployment-owned provisioning network is consumed, not created, by BMaaS.
 
-#### TC-R3-02: Deletion reverses the handoff safely
+#### TC-R3-02: Provisioning, networking, and AAP failures recover safely
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E recovery | high | automated |
+
+##### Cases
+
+- inventory allocation failure;
+- switch port-move failure;
+- AAP/template execution failure;
+- controller restart during provisioning or networking reconciliation.
+
+##### Expected results
+
+- The BaremetalInstance remains Pending or enters Failed with the documented
+  condition and job reference; it is never Ready before the tenant handoff
+  and IP discovery complete.
+- Retry after recovery is idempotent and does not move a second or unrelated
+  port, create a second BM, or expose the provisioning-network IP.
+- Controller restart resumes the existing phase without duplicating the
+  network move or provisioning job.
+
+#### TC-R3-03: Deletion reverses the handoff safely
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -168,6 +231,8 @@
 
 - Only canonical IPv4 in the resolved Subnet is published.
 - Status contains at most one interface/IP entry.
+- The status entry contains the resolved interface, typed Subnet reference,
+  canonical IPv4 address, and implicit `primary=true`.
 - Missing/wrong lease requeues and keeps BM non-Ready.
 - Status feedback updates fulfillment-service without changing spec.
 
@@ -179,10 +244,20 @@
 |---|---|---|
 | Unit, integration, E2E | critical | automated |
 
+##### Steps
+
+1. Create an otherwise valid BM with `auto_external_ip_attachment=true`.
+2. Inspect the atomically created ExternalIP and Pending
+   ExternalIPAttachment, including their cleanup labels.
+3. Complete ExternalIP allocation while withholding BM IP discovery, then
+   discover the selected interface IP and verify DNAT activation.
+
 ##### Expected results
 
 - Ready IPv4 pool and capacity are required.
 - Parent, ExternalIP, and Pending ExternalIPAttachment are atomic.
+- Auto-created ExternalIP and ExternalIPAttachment carry the canonical
+  auto-created labels, including `auto-created-for` on the ExternalIP.
 - Attachment target is BM with `UNSPECIFIED` endpoint.
 - DNAT waits for both ExternalIP Allocated and discovered BM IP.
 - DNAT uses the selected interface's discovered IP only.
@@ -202,6 +277,29 @@
 - Manual ExternalIP resources remain tenant-managed.
 - Transient finalizer/fabric failure retries without duplicate moves or IPs;
   permanent failure follows documented manual cleanup.
+
+#### TC-R5-03: Asynchronous ExternalIP and DNAT failures preserve BM state
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E recovery | critical | automated |
+
+##### Cases
+
+- ExternalIP allocation enters `Failed` after the BM and Pending children are
+  persisted;
+- ExternalIPAttachment/DNAT dispatch fails after the BM reaches its tenant
+  network;
+- delayed or missing IP discovery while the ExternalIP is already Allocated.
+
+##### Expected results
+
+- ExternalIP failure leaves the BM Pending/functional without inbound
+  external access; the BM is not falsely reported as externally reachable.
+- Attachment failure does not activate DNAT, while the BM remains on its
+  validated tenant network.
+- Missing BM IP keeps the attachment Pending and requeues; no DNAT is created
+  with the provisioning-network IP or an arbitrary address.
 
 ### R6: CaaS private handoff and Catalog parity
 
@@ -279,6 +377,8 @@
 
 - Every BMaaS server-validation rule and phase-ordering rule has unit or
   integration coverage.
+- NetworkClass Fabric Manager capability admission, including the repeated
+  private-worker check, has negative coverage.
 - E2E covers one-attachment success, isolation, port move, reboot, DHCP,
   ExternalIP, CaaS handoff, deletion, and recovery.
 - Every user-visible unsupported interface, cardinality, IP, and update path

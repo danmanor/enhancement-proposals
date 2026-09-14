@@ -81,12 +81,22 @@
 
 - Two Ready BareMetalInstanceTypes with different ordered fabric ports.
 
+##### Steps
+
+1. Create a Cluster from a ClusterTemplate containing two authoritative node
+   sets and wait for the resolved `fabric_interface` values to be stored.
+2. Edit or reorder the ports on one referenced BareMetalInstanceType.
+3. Reconcile the existing Cluster and inspect its ClusterOrder and subsequent
+   BMaaS worker requests.
+
 ##### Expected results
 
 - Each node set stores the first ordered `fabric` port for its type.
 - Node sets may have different physical interfaces while sharing one tenant
   Subnet and SecurityGroups.
 - The stored interface is immutable after Cluster creation.
+- The existing Cluster and later worker requests retain the originally stored
+  interfaces; the BareMetalInstanceType edit does not trigger re-resolution.
 
 #### TC-R2-02: Invalid node-set types and ports fail closed
 
@@ -97,16 +107,25 @@
 ##### Cases
 
 - missing/Pending/Failed BareMetalInstanceType;
-- no fabric-role port;
-- lifecycle-only, malformed, or unknown-role ports;
+- no valid `fabric`-role port, including lifecycle-only or malformed port
+  definitions; unrelated or unknown role strings may exist in the inventory but
+  must never be selected for tenant networking;
 - inventory host cannot provide stored interface;
 - VM node set or multi-NIC node request.
+- missing, extra, or renamed node-set keys compared with the authoritative
+  ClusterTemplate;
+- caller-supplied `baremetal_instance_type` that differs from the Template's
+  typed reference.
 
 ##### Expected results
 
 - Cluster create or worker provisioning fails with the specific field/condition.
-- No fallback to arbitrary or first non-fabric port occurs.
+- No fallback to an arbitrary or first non-fabric port occurs, and the presence
+  of an unrelated unknown role does not invalidate an otherwise valid profile.
 - Existing Cluster never silently re-resolves to a different port.
+- Node-set keys must equal the Template's keys exactly, and hardware
+  references must equal the Template's references exactly; only permitted
+  node-set sizes may differ.
 
 ### R3: Private BMaaS worker handoff
 
@@ -185,8 +204,6 @@
   and VIP pool.
 - Cluster is not Ready before required endpoint status is present.
 - Reserved MetalLB range does not overlap fabric DHCP allocation.
-- API and wildcard ingress DNS records, when inline DNS is enabled, point to
-  the documented ExternalIPs; DNS API is not part of this feature.
 
 #### TC-R4-02: Endpoint and ExternalIP ordering failures requeue
 
@@ -199,6 +216,7 @@
 - endpoint status before ExternalIP allocation;
 - ExternalIP allocation before endpoint status;
 - empty, IPv6, duplicate, or out-of-subnet endpoint;
+- a valid API or ingress endpoint changes after the Cluster has become Ready;
 - missing/overlapping MetalLB pool;
 - Signal RPC failure;
 - manager/controller restart.
@@ -208,7 +226,35 @@
 - API and ingress attachments wait independently for their matching endpoint
   and Allocated ExternalIP.
 - DNAT never dispatches with an empty, wrong, or duplicate endpoint.
+- A changed endpoint after readiness is rejected or ignored, does not replace
+  the persisted stable endpoint, and does not retarget an existing DNAT rule.
 - Retry is idempotent and does not allocate duplicate VIPs or IPs.
+
+#### TC-R4-03: Provider reachability selects the valid egress path
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated where user-visible |
+
+##### Cases
+
+- Provider reports `direct_route_available == true`.
+- Provider reports no direct route and the resolved VirtualNetwork has a Ready
+  NATGateway.
+- Provider reports no direct route and the VirtualNetwork has no NATGateway,
+  or its NATGateway is Pending, Failed, or Deleting.
+- Provider cannot establish whether a direct route exists.
+- Tenant attempts to override the route result or select an alternate
+  reachability strategy.
+
+##### Expected results
+
+- A direct route is sufficient and does not require NATGateway.
+- Without a direct route, only a Ready NATGateway satisfies the prerequisite.
+- Unknown or unsatisfied reachability fails with `FailedPrecondition` before
+  Cluster, worker, VIP, ExternalIP, or capacity persistence.
+- No tenant-settable route override or fallback to an unready NATGateway is
+  accepted.
 
 ### R5: Automatic ExternalIP access
 
@@ -218,14 +264,62 @@
 |---|---|---|
 | Unit, integration, E2E | critical | automated |
 
+##### Steps
+
+1. Create a valid Cluster with `auto_external_ip_attachment=true`.
+2. Verify two distinct IPv4 ExternalIPs and matching Pending attachments are
+   reserved atomically.
+3. Complete API and ingress endpoint discovery and wait for both attachments
+   to become Ready.
+4. Inspect the inline DNS records and verify that API and wildcard ingress
+   records point to the corresponding ExternalIPs only for the `true` case.
+5. Repeat with the field omitted and with it explicitly false, then inspect
+   child resources, auto-created labels, pool capacity, and DNS records.
+
 ##### Expected results
 
-- Two distinct IPv4 ExternalIPs are reserved atomically.
-- One attachment uses `API`, the other `INGRESS`.
+- For the `true` case, two distinct IPv4 ExternalIPs are reserved atomically.
+- For the `true` case, one attachment uses `API`, the other `INGRESS`.
 - Pool exhaustion or inability to reserve two addresses leaves no Cluster,
   child, or capacity reservation.
 - API DNAT uses only `status.apiEndpoint`; ingress DNAT uses only
   `status.ingressEndpoint`.
+- Auto-created ExternalIPs and ExternalIPAttachments carry the canonical
+  `osac.openshift.io/auto-created: "true"` label, and ExternalIPs carry the
+  matching `auto-created-for` label.
+- When automatic external access is enabled, inline DNS records point to the
+  ExternalIPs; when it is omitted or false, no ExternalIP or
+  ExternalIPAttachment is created, no pool capacity is reserved, and no
+  ExternalIP-backed DNS records are created.
+
+#### TC-R5-02: Asynchronous worker, ExternalIP, and cleanup failures recover safely
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E recovery | critical | automated |
+
+##### Cases
+
+- BMaaS private API failure or no available host;
+- Agent registration timeout;
+- AAP/template failure;
+- ExternalIP allocation enters `Failed` after the Cluster and Pending child
+  records were persisted;
+- ExternalIPAttachment/DNAT dispatch fails after the Cluster is provisioned;
+- transient and permanent auto-created-resource cleanup failure.
+
+##### Expected results
+
+- A worker failure is recorded and retried without marking the Cluster Ready
+  or releasing the Subnet/ExternalIP prematurely.
+- An Agent registration timeout deletes the timed-out BMI and retries; the
+  failed worker does not remain bound to the Cluster.
+- An AAP failure leaves ClusterOrder Failed with the job reference.
+- ExternalIP failure leaves the Cluster Pending/functional without inbound
+  external access; attachment failure does not activate DNAT.
+- Transient cleanup retries through the parent finalizer. Permanent cleanup
+  follows the documented orphan/manual-cleanup path without duplicate workers,
+  IPs, or DNAT rules.
 
 ### R6: Operations, Catalog, and unsupported behavior
 
@@ -235,12 +329,25 @@
 |---|---|---|
 | Unit, integration, E2E rejection | critical | automated |
 
+##### Cases
+
+- Update, patch, replace, and field-mask changes to the singular Cluster
+  attachment and either nested reference;
+- changes to any stored per-node-set `fabric_interface`;
+- changes to the `API`/`INGRESS` endpoint binding on an
+  ExternalIPAttachment;
+- changes to `auto_external_ip_attachment`;
+- direct ClusterOrder spec/status attempts that alter network-owned input or
+  bypass validated endpoint feedback.
+
 ##### Expected results
 
-- Update, patch, replace, and field-mask changes to attachment, Subnet,
-  SecurityGroups, stored interfaces, endpoint fields, and auto-external switch
-  are rejected.
-- Status/conditions/finalizers remain controller-owned mutable fields.
+- Update, patch, replace, and field-mask changes to the network-owned
+  attachment, Subnet, SecurityGroups, stored interfaces, endpoint enum, and
+  auto-external switch are rejected.
+- Controller-owned endpoint status, conditions, and finalizers can only be
+  written through the validated feedback/reconciliation path; direct tenant
+  status/spec mutation is rejected.
 
 #### TC-R6-02: Catalog and direct Cluster creates are equivalent
 
@@ -270,7 +377,9 @@
 - wrong endpoint enum or duplicate API/Ingress binding;
 - direct ClusterOrder bypass;
 - legacy deployment-wide step collections as a tenant input;
-- DNS API, NATGateway, and other non-CaaS network fields.
+- DNS API, NATGateway, or other non-CaaS network fields embedded in the
+  public Cluster request (a standalone NATGateway still follows the shared
+  capability and readiness contract).
 
 ##### Expected results
 
@@ -282,5 +391,6 @@
 - Every CaaS server-validation and worker-handoff rule has unit/integration
   coverage.
 - BM-only and combined-manager supported workflows have E2E coverage.
-- API/Ingress VIP feedback, ExternalIP ordering, cleanup, and retry pass.
+- Template node-set ownership, direct-route/NAT selection, API/Ingress VIP
+  feedback, ExternalIP ordering, cleanup, and retry pass.
 - Every user-visible unsupported CaaS path has a negative E2E test.

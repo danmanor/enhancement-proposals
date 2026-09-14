@@ -75,7 +75,7 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 | R4 Workload default resolution and immutability | 2 | Yes | Yes | Yes |
 | R5 Automatic ExternalIP lifecycle | 2 | Yes | Yes | Yes |
 | R6 Unsupported behavior | 1 | Yes | Yes | Rejection paths |
-| **Total** | **12** | **All applicable** | **All applicable** | **All user-visible flows** |
+| **Total** | **13** | **All applicable** | **All applicable** | **All user-visible flows** |
 
 ## Test cases
 
@@ -96,17 +96,20 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 - The test database has no active `test-default-nc`.
 - The caller uses the provider/private client authorized to create a
   deployment NetworkClass.
+- The provider has registered the current `netris` Fabric Manager, the
+  deployment is connected and single-hub, and the CaaS/MetalLB VIP path is
+  enabled for this validation case.
 
 ##### Steps
 
 1. Call `NetworkClasses/Create` with `metadata.name: test-default-nc`,
-   `is_default: true`, `fabric_manager: cudn_net`, and:
+   `fabric_manager: netris`, and:
 
    ```yaml
    spec:
      defaults:
-       virtual_network_ipv4_cidr: 10.200.0.0/16
-       subnet_ipv4_cidr: 10.200.0.0/20
+       virtual_network_cidr: 10.200.0.0/16
+       ipv4_subnet_cidr: 10.200.0.0/20
      metallb_vip_prefix_length: 32
    ```
 
@@ -117,10 +120,10 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 ##### Expected results
 
 - The create call succeeds with gRPC status `OK`.
-- `spec.defaults.virtual_network_ipv4_cidr` is exactly `10.200.0.0/16`.
-- `spec.defaults.subnet_ipv4_cidr` is exactly `10.200.0.0/20`.
-- `spec.metallb_vip_prefix_length` is accepted only when the CaaS/MetalLB
-  capability is advertised.
+- `spec.defaults.virtual_network_cidr` is exactly `10.200.0.0/16`.
+- `spec.defaults.ipv4_subnet_cidr` is exactly `10.200.0.0/20`.
+- `spec.metallb_vip_prefix_length` is accepted because the configured
+  deployment provides the CaaS/MetalLB VIP path.
 - No separate enable/disable flag is accepted or required.
 
 #### TC-R1-02: Invalid defaults are rejected before persistence
@@ -155,7 +158,10 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 | Set VN CIDR to `10.200.0.7/20` | `InvalidArgument`; host bits are rejected. |
 | Set Subnet CIDR to `10.201.0.0/24` | `InvalidArgument`; Subnet is outside the VN. |
 | Set Subnet CIDR to `10.200.0.0/16` | `InvalidArgument`; Subnet cannot equal the VN range. |
-| Advertise MetalLB capability but omit prefix length | `InvalidArgument`; `spec.metallb_vip_prefix_length` is required for the advertised capability. |
+| Configure a CaaS/MetalLB-capable deployment path but omit the prefix length | `InvalidArgument`; `spec.metallb_vip_prefix_length` is required for that path. |
+| Set MetalLB prefix to `0`, `33`, or a value not more specific than the participating Subnet | `InvalidArgument`; the prefix is outside the supported IPv4/reserved-range contract. |
+| Set a MetalLB prefix whose reserved range is outside the Subnet | `InvalidArgument`; the reserved range must remain contained by the Subnet. |
+| Supply `metallb_vip_prefix_length` without the CaaS/MetalLB path | `InvalidArgument`; the conditionally supported field must be omitted. |
 | Submit provider-only defaults as a tenant | `PermissionDenied` or the platform visibility error; no provider configuration is changed. |
 
 ### R2: Tenant onboarding creates exactly the supported graph
@@ -190,6 +196,9 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 
 4. If NAT capability is enabled, list `NATGateways` and inspect the
    referenced `ExternalIP` for the tenant.
+5. Repeat onboarding with NAT capability enabled and every candidate
+   ExternalIPPool exhausted; for this subcase, poll until
+   `DefaultNetworkingReady=False` with the exhaustion reason.
 
 ##### Expected results
 
@@ -198,14 +207,18 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
   SecurityGroup exist for `test-defnet-001`.
 - Each default resource has tenant ownership and the default label.
 - The deployment baseline is separate from the fallback SecurityGroup and its
-  hard-coded `permit` action remains effective even if the fallback group has
-  no rules.
+  hard-coded `permit` action remains effective even if the onboarding-created
+  fallback group has no rules.
 - NATGateway exists only when NAT capability is enabled, carries the default
   label, and references a Ready/Allocated unconsumed ExternalIP.
 - `DefaultNetworkingReady` transitions from `ResourcesPending` to
   `AllResourcesReady` only after every capability-required resource is Ready.
 - The `DefaultNetworkingCreated` event is emitted when supported default
   resource creation starts.
+- When NAT capability is supported but every Ready pool is exhausted,
+  onboarding creates neither the default ExternalIP nor NATGateway, leaves
+  `DefaultNetworkingReady=False`, reports the explicit ExternalIPPool
+  exhaustion condition, and leaves no capacity reservation behind.
 
 #### TC-R2-02: K8s-only onboarding excludes NATGateway
 
@@ -219,8 +232,10 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 
 ##### Preconditions
 
-- Configure `test-k8s-only-nc` with `k8s_manager: cudn_evpn`, no Fabric
-  Manager, and the same valid IPv4 defaults.
+- Configure `test-k8s-only-nc` with `k8s_manager: ovn_networking`, no Fabric
+  Manager, and the valid IPv4 defaults without
+  `metallb_vip_prefix_length`, because this topology does not expose the
+  current CaaS/MetalLB path.
 - No NATGateway capability is advertised.
 - `test-k8s-only-001` does not exist.
 
@@ -435,6 +450,46 @@ service-specific VM/CaaS/BMaaS networking test plans.
 - After dependencies are removed, delete succeeds and a replacement can be
   created with a new immutable specification.
 
+#### TC-R4-03: Authorized default replacement is validated
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated where user-visible |
+
+**Implementation references:** `default_networking_provisioner_test.go`,
+`security_groups_server_test.go`, `it_validation_test.go`, and
+`tests/e2e/core/grpc_client.py` request/error helpers.
+
+##### Cases
+
+- Tenant Admin creates a replacement default in the same effective tenant
+  scope after deleting the old default and removing its dependencies.
+- Repeat the authorized replacement flow for the default VirtualNetwork,
+  default Subnet, fallback SecurityGroup, and supported default NATGateway.
+- Replacement fallback SecurityGroup has an empty rule list.
+- Non-default tenant-created SecurityGroup has an empty rule list.
+- A second active default of the same kind is created.
+- A caller supplies the default label for another tenant, wrong VN, wrong
+  address family, non-canonical CIDR, or an unauthorized caller tries to set
+  the label.
+- A replacement is created before the old default is deleted or while its
+  dependency graph is still active.
+
+##### Expected results
+
+- Only the authorized Tenant Admin replacement in the effective scope is
+  accepted; the old default must be fully deleted first.
+- Each supported default resource kind allows at most one active default, and
+  replacement uses the ordinary IPv4, same-VN, readiness, manager-capability,
+  and immutable-field validation for that kind.
+- The single validated replacement fallback may have zero rules. Every other
+  tenant-created SecurityGroup requires at least one valid rule.
+- Competing defaults, wrong ownership/scope, invalid parent/family/CIDR,
+  unauthorized labels, and premature replacement are rejected before
+  persistence.
+- Replacement resources remain immutable and omitted/empty workload defaulting
+  remains unavailable until the replacement graph is Ready.
+
 ### R5: Automatic ExternalIP lifecycle
 
 #### TC-R5-01: Successful automatic external access
@@ -466,8 +521,10 @@ service-specific VM/CaaS/BMaaS networking test plans.
    through the private API.
 4. Complete target IP/VIP discovery and wait for the attachment status.
 5. Delete each parent resource and observe the cleanup order.
-6. Delete the target that owns the explicitly managed ExternalIPAttachment and
-   inspect that attachment and ExternalIP.
+6. Attempt to delete the target that owns the explicitly managed
+   ExternalIPAttachment and verify that deletion is blocked.
+7. Delete the manual attachment, delete the target, and inspect the manual
+   ExternalIP.
 
 ##### Expected results
 
@@ -483,9 +540,12 @@ service-specific VM/CaaS/BMaaS networking test plans.
   carry `osac.openshift.io/auto-created-for: <resource-id>`.
 - The `AutoExternalIPCreated` event is present on each workload that received
   automatic external access.
-- The explicitly managed ExternalIP and ExternalIPAttachment remain after
-  their target parent is deleted because they do not carry the auto-created
-  label.
+- The explicitly managed ExternalIPAttachment blocks target deletion until the
+  tenant deletes the attachment; it is never implicitly detached or changed to
+  Pending.
+- After the attachment is deleted, the target can be deleted and the
+  explicitly managed ExternalIP remains tenant-managed until separately
+  deleted.
 
 #### TC-R5-02: Capacity and cleanup-failure behavior
 
@@ -592,7 +652,9 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
 | Tenant requests an automatic second VN or Subnet | `InvalidArgument`; no second resource or manager job is created. |
 | Existing tenant is retroactively assigned defaults | No mutation; request is rejected or excluded by the API contract. |
 | UI-only simplified creation through the API/CLI | No hidden UI behavior is exposed; normal API validation applies. |
-| Tenant-created empty SecurityGroup used as fallback | `InvalidArgument`; only the system-created fallback may be empty because the deployment baseline is hard-coded `permit`. |
+| Ordinary tenant-created empty SecurityGroup used as fallback | `InvalidArgument`; only the single validated onboarding or authorized replacement fallback may be empty because the deployment baseline is hard-coded `permit`. |
+| Authorized replacement fallback SecurityGroup with empty rules | Accepted only after the old default and its dependencies are removed, with correct scope, ownership, label, parent, family, and readiness validation. |
+| Configurable deployment baseline action or tenant baseline override | Rejected; the deployment baseline remains the provider-owned hard-coded `permit` policy. |
 | Workload omits networking while defaults are missing | `FailedPrecondition` with `No default networking resources available. Please contact your administrator.`; no workload or attachment is persisted. |
 | Workload references Pending or Failed defaults | `FailedPrecondition`; no workload or attachment is persisted and no fallback substitution occurs. |
 | Delete a default resource with active dependents | `FailedPrecondition`; parent and dependent resources remain. |
@@ -609,11 +671,13 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
 
 ## Graduation gate
 
-- All 12 test cases have explicit implementation references.
+- All 13 test cases have explicit implementation references.
 - Every test case has concrete preconditions, numbered steps or a complete
   input/case table, and observable expected results.
 - Every onboarding and defaulting rule maps to a unit or integration test.
 - Combined-manager and K8s-only supported workflows have E2E coverage.
 - All three workload services have omitted/empty/partial/complete coverage.
+- Authorized default replacement, fallback empty-rule handling, and ordinary
+  empty SecurityGroup rejection are covered.
 - Failure, retry, idempotency, capacity exhaustion, cleanup, and immutability
   tests assert exact condition reasons, gRPC statuses, or resource fields.

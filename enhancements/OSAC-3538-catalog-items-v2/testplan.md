@@ -58,17 +58,22 @@
 ##### Cases
 
 - more than one Compute/BM attachment;
+- empty locked or editable-default Compute/BM attachment-list policy;
 - explicit false primary;
 - repeated Cluster attachment;
 - malformed IPv4/CIDR/reference;
 - wrong-type or invisible reference;
-- CaaS physical `fabric_interface` governed by Catalog;
+- Cluster node-set `baremetal_instance_type` or CaaS physical
+  `fabric_interface` governed by Catalog;
 - shared Catalog Item locking/defaulting tenant-local reference;
 - arbitrary ExternalIP, pool, NATGateway, or target IP policy.
 
 ##### Expected results
 
 - Catalog Item create/update returns the documented validation error.
+- Empty locked or editable-default Compute/BM attachment-list policies are
+  rejected; an empty tenant-supplied list remains distinct and follows the
+  documented defaulting/fallthrough behavior.
 - No invalid policy is published or used for resource creation.
 
 ### R2: Presence, empty values, and precedence
@@ -83,6 +88,9 @@
 
 - omitted optional field;
 - explicit empty repeated attachment list;
+- explicit empty singular Cluster attachment message;
+- partial singular Cluster attachment with only Subnet or only
+  SecurityGroups;
 - explicit empty string;
 - explicit zero;
 - explicit false;
@@ -91,7 +99,12 @@
 ##### Expected results
 
 - Catalog semantics distinguish omitted from explicit scalar presence.
-- Empty repeated network lists follow the documented fallthrough behavior.
+- An empty repeated network list supplied as tenant resource input follows the
+  documented fallthrough behavior; it is not equivalent to an empty
+  Catalog-authored locked/default policy, which is rejected.
+- An empty Catalog Cluster attachment falls through as unset, while a partial
+  Cluster attachment is completed field-by-field without replacing the
+  supplied reference.
 - Explicit false primary is not rewritten to true.
 
 #### TC-R2-02: Resolution order is deterministic
@@ -121,15 +134,27 @@
 
 1. Create equivalent resources directly and through Catalog Items.
 2. Use locked, editable, empty, partial, and complete network policies.
-3. Compare resolved resource specs and validation outcomes.
+3. Include CaaS API/Ingress endpoint binding cases and an automatic-ExternalIP
+   create with an exhausted pool.
+4. Include a BM policy with a valid interface and a policy with an unknown or
+   lifecycle interface against the effective BareMetalInstanceType.
+5. Compare resolved resource specs and validation outcomes.
 
 ##### Expected results
 
 - Compute remains zero-or-one with primary semantics.
-- Cluster remains singular and derives interfaces from node types.
+- Cluster remains singular; the authoritative Template retains ownership of
+  node-set keys and `baremetal_instance_type`, while only permitted node-set
+  sizes may vary, and interfaces are derived from those unchanged types.
 - BM remains zero-or-one with interface/lifecycle validation.
+- BM interface values are validated against the effective
+  BareMetalInstanceType; unknown and lifecycle interfaces fail without
+  materializing a resource.
 - The owning service's readiness, same-VN, and immutability checks are not
   bypassed by Catalog materialization.
+- CaaS endpoint bindings remain limited to the matching `API`/`INGRESS`
+  ExternalIP attachments; automatic ExternalIP capacity failures leave no
+  parent or child resource.
 
 #### TC-R3-02: Catalog updates affect only future resources
 
@@ -195,6 +220,8 @@
 - day-2 network updates;
 - VM/BM multi-interface;
 - CaaS per-node tenant interfaces;
+- Cluster node-set hardware references or node-set keys supplied by a Catalog
+  Item instead of the authoritative ClusterTemplate;
 - tenant-selected manager/implementation strategy;
 - arbitrary IP/pool/NAT allocation strategy;
 - shared-item local reference lock/default;

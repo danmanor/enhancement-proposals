@@ -10,9 +10,10 @@
 - **Operation contract:** create, read/list, and delete only for network-owned
   fields. Network-owned update, patch, and replace operations are unsupported.
 - **Excluded:** East-west networking is not implemented and is governed by its
-  own design. Unsupported in the current boundary: multi-interface, IPv6,
-  dual-stack, multi-hub, air-gapped, and VN-peering behavior. These are
-  negative-test cases, not supported scenarios.
+  own design; this shared plan does not test its update or resize behavior.
+  Unsupported in the current boundary: multi-interface, IPv6, dual-stack,
+  multi-hub, air-gapped, and VN-peering behavior. These are negative-test
+  cases, not supported scenarios.
 
 ## Execution strategy
 
@@ -46,7 +47,10 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 ##### Preconditions
 
 - Provider registers one fabric manager and one K8s manager.
-- Both advertise the required IPv4 create/read/delete capabilities.
+- Both advertise the required IPv4 create/read/delete capabilities, and the
+  Fabric Manager advertises NATGateway support for this combined-manager case.
+- Provider inventory reports exactly one active hub and
+  `connectivity_mode=connected`.
 
 ##### Steps
 
@@ -57,11 +61,16 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 ##### Expected results
 
 - NetworkClass is accepted.
+- The persisted NetworkClass identifies the single active hub and the
+  deployment is admitted as connected.
+- The persisted NetworkClass status reports `addressFamily=ipv4`, reports
+  `natGateway=true` because the configured Fabric Manager supports it, and
+  advertises exactly the manager-derived supported resources and operations.
 - The manager combination covers the requested resource operations.
 - The implementation strategy is derived from manager capabilities.
 - The tenant cannot replace the derived strategy with an arbitrary value.
 
-#### TC-R1-02: K8s-only and fabric-only supported topologies are evaluated
+#### TC-R1-02: K8s-only, BM-only, and combined supported topologies are evaluated
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -69,18 +78,28 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 ##### Steps
 
-1. Configure a K8s-only manager that advertises the complete supported
-   networking surface except NATGateway.
-2. Verify VM, CaaS, and shared resource capability resolution.
-3. Configure a fabric-only manager and verify BMaaS/fabric resource
+1. Configure a K8s-only manager that advertises the complete supported VM and
+   shared-resource surface except NATGateway.
+2. Read the resolved NetworkClass status and verify the VM and shared-resource
    capability resolution.
-4. Attempt VM placement without a K8s manager.
-5. Attempt a resource operation not advertised by the selected manager.
+3. Attempt CaaS BM-worker provisioning in K8s-only mode, including a topology
+   that advertises NAT capability.
+4. Configure a fabric-only manager and verify BMaaS and BM-only CaaS
+   capability resolution when the required BM-worker, MetalLB, and reachability
+   capabilities are advertised.
+5. Attempt VM placement without a K8s manager.
+6. Attempt a resource operation not advertised by the selected manager.
 
 ##### Expected results
 
-- K8s-only VM/CaaS/shared-resource behavior is accepted when advertised.
-- Fabric-only BMaaS behavior is accepted when advertised.
+- K8s-only VM/shared-resource behavior is accepted when advertised.
+- K8s-only status reports `addressFamily=ipv4`,
+  `natGateway=false`, and does not advertise NATGateway resources or
+  operations.
+- K8s-only CaaS BM-worker provisioning is rejected before Cluster, worker, or
+  networking-resource persistence, regardless of NAT capability.
+- Fabric-only BMaaS and BM-only CaaS behavior is accepted when all
+  service-specific capabilities and reachability prerequisites are advertised.
 - VM creation without a K8s manager is rejected before persistence.
 - An unadvertised resource or operation is rejected before backend dispatch.
 
@@ -94,8 +113,19 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 - neither manager is configured;
 - manager is not provider-registered;
+- manager registration exists but is disabled;
 - required capability is missing;
-- conditional CaaS capability lacks the required MetalLB prefix length;
+- manager registration contains an unknown or arbitrary capability name;
+- the deployment NetworkClass is absent, Pending, or Failed when a
+  networking resource is created;
+- the deployment offers the CaaS/MetalLB VIP path but lacks the required
+  MetalLB prefix length;
+- the MetalLB prefix is zero, outside the IPv4 prefix range, not more specific
+  than the participating Subnet prefix, or reserves a range outside the
+  Subnet;
+- a non-CaaS deployment supplies `metallb_vip_prefix_length`;
+- zero hubs, multiple active hubs, or an air-gapped connectivity report;
+- a second active NetworkClass exists for the deployment;
 - tenant supplies a NetworkClass, manager, implementation strategy, or
   provider-only capability override;
 - tenant attempts to create NATGateway in a topology without NAT support.
@@ -104,7 +134,43 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 - The request is rejected with the documented authorization, validation, or
   failed-precondition status.
+- A missing or non-Ready deployment NetworkClass returns
+  `FailedPrecondition` before the resource or backend operation is persisted or
+  dispatched.
 - No networking resource or backend operation is created.
+
+#### TC-R1-04: Provider-owned operations and scope are enforced
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated where user-visible |
+
+##### Cases
+
+- Tenant attempts to create, update, patch, replace, or delete
+  `NetworkClass`.
+- Tenant attempts to create, update, patch, replace, or delete
+  `ExternalIPPool`.
+- Tenant attempts to read or list another tenant's pool or use it through a
+  typed reference outside the provider-visible scope.
+- Tenant attempts to get or list another tenant's VirtualNetwork, Subnet,
+  SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway, or workload
+  network attachment/status, including through a name filter, label/filter,
+  status field, Catalog policy, or typed reference.
+- Tenant references a provider-created pool that is explicitly visible to the
+  tenant.
+
+##### Expected results
+
+- Provider-only mutations return the platform's authorization/visibility
+  error before semantic validation or persistence.
+- A visible provider pool may be read or referenced, but its family, CIDR,
+  capacity, and lifecycle cannot be supplied or changed by the tenant.
+- Cross-scope reads and references do not reveal the other tenant's resource.
+- The same scope result applies to every network resource, attachment, and
+  reference: the object is hidden or the request returns the platform's
+  non-disclosing visibility error, and no list filter or status field reveals
+  its identity or network values.
 
 ### R2: Shared resource fields and formats
 
@@ -120,14 +186,22 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 2. Create a contained non-overlapping Subnet.
 3. Create a SecurityGroup with a valid rule.
 4. Create a Ready IPv4 ExternalIPPool with one CIDR.
-5. Allocate an ExternalIP and create valid ExternalIPAttachment and
-   NATGateway references where supported.
+5. Allocate separate, valid ExternalIPs and create an ExternalIPAttachment
+   and NATGateway reference where supported.
+6. Get and list every created resource, including the VirtualNetwork, Subnet,
+   SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
+   NATGateway where supported.
 
 ##### Expected results
 
 - Every create accepts the documented field types and values.
 - References are typed, same-scope, and Ready/Allocated before use.
-- Provider status is Pending until backend prerequisites complete, then Ready.
+- Tenant-scoped get/list calls return the caller's resources and complete
+  network-owned fields; provider-visible pool reads follow the documented
+  provider visibility rule.
+- Resources with Ready semantics remain Pending until backend prerequisites
+  complete and then become Ready; ExternalIP instead transitions from Pending
+  to Allocated before it can be consumed.
 
 #### TC-R2-02: Invalid formats and relationships are rejected
 
@@ -140,18 +214,30 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - malformed IPv4 address or CIDR;
 - IPv6 or dual-stack value;
 - host bits set in a network CIDR;
+- duplicate VirtualNetwork name in the same tenant/project scope;
 - Subnet outside, equal to, or overlapping a sibling Subnet;
 - wrong reference type, missing reference, cross-tenant/project reference;
 - Pending, Failed, or non-Ready dependency;
-- ExternalIPPool with zero or multiple CIDRs;
+- ExternalIPPool with `ip_family=UNSPECIFIED`, zero or multiple CIDRs, a CIDR
+  outside the provider-permitted address space, or overlapping allocation
+  ownership without an explicit disjoint-ownership declaration;
 - duplicate ExternalIP consumer or second NATGateway for one VN;
+- exact duplicate ExternalIPAttachment for the same ExternalIP, target, and
+  endpoint;
 - arbitrary tenant-selected ExternalIP address.
+- manager-reported ExternalIP address outside the pool, equal to a network or
+  broadcast address, reserved, IPv6, or already allocated;
+- direct ExternalIPAttachment with a Pending/Failed ExternalIP or non-Ready
+  target;
 
 ##### Expected results
 
 - Invalid format/relationship returns `InvalidArgument`.
 - Existing but unusable dependency returns `FailedPrecondition`.
-- No invalid object or backend operation is left behind.
+- Caller-invalid creates leave no persisted object or backend operation.
+- An invalid manager-reported allocation is recorded as a provisioning
+  failure, never becomes `Ready`, and does not activate an attachment or leave
+  an allocated address/consumer behind.
 
 #### TC-R2-03: Cross-tenant VN CIDR overlap follows the documented isolation rule
 
@@ -166,6 +252,32 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - Subnet overlap within one VirtualNetwork remains rejected.
 - Different VirtualNetworks remain isolated; the API does not implement VN
   peering or cross-VN routing.
+
+#### TC-R2-04: ExternalIPPool readiness requires complete manager support
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration | critical | automated |
+
+##### Steps
+
+1. Configure a provider manager that advertises ExternalIPPool creation but
+   omits `allocate`, `release`, or `report` support, one capability at a time.
+2. Attempt to create a provider-scoped IPv4 ExternalIPPool.
+3. Configure all three operations and make the manager return an invalid
+   family, range, or lifecycle response during pool reconciliation.
+4. Create two pools with overlapping allocation ranges, first without and then
+   with an explicit manager declaration of disjoint allocation ownership.
+
+##### Expected results
+
+- A pool is not marked Ready unless allocate, release, and report operations
+  are all advertised and usable.
+- Invalid manager capability or lifecycle responses leave the pool Pending or
+  Failed and prevent ExternalIP allocation.
+- Overlapping pools are rejected unless the manager explicitly provides
+  disjoint allocation ownership; accepted pools cannot allocate the same
+  address.
 
 ### R3: SecurityGroup rules and deployment baseline
 
@@ -184,13 +296,20 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - duplicate normalized rule;
 - conflicting equal-specificity rule;
 - tenant-created empty rule list;
-- system-created fallback SecurityGroup with an empty list and the provider
-  baseline policy's hard-coded `permit` action.
+- onboarding-created fallback SecurityGroup with an empty list;
+- authorized Tenant Admin replacement fallback SecurityGroup with an empty
+  list after the old default is fully removed;
+- ordinary tenant-created empty SecurityGroup;
+- attempted configurable baseline action or tenant baseline override.
 
 ##### Expected results
 
-- Tenant-created groups require at least one valid rule.
-- The fallback group is accepted empty only with the deployment baseline.
+- Ordinary tenant-created groups require at least one valid rule.
+- The onboarding-created or authorized replacement fallback group is accepted
+  empty only when it is the single validated tenant default; an ordinary
+  tenant-created empty group is rejected.
+- No tenant or resource field can change the deployment baseline from its
+  hard-coded `permit` action.
 - Invalid, duplicate, and conflicting rules are rejected before persistence.
 
 #### TC-R3-02: Most-specific rule behavior is verified
@@ -233,7 +352,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - All resolved references are Ready, same-scope, same-VirtualNetwork, and
   unique before persistence.
 
-#### TC-R4-03: Typed local-reference wire format is enforced
+#### TC-R4-02: Typed local-reference wire format is enforced
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -242,9 +361,10 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 ##### Cases
 
 - `subnet` supplied as `{ "name": "subnet-a" }`;
-- `subnet` supplied as `{ "id": "subnet-123" }`;
-- `security_groups` supplied as `[{ "name": "web" }]` or
-  `[{ "id": "sg-123" }]`;
+- `subnet` supplied as `{ "id": "subnet-123" }` without `name`;
+- `security_groups` supplied as `[{ "name": "web" }]`;
+- `security_groups` supplied as `[{ "name": "web", "id": "sg-123" }]`;
+- `security_groups` supplied as `[{ "id": "sg-123" }]` without `name`;
 - both `id` and `name` supplied and resolving to the same resource;
 - raw string values such as `"subnet-a"` or `["sg-123"]`;
 - `id` and `name` supplied but resolving to different resources;
@@ -252,15 +372,17 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 ##### Expected results
 
-- Valid local-reference objects resolve and are canonicalized with both `id`
-  and `name` before persistence.
-- Raw strings, mismatched `id`/`name`, wrong reference types, and
-  cross-scope references are rejected with a field-specific error.
+- Local-reference objects require `name`; a name-only reference resolves and
+  is canonicalized with the resolved `id`, while a supplied `id` is verified
+  against the named resource before persistence.
+- ID-only local references, raw strings, mismatched `id`/`name`, wrong
+  reference types, and cross-scope references are rejected with a
+  field-specific error.
 - The same nested representation is used by Compute, Cluster, BMaaS, Catalog
   materialization, private ClusterOrder handoff, and direct CR validation.
 - No invalid parent, child, worker request, or backend operation is created.
 
-#### TC-R4-02: Service cardinality restrictions are enforced centrally
+#### TC-R4-03: Service cardinality restrictions are enforced centrally
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -310,13 +432,55 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 |---|---|---|
 | Unit, integration, E2E | critical | automated |
 
+##### Cases
+
+- empty or multiply populated ExternalIPAttachment target oneof;
+- Compute or BaremetalInstance target with `API` or `INGRESS` endpoint;
+- Cluster target with `UNSPECIFIED` or an unsupported endpoint;
+- target and endpoint combination that does not match the target type;
+- direct attachment using a Pending, Failed, unallocated, or already
+  consumed ExternalIP;
+- direct attachment targeting a Pending, Failed, or non-Ready resource;
+- caller-supplied, malformed, IPv6, out-of-subnet, or duplicate discovered
+  endpoint status;
+- NATGateway with a non-Ready VirtualNetwork or consumed ExternalIP;
+- NATGateway with a Ready VirtualNetwork whose backend segment is absent or
+  not ready.
+
 ##### Expected results
 
 - Compute/BM attachments use `UNSPECIFIED` endpoint.
 - Cluster attachments use exactly `API` or `INGRESS`.
 - Target oneof has exactly one arm.
 - NATGateway requires a Ready VN and unconsumed Allocated ExternalIP.
+- SNAT is not dispatched until the referenced VN segment exists and is ready.
 - Malformed manager SNAT/DNAT status never produces Ready.
+- Every invalid target, endpoint, dependency, or discovered endpoint is
+  rejected or fails closed before DNAT/SNAT dispatch and persistence.
+
+#### TC-R5-03: Automatic external access is disabled by omission or false
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E | high | automated |
+
+##### Steps
+
+1. Create a VM, Cluster, and BaremetalInstance with the automatic external
+   access field omitted.
+2. Create equivalent resources with `auto_external_ip_attachment=false`.
+3. Inspect ExternalIP/ExternalIPAttachment resources, pool capacity, and
+   backend allocation calls.
+
+##### Expected results
+
+- Omission and explicit `false` both succeed when the ordinary network
+  attachment is valid.
+- No automatic ExternalIP or ExternalIPAttachment is created, no pool
+  capacity is reserved, and no allocation or DNAT backend operation is
+  dispatched.
+- Changing the switch after creation is rejected by the shared immutability
+  rule.
 
 ### R6: Create/read/delete-only operations and dependency guards
 
@@ -328,9 +492,13 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 ##### Cases
 
-- API update, patch, replace, and field-mask mutation;
-- nested Subnet, SecurityGroup, CIDR, rule, interface, primary, endpoint,
-  target, list-length/order, and auto-external mutations;
+- API update, patch, replace, and field-mask mutation on every tenant-facing
+  network resource: VirtualNetwork, Subnet, SecurityGroup, ExternalIP,
+  ExternalIPAttachment, and NATGateway;
+- nested Subnet, SecurityGroup, CIDR, rule, pool/allocation identity,
+  interface, primary, endpoint, target, list-length/order, and
+  auto-external mutations on ComputeInstance, Cluster, and
+  BaremetalInstance;
 - direct hub-CR mutation;
 - status write attempting to mutate spec.
 
@@ -347,13 +515,28 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 |---|---|---|
 | Integration, E2E | critical | automated |
 
+##### Cases
+
+- Delete or release an ExternalIP while it is consumed by an
+  ExternalIPAttachment.
+- Delete or release an ExternalIP while it is consumed by a NATGateway.
+
 ##### Expected results
 
 - Parent deletion is blocked while children or reverse references exist.
 - Auto-created ExternalIPAttachment is deleted before ExternalIP.
 - ExternalIP is deleted before ExternalIPPool.
+- ExternalIPPool deletion is blocked while any ExternalIP still references it.
+- ExternalIP deletion/release is rejected while an attachment or NATGateway
+  consumes it; no manager release operation is dispatched.
 - Subnets, SecurityGroups, and NATGateway are gone before VN deletion.
+- SecurityGroup deletion is blocked by workload attachment references and
+  governed Catalog policy references.
+- NetworkClass deletion is blocked while any dependent networking resource,
+  workload attachment, or manager integration remains.
 - VN is deleted before any provider VPC/backend parent.
+- A manually created ExternalIPAttachment blocks deletion of its target until
+  the tenant deletes the attachment; it is never implicitly detached.
 - Concurrent deletion is idempotent and does not orphan backend state.
 
 ### R7: Direct CR bypass, state machine, and recovery
@@ -368,8 +551,19 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 - Direct CRs with invalid cardinality, IPv6, bad references, unsupported
   operations, or false Ready status are rejected or fail closed.
-- A manager can transition Pending → Ready or Pending → Failed only through
-  the documented reconciliation path.
+- Every persisted networking resource, including VirtualNetwork, Subnet,
+  SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
+  NATGateway, carries `status.hub` equal to the single active deployment hub.
+- A missing or mismatched `status.hub` cannot be used to report a resource
+  Ready or dispatch a backend operation.
+- Resource-specific terminal transitions are enforced only through the
+  documented reconciliation path: ExternalIP uses `Pending -> Allocated` or
+  `Pending -> Failed`, while resources with Ready semantics use
+  `Pending -> Ready` or `Pending -> Failed`.
+- Attempts to force `Ready -> Pending`, `Allocated -> Pending`, or
+  `Failed -> Ready` through a caller or an
+  unauthorized controller path are rejected or ignored, and do not dispatch
+  a backend operation.
 - Pending dependencies requeue; terminal failures remain Failed.
 - Restarting controllers does not duplicate jobs, allocations, rules,
   segments, or finalizers.
@@ -411,7 +605,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - tenant-selected provider implementation or arbitrary IP;
 - unsupported NATGateway capability;
 - unsafe parent deletion;
-- East-west update/resize behavior.
+- a configurable deployment baseline action or tenant baseline override.
 
 ##### Expected results
 
