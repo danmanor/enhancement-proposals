@@ -233,7 +233,7 @@ Catalog governs supported resource fields according to their existing API semant
 
 ### Dependencies
 
-The DiskImage resource (OSAC-2540) required for `disk_image` governance is already available on main. All in-scope fields can be represented and resolved by Catalog today. Two are not yet realized end-to-end by their resource implementations: Cluster `pull_secret_secret` (OSAC-1567) and Bare Metal automatic ExternalIP attachment (osac#355, OSAC-1441). Catalog stores and resolves these fields independently of that work. Field-level deferrals are listed in the Deferred table above.
+The DiskImage resource (OSAC-2540) required for `disk_image` governance is already available on main. All in-scope fields can be represented and resolved by Catalog today. Cluster `pull_secret_secret` (OSAC-1567) remains an implementation dependency for the resource path, while Bare Metal automatic ExternalIP attachment follows the current BMaaS contract. Catalog stores and resolves both fields through their typed policies. Field-level deferrals are listed in the Deferred table above.
 
 ## Architecture
 
@@ -288,7 +288,7 @@ The design distinguishes resource fields from Template parameters:
 | Concept | Resource API | Catalog Item |
 |---|---|---|
 | Governable resource field | `instance_type` | `fields.instance_type` (field policy) |
-| Template parameter | not a resource field | `template_parameters["region"]` (parameter policy) |
+| Template parameter | not a resource field | `template_parameters[<template-defined-name>]` (parameter policy) |
 
 ### Resolution precedence
 
@@ -417,7 +417,11 @@ Compute and Bare Metal treat an empty attachment list as unset. Catalog Item Cre
 
 ### Template parameter policy
 
-OSAC owns the type and valid domain of first-class resource fields, so those fields use typed policies. The selected Template owns the names and types of Template parameters. For example, `ComputeInstance.spec.instance_type` is a resource field even when the Template provides its default, and `region` is a Template parameter only if the selected Template defines a parameter named `region`. A Template default for a resource field does not make that field a Template parameter.
+OSAC owns the type and valid domain of first-class resource fields, so those
+fields use typed policies. The selected Template owns the names and types of
+Template parameters. A resource field remains a resource field even when the
+Template provides its default; a Template default for a resource field does
+not make that field a Template parameter.
 
 Parameter policies therefore use `google.protobuf.Any`:
 
@@ -661,8 +665,8 @@ Notes on the fields above:
 
   `ComputeInstanceSpec.run_strategy` and `ComputeInstanceTemplateSpecDefaults.run_strategy` remain optional, and a supplied value must be defined and non-zero. The config-as-code client maps the friendly value in `meta/osac.yaml` to the enum, and the Ansible metadata stays unchanged.
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
-- `compute_network_attachments` is the canonical Compute field. The deprecated shared `network_attachments` field is not a separate Catalog policy surface; a compatibility path may translate it before policy resolution.
-- Compute attachment policy governs the complete list. The list remains list-shaped for API compatibility but accepts zero or one attachment only. A single attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one attachment are rejected. Catalog validation applies the same rule as direct Compute creation.
+- `compute_network_attachments` is the only supported Compute networking field. Catalog policy governs this complete list.
+- Compute attachment policy governs the complete list. The field remains list-shaped but accepts zero or one attachment only. A single attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one attachment are rejected. Catalog validation applies the same rule as direct Compute creation.
 - Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups.
 
 ### Cluster
@@ -721,14 +725,6 @@ A shared, provider-curated item that pins the version, mixes locked and editable
       "infra": { "locked": 2 }
     },
     "auto_external_ip_attachment": { "editable": { "default_value": false } }
-  },
-  "template_parameters": {
-    "region": {
-      "locked": {
-        "@type": "type.googleapis.com/google.protobuf.StringValue",
-        "value": "us-east"
-      }
-    }
   }
 }
 ```
@@ -948,7 +944,12 @@ equivalent direct resource request, including Pending/Failed references,
 cross-VirtualNetwork attachments, CaaS endpoint rules, and auto ExternalIP
 capacity failures.
 
-Resource Update performs no Catalog resolution. `spec.catalog_item` and `spec.template` are immutable, and normal Update behavior applies to the remaining fields.
+Resource Update performs no Catalog resolution. `spec.catalog_item` and
+`spec.template` are immutable. Normal Update behavior applies only to
+non-network-owned fields; all network-owned fields and workload network
+attachment fields remain immutable under Unified Networking and require
+delete/recreate to change. Catalog Item metadata and other non-network-owned
+fields retain their normal update behavior.
 
 ## RBAC and UX
 

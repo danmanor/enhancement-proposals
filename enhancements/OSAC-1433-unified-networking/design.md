@@ -36,9 +36,10 @@ premise of this design is that **VMs are part of the fabric**. Through a
 physical network, VMs become first-class participants in the fabric alongside
 bare-metal servers and cluster nodes. When a Fabric Manager is configured, all
 resource types are treated uniformly on the fabric — that manager handles
-isolation, security, IP allocation, DNAT, and SNAT. In K8s-only mode, the K8s
-Manager provides the supported equivalent for every resource except
-NATGateway.
+isolation, security, IP allocation, DNAT, and SNAT. For workloads eligible for
+K8s-only mode, the K8s Manager provides the supported equivalent for every
+shared resource except NATGateway; the service-specific designs still define
+which workload flows are eligible for that mode.
 
 The design introduces:
 
@@ -46,7 +47,8 @@ The design introduces:
   least one is required, and the manager combination resolves the private
   `implementation_strategy`
 - **Infrastructure-agnostic subnets** where the same subnet can host VMs,
-  BM servers, and cluster nodes
+  BM servers, and cluster nodes when the selected manager and
+  service-specific placement contract support those workloads
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
   external to the VirtualNetwork, not necessarily internet-routable
 - **Uniform API** where the same networking resources (VirtualNetwork,
@@ -101,7 +103,7 @@ its own design, which may support update and resize operations.
 | `ExternalIP` | Create, read, delete | Pool reference, address/allocation identity, and all other network `spec` fields are fixed after creation. |
 | `ExternalIPAttachment` | Create, read, delete | ExternalIP, target, endpoint, and all other binding `spec` fields are fixed after creation; retargeting requires delete and create. |
 | `NATGateway` | Create, read, delete | VirtualNetwork, ExternalIP, and all other gateway `spec` fields are fixed after creation; changing the ExternalIP requires delete and create. |
-| `ComputeInstance.compute_network_attachments` and deprecated `network_attachments` | Set on parent create, read with the parent, delete with the parent | The list is retained for API compatibility but accepts zero or one entry only. The complete list and every entry field, including Subnet, SecurityGroups, and `primary`, are fixed after parent creation. |
+| `ComputeInstance.compute_network_attachments` | Set on parent create, read with the parent, delete with the parent | The list-shaped field accepts zero or one entry only. The complete list and every entry field, including Subnet, SecurityGroups, and `primary`, are fixed after parent creation. |
 | `Cluster.network_attachment` | Set on parent create, read with the parent, delete with the parent | The complete attachment and every entry field, including Subnet and SecurityGroups, are fixed after parent creation. |
 | `BaremetalInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The complete list and every entry field, including Subnet, SecurityGroups, interface, and primary designation, are fixed after parent creation; at most one entry is supported. |
 | `auto_external_ip_attachment` on ComputeInstance, Cluster, and BaremetalInstance | Set on parent create, read with the parent, delete with the parent | This network-owned create-time switch is fixed after parent creation; changing automatic external access requires delete and recreate. |
@@ -141,13 +143,13 @@ cardinality or placement constraints.
 | `NetworkClass.spec.fabric_manager` | String reference, optional | If present, must name a provider-registered fabric manager. It may be omitted when a K8s manager provides the complete supported networking surface. |
 | `NetworkClass.spec.k8s_manager` | String reference, optional | If present, must name a provider-registered K8s manager. At least one of `fabric_manager` or `k8s_manager` must be present. |
 | `NetworkClass.spec.defaults` | `NetworkDefaults` message, required | There is no enable/disable knob. `virtual_network_cidr` and `ipv4_subnet_cidr` are both required canonical IPv4 CIDRs; the subnet must be contained by the VN. |
-| `NetworkClass.spec.metallb_vip_prefix_length` | `int32`, conditionally required | Required when the deployment advertises CaaS/MetalLB VIP support; no universal default exists. It must be a valid IPv4 prefix more specific than each participating Subnet prefix, and the reserved range must remain inside the Subnet. It is not required for deployments that do not provide CaaS VIP allocation. |
+| `NetworkClass.spec.metallb_vip_prefix_length` | `int32`, conditionally required | Required for a deployment that exposes CaaS/MetalLB VIP allocation; no universal default exists. A valid value is the provider's deployment-level declaration that this path is available; it must be a valid IPv4 prefix more specific than each participating Subnet prefix, and the reserved range must remain inside the Subnet. It is omitted only when the deployment does not provide CaaS VIP allocation. |
 | `VirtualNetwork.spec.implementation_strategy` | Provider-resolved string, required in persisted state | The caller does not set this field. The operator derives it from the managers in the single deployment NetworkClass and stores it as an immutable provider/private value. There is no tenant-selectable NetworkClass reference. |
 | `VirtualNetwork.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR. Cross-tenant CIDR overlap is allowed only because fabric isolation is explicitly relied upon; Subnet overlap within the VN is rejected. |
 | `Subnet.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
 | `Subnet.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR contained by the parent VirtualNetwork and non-overlapping with sibling Subnets in that VN. |
 | `SecurityGroup.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
-| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for tenant-created groups | Tenant-created SecurityGroups must contain at least one rule. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected when the effective attachment set is resolved. The system-created tenant fallback SecurityGroup may have an empty list because the deployment baseline policy supplies the configured default action. |
+| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for tenant-created groups | Tenant-created SecurityGroups must contain at least one rule. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected when the effective attachment set is resolved. The system-created tenant fallback SecurityGroup may have an empty list because the deployment baseline policy supplies the hard-coded `permit` action. |
 | `ExternalIPPool.spec.ip_family` | Enum, required | `IPV4` only. IPv6 and dual-stack values are rejected. |
 | `ExternalIPPool.spec.cidrs` | Repeated IPv4 CIDR strings, required, exactly one supported | The list must contain exactly one canonical IPv4 CIDR. Multi-CIDR pools are not part of the supported contract; create separate pools instead. |
 | `ExternalIP.spec.pool` | Provider/deployment-scoped ExternalIPPool reference, required | The pool must exist, be Ready, and have capacity. The allocated address is selected by the provider/fabric manager; tenants do not supply an arbitrary address. |
@@ -164,6 +166,16 @@ state; the API does not silently create a Pending dependency. The only
 exception is an internal default/auto-provisioning transaction, where the
 system may create dependent resources together in Pending state and controllers
 must requeue until each prerequisite reaches the required state.
+
+There is one intentional scope exception for the current CaaS worker flow.
+CaaS-managed BaremetalInstances are created in the builtin `system` tenant,
+while their Subnet and SecurityGroup belong to the tenant that owns the
+Cluster. The trusted private CaaS-to-BMaaS create path resolves those local
+references and any omitted defaults in the Cluster's effective tenant/project;
+it must not require the destination BMI tenant to match the networking
+resource tenant. This exception is limited to the authenticated CaaS worker
+path. Standalone, Catalog-based, and tenant-facing BaremetalInstance creates
+continue to require same-scope networking references.
 
 ### SecurityGroupRule fields
 
@@ -221,10 +233,9 @@ Validation is applied in the following order for every user create request:
    provider scope.
 2. Validate the request envelope, protobuf presence, oneofs, enums, repeated
    fields, and canonical formats.
-3. Resolve compatibility fields and Catalog/Template values without changing
-   the meaning of an explicitly supplied value. For ComputeInstance, the old
-   `network_attachments` field is converted to the canonical representation
-   before the final Compute validation; supplying both fields is rejected.
+3. Resolve Catalog/Template values without changing the meaning of an
+   explicitly supplied value. Only the resource-specific attachment fields
+   defined by the current API contract are accepted.
 4. Resolve omitted or empty workload attachment fields using the documented
    tenant defaults. Defaulting is field-level: a supplied subnet or non-empty
    SecurityGroup list is never replaced.
@@ -276,9 +287,10 @@ service creates.
   create one resource while lacking the read/delete or allocation capability
   required by that resource's full lifecycle;
 - require `spec.defaults`, require both default CIDRs, validate their IPv4
-  canonical form and containment, and reject a MetalLB prefix that is absent
-  when CaaS VIP capability is advertised or present when the deployment does
-  not advertise that capability;
+  canonical form and containment, and require a valid
+  `metallb_vip_prefix_length` whenever the provider offers the CaaS/MetalLB VIP
+  path. A deployment that does not offer that path must omit the field; there
+  is no separate tenant- or manager-defined CaaS capability key;
 - reject IPv6, dual-stack, unknown capabilities, and arbitrary capability
   names; capabilities are provider-resolved and not tenant input; and
 - compute and persist the private implementation strategy from the manager
@@ -459,6 +471,9 @@ tenant surface is intentionally narrow:
   leave a backend segment, ACL, DNAT, SNAT rule, or allocated IP orphaned.
   Auto-created ExternalIP children are the explicit exception and are
   deleted in the documented attachment-then-IP order by the parent finalizer.
+  A manually created ExternalIPAttachment that targets the parent is a
+  reverse reference, so it blocks parent deletion until the tenant deletes
+  the attachment. It is not detached or changed to Pending implicitly.
 - **Retry and idempotency:** retrying the same create or reconciliation input
   must not create a second default resource, a second NATGateway for a VN,
   duplicate SecurityGroup rule, duplicate ExternalIP allocation, or second
@@ -539,7 +554,7 @@ select a NetworkClass or implementation strategy per VirtualNetwork.
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: moc-region-1
+  name: moc-site-1
 spec:
   fabricManager: netris
   k8sManager: cudn_localnet
@@ -557,7 +572,7 @@ status:
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: bos-region-1
+  name: bos-site-1
 spec:
   fabricManager: neutron
   k8sManager: cudn_localnet
@@ -575,7 +590,7 @@ status:
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: gpu-region-1
+  name: gpu-site-1
 spec:
   fabricManager: netris
   defaults:
@@ -624,6 +639,13 @@ dual-stack networking are not supported.
 The set of capabilities is defined by the operator and is fixed — adding a
 new capability requires an operator update. Managers declare which
 capabilities they support; they cannot define custom capabilities.
+
+CaaS/MetalLB VIP availability is not a manager-defined capability key. It is a
+deployment-level prerequisite declared by configuring a valid
+`metallb_vip_prefix_length` for a deployment that offers the CaaS path. The CaaS
+service requires that declaration and the corresponding manager/topology path;
+the manager registration contract remains limited to the canonical capabilities
+and `supportedResources` fields above.
 
 #### Manager Registration (ConfigMap)
 
@@ -744,6 +766,14 @@ OVN/Kubernetes networking domain. The tenant API remains the same, but
 NATGateway is rejected because the OVN implementation does not provide that
 capability.
 
+The shared resource API does not imply that every workload service is
+supported by every manager combination. VMaaS may use K8s-only mode when the
+k8sManager advertises the complete VM networking surface. BMaaS requires a
+Fabric Manager that supports its switch-port movement and DHCP operations.
+The current CaaS BM-worker flow is supported in BM-only and combined-manager
+topologies; it is not enabled for K8s-only mode merely because shared
+networking resources are available.
+
 ### Infrastructure-Agnostic Subnets
 
 VirtualNetwork and Subnet do not carry a scope or service field. Subnets are
@@ -759,7 +789,15 @@ At subnet creation, the dispatcher runs:
 
 With both managers, VMs are placed in the K8s overlay and BM servers and
 cluster nodes are placed directly on the fabric segment. In K8s-only mode,
-all resource types use the K8s manager's supported OVN networking domain.
+workloads supported by the selected k8sManager use its supported OVN
+networking domain; service-specific designs define workload eligibility.
+
+Manager-specific placement constraints remain part of the supported surface.
+For example, the Phase 1 cudn_evpn manager permits VM placement only on the
+single VM-capable Subnet under a VirtualNetwork. Additional Subnets may be
+provisioned for supported fabric workloads, but VM placement on them is
+rejected until that manager supports it. The service and manager validation
+must reject unsupported placement before persistence.
 
 ### Dispatcher (Operator Composition Logic)
 
@@ -864,7 +902,8 @@ osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
 
 The configured manager(s) create the subnet backend. If both managers are
 configured, the Fabric Manager creates a fabric segment and the K8s Manager
-creates an overlay on each hosting cluster and bridges it to that segment.
+creates an overlay on each eligible hosting cluster and bridges it to that
+segment, subject to the selected manager's hosting-cluster limits.
 
 **Create SecurityGroup:**
 
@@ -889,7 +928,7 @@ active even when a tenant explicitly attaches one or more SecurityGroups.
 The tenant default SecurityGroup is a tenant-scoped fallback resource. It is
 attached only when an attachment omits its SecurityGroups; it is not the
 deployment baseline. The system-created fallback group may have an empty
-rule list because the deployment baseline supplies the configured default
+rule list because the deployment baseline supplies the hard-coded `permit`
 action. A
 tenant-created SecurityGroup must contain at least one explicit rule.
 
@@ -959,10 +998,12 @@ interface to BMaaS, which owns the network attachment and switch-port
 configuration during BMI provisioning.
 See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
 
-Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
-(where the tenant specifies interfaces directly), for clusters the
-**system** resolves the interface from each BareMetalInstanceType's
-`network_ports` list.
+Cluster hardware profiles may expose multiple physical interfaces. Unlike
+BaremetalInstance (where the tenant may specify the interface name), for
+clusters the **system** resolves exactly one tenant-facing fabric interface
+from each BareMetalInstanceType's `network_ports` list. The current CaaS
+contract rejects multi-NIC node requests; additional inventory interfaces are
+not additional tenant network attachments.
 The tenant specifies which subnet to use (one per cluster); the system maps it to the
 correct physical interfaces based on each node set's BareMetalInstanceType.
 
@@ -1281,8 +1322,8 @@ in K8s-only OVN deployments.
 
 ```protobuf
 message VirtualNetworkSpec {
-  string implementation_strategy = 1; // provider-resolved/private, immutable
   string ipv4_cidr = 2;               // required, immutable
+  string implementation_strategy = 4; // provider-resolved/private, immutable
 }
 ```
 
@@ -1310,7 +1351,7 @@ message SecurityGroupRule {
 The default tenant fallback SecurityGroup is system-created and may have an
 empty `rules` list. Tenant-created SecurityGroups require at least one rule.
 The deployment-wide baseline policy is provider-owned and is not
-serialized as a `SecurityGroupRule`; its configured default action is not
+serialized as a `SecurityGroupRule`; its hard-coded `permit` action is not
 serialized in the tenant SecurityGroup either.
 
 #### BareMetalInstanceType and Interface Resolution
@@ -1365,9 +1406,11 @@ Each resource type has its own network attachment message. The core fields
 (`subnet`, `security_groups`) are shared, but each type adds
 resource-specific fields. Resource references use the typed local-reference
 messages defined by [OSAC-1330](/enhancements/OSAC-1330-type-safe-resource-references/design.md):
-`SubnetLocalReference` and `SecurityGroupLocalReference`. In JSON, a local
-reference is an object such as `{ "name": "app-subnet" }` or
-`{ "id": "subnet-123" }`; a raw identifier string is not a valid wire value.
+`SubnetLocalReference` and `SecurityGroupLocalReference`. In a create request,
+a local reference is an object such as `{ "name": "app-subnet" }`; a raw
+identifier string or an identifier-only object is not a valid wire value. The
+server may populate `id` in the resolved stored reference, and a caller may
+provide `id` only alongside `name` for consistency checking.
 The attachment list or singular attachment and every field in every entry are
 immutable after resource creation, including SecurityGroup membership.
 
@@ -1381,10 +1424,10 @@ message ComputeNetworkAttachment {
 }
 ```
 
-The list is retained to avoid a future API shape change, but the supported
-cardinality is zero or one entry. A single entry maps one virtual NIC to one
-subnet and is implicitly primary when `primary` is omitted. More than one
-entry is rejected until multi-interface VM support is implemented and tested.
+The API remains list-shaped, but the current contract supports zero or one
+entry only. A single entry maps one virtual NIC to one subnet and is implicitly
+primary when `primary` is omitted. More than one entry is rejected; multi-
+interface VM requests are not supported by this contract.
 See the [VMaaS networking design](/enhancements/OSAC-1435-vmaas-networking/design.md)
 for the service-specific validation.
 
@@ -1421,20 +1464,19 @@ and stored on the node set definition. The tenant does not set this field.
 
 #### Resource Specs
 
-**ComputeInstance** (existing — new field alongside deprecated shared type):
+**ComputeInstance** (resource-specific attachment field):
 
 ```protobuf
 message ComputeInstanceSpec {
   // ... existing fields ...
-  repeated NetworkAttachment network_attachments = 14;              // DEPRECATED (shared type)
-  repeated ComputeNetworkAttachment compute_network_attachments = 18; // NEW (per-resource type)
+  repeated ComputeNetworkAttachment compute_network_attachments = 18; // list-shaped, zero or one supported
 }
 ```
 
-Field 14 (`network_attachments`, shared `NetworkAttachment`) is deprecated and will be
-removed after migration. Field 18 (`compute_network_attachments`, `ComputeNetworkAttachment`)
-is the new canonical field. See the [VMaaS Networking EP](/enhancements/OSAC-1435-vmaas-networking/design.md)
-for the dual-field migration strategy.
+`compute_network_attachments` is the only supported ComputeInstance attachment
+field. The former shared `NetworkAttachment` field is replaced before this API
+is released and is not accepted. No dual-field compatibility or migration
+period is part of this design.
 
 **BaremetalInstance** (new — defined in the
 [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api)):
@@ -1468,9 +1510,12 @@ message ClusterSpec {
 ```
 
 - Cluster-internal CNI (pod/service CIDRs) uses platform defaults.
-- The cluster's template determines whether nodes are VMs or BM. Both
-  types are placed on the same subnet — VMs via the K8s overlay (already
-  bridged to the fabric), BM nodes directly on the fabric.
+- The cluster's template determines the node sets, but the current CaaS
+  networking contract accepts BM node sets only; VM-based node sets are
+  rejected by the service-specific placement validation. CaaS node sets share
+  one tenant subnet and use the system-resolved fabric interface. VMaaS
+  ComputeInstances use the separate ComputeNetworkAttachment contract and,
+  where the selected K8s manager supports it, the K8s overlay.
 
 The Cluster resource also gains two fields populated by the system
 during provisioning:
@@ -1504,8 +1549,7 @@ message ComputeNetworkAttachmentStatus {
 message ComputeInstanceStatus {
   // ... existing fields ...
   repeated ComputeNetworkAttachmentStatus compute_network_attachment_statuses = N;
-  // VMaaS currently populates zero or one status entry; additional interfaces
-  // remain deferred until implemented and tested.
+  // VMaaS populates zero or one status entry under the current contract.
 }
 ```
 
@@ -1556,12 +1600,12 @@ enum ExternalIPAttachmentEndpoint {
 }
 
 message ExternalIPAttachmentSpec {
-  string external_ip = 1;          // required, immutable
+  ExternalIPLocalReference external_ip = 1;  // required, immutable
 
   oneof target {
-    string compute_instance = 2;
-    string cluster = 3;
-    string baremetal_instance = 4;
+    ComputeInstanceLocalReference compute_instance = 2;
+    ClusterLocalReference cluster = 3;
+    BareMetalInstanceLocalReference baremetal_instance = 4;
   }
   ExternalIPAttachmentEndpoint target_endpoint = 5;
   // Required when target=cluster; must be UNSPECIFIED otherwise.
@@ -1576,8 +1620,8 @@ Handles **outbound traffic only**.
 
 ```protobuf
 message NATGatewaySpec {
-  string virtual_network = 1;  // parent VN ID, required, immutable
-  string external_ip = 2;      // required, immutable
+  VirtualNetworkLocalReference virtual_network = 1;  // required, immutable
+  ExternalIPLocalReference external_ip = 2;          // required, immutable
 }
 ```
 
@@ -1666,12 +1710,11 @@ Per-subnet NAT association is unsupported.
 
 #### Attachment cardinality and primary behavior
 
-ComputeInstance retains repeated `compute_network_attachments` and deprecated
-`network_attachments` fields for API compatibility, but both accept zero or
-one entry only. A supplied entry is implicitly primary when `primary` is
-omitted; explicit `primary: false` and a list with more than one entry are
-rejected. Multi-interface VM support is deferred, and the deprecated field is
-a migration compatibility path rather than the canonical Catalog policy field.
+ComputeInstance exposes repeated `compute_network_attachments` to preserve a
+list-shaped API, but accepts zero or one entry only. A supplied entry is
+implicitly primary when `primary` is omitted; explicit `primary: false` and a
+list with more than one entry are rejected. Multi-interface VM support is not
+part of the current contract.
 
 BaremetalInstance retains the repeated `network_attachments` API field for
 compatibility, but accepts at most one entry. When present, that entry is
@@ -1694,16 +1737,20 @@ DNAT rule to the single attachment's subnet IP. The tenant does not select an
 interface for the DNAT target because BMaaS has only one tenant attachment.
 
 **Cluster networking:** `ClusterNetworkAttachment` is a single attachment
-(one subnet for the whole cluster). Multi-NIC for individual cluster nodes
-is handled by the CaaS template (provider-configured). The `primary` field
-does not apply to `ClusterNetworkAttachment`.
+(one subnet for the whole cluster). Each bare-metal node uses exactly one
+tenant-facing fabric interface, resolved from its BareMetalInstanceType;
+multi-NIC node requests are rejected. The `primary` field does not apply to
+`ClusterNetworkAttachment`.
 
 #### Multiple Hosting Clusters Per Deployment
 
-Multiple hosting clusters are supported per deployment. At subnet creation, the
-k8sManager creates a K8s overlay on each hosting cluster and bridges it to
-the fabric segment. VMs on different hosting clusters share the same subnet
-via the fabric.
+Multiple hosting clusters are supported by manager and workload combinations
+that advertise that capability. At subnet creation, the k8sManager creates a
+K8s overlay on each eligible hosting cluster and bridges it to the fabric
+segment. VMs on different hosting clusters share the same subnet via the
+fabric when the selected k8sManager supports that topology. A manager-specific
+design may impose a stricter limit; for example, CUDN-EVPN Phase 1 supports
+one hosting cluster only.
 
 #### Deployment Topology
 
@@ -1719,10 +1766,11 @@ resources and manager integrations use IPv4; IPv6 and dual-stack networking
 are not supported.
 
 Hosting clusters are distinct from the hub. Where a `k8sManager` is
-configured, subnet creation provisions the K8s overlay on each hosting cluster
-and bridges it to the fabric segment. VMs on different hosting clusters share
-the same subnet via the fabric; those hosting clusters do not create additional
-hubs.
+configured, subnet creation provisions the K8s overlay on each eligible
+hosting cluster and bridges it to the fabric segment. VMs on different hosting
+clusters share the same subnet via the fabric when the selected manager
+supports it; those hosting clusters do not create additional hubs.
+Manager-specific placement and hosting-cluster limits remain authoritative.
 
 #### Cross-VN Communication
 
@@ -1814,9 +1862,11 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 5. **ExternalIPPool shared.** The configured network manager handles ExternalIP
    allocation for all resource types. One pool per deployment.
 
-6. **Multiple hosting clusters.** Subnet creation provisions K8s overlay
-   on each hosting cluster. VMs on different clusters share the subnet
-   via the fabric.
+6. **Multiple hosting clusters where supported.** Subnet creation provisions
+   the K8s overlay on each eligible hosting cluster. VMs on different
+   clusters share the subnet via the fabric only when the selected manager
+   supports that topology; manager-specific limits, such as CUDN-EVPN Phase 1
+   being single-cluster, remain authoritative.
 
 7. **Internal IP pools.** Managed by managers with sensible defaults. Not
    part of the tenant API or NetworkClass spec.

@@ -254,14 +254,14 @@ spec:
 
 **API-Level VM Constraint**
 
-When a NetworkClass has `k8s_manager: "cudn_evpn"`, fulfillment-service enforces a constraint: **if the first Subnet under a VirtualNetwork has VMs running, block creation of additional Subnets**.
+When the deployment's active NetworkClass has `k8s_manager: "cudn_evpn"`, fulfillment-service enforces a constraint: **if the first Subnet under a VirtualNetwork has VMs running, block creation of additional Subnets**.
 
 ```go
 // internal/servers/subnet_server.go
 func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) (*v1.CreateSubnetResponse, error) {
     // ... existing validation ...
 
-    // Fetch parent VirtualNetwork to get NetworkClass
+    // Fetch the parent VirtualNetwork to identify its deployment.
     vnetResp, err := s.virtualNetworkServer.Get(ctx, &v1.GetVirtualNetworkRequest{
         Id: req.GetSubnet().GetSpec().GetVirtualNetwork(),
     })
@@ -269,10 +269,11 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
         return nil, status.Errorf(codes.Internal, "failed to fetch parent VirtualNetwork: %v", err)
     }
 
-    // Fetch NetworkClass to check k8s_manager
-    ncResp, err := s.networkClassServer.Get(ctx, &v1.GetNetworkClassRequest{
-        Id: vnetResp.GetVirtualNetwork().GetSpec().GetNetworkClass(),
-    })
+    // Resolve the single active NetworkClass for the deployment containing
+    // the parent VirtualNetwork. NetworkClass is provider-owned and
+    // deployment-scoped; it is not selected by a tenant VN annotation.
+    ncResp, err := s.networkClassServer.GetDeploymentNetworkClass(ctx,
+        deploymentForVirtualNetwork(vnetResp.GetVirtualNetwork()))
     if err != nil {
         return nil, status.Errorf(codes.Internal, "failed to fetch NetworkClass: %v", err)
     }
@@ -343,8 +344,11 @@ VMaaS enforces subnet count validation before allowing VM placement in EVPN-brid
 ```go
 // VMaaS ComputeInstance controller (pseudo-code)
 func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, subnet *osacv1.Subnet) error {
-    // Check if subnet has cudn_evpn k8s manager
-    networkClass := getNetworkClass(ctx, subnet)
+    // Check the deployment's active NetworkClass.
+    networkClass, err := getDeploymentNetworkClass(ctx, subnet)
+    if err != nil {
+        return fmt.Errorf("resolve deployment NetworkClass: %w", err)
+    }
     if networkClass.Spec.K8sManager != "cudn_evpn" {
         // Not EVPN-bridged, use regular placement logic
         return nil
@@ -424,10 +428,14 @@ These additional rules are mandatory whenever the resolved NetworkClass uses
   VTEP, FRR, BGP, fabric, and hosting-cluster prerequisites are registered as
   available. A tenant cannot select the manager through a VirtualNetwork or
   bypass the NetworkClass capability check.
-- The manager advertises IPv4-only, create/read/delete support for
-  VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, and
-  ExternalIPAttachment. NATGateway is rejected because Phase 1 does not
-  provide the OVN NAT capability.
+- The `cudn_evpn` K8s manager advertises IPv4-only,
+  create/read/delete support for VirtualNetwork, Subnet, SecurityGroup,
+  ExternalIPPool, ExternalIP, and ExternalIPAttachment. NATGateway is not a
+  `cudn_evpn` operation because Phase 1 does not provide OVN NAT capability.
+  In the combined NetworkClass used by this design, NATGateway is dispatched
+  to the configured fabric manager and is allowed only when that manager
+  advertises NAT support. A K8s-only NetworkClass rejects NATGateway at
+  validation time.
 - A NetworkClass or Subnet must not become Ready merely because the Netris
   fabric side succeeded. For a VM-capable first Subnet, the CUDN, namespace,
   bridge, and MetalLB IPAddressPool prerequisites must also be confirmed.
@@ -581,8 +589,15 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request)
         return reconcile.Result{}, client.IgnoreNotFound(err)
     }
 
-    // Dispatch to fabric + k8s managers
-    plan, err := r.Dispatcher.Dispatch(ctx, "Subnet", getNetworkClassID(subnet))
+    // Resolve the single deployment-scoped NetworkClass; no Subnet annotation
+    // or tenant-provided NetworkClass ID selects the manager.
+    networkClass, err := getDeploymentNetworkClass(ctx, subnet)
+    if err != nil {
+        return reconcile.Result{}, err
+    }
+
+    // Dispatch to fabric + k8s managers using the resolved deployment class.
+    plan, err := r.Dispatcher.Dispatch(ctx, "Subnet", networkClass)
     if err != nil {
         return reconcile.Result{}, err
     }
@@ -659,11 +674,11 @@ func (r *SubnetReconciler) shouldSkipK8sManager(ctx context.Context, subnet *osa
     return false, nil  // Do not skip k8s manager
 }
 
-func getNetworkClassID(subnet *osacv1.Subnet) string {
-    // Subnet CR references VirtualNetwork, which has osac.openshift.io/network-class-id annotation
-    // Dispatcher uses this annotation to resolve the NetworkClass
-    // (Annotation is set by VirtualNetwork feedback controller when VN is created)
-    return subnet.Annotations["osac.openshift.io/network-class-id"]
+func getDeploymentNetworkClass(ctx context.Context, subnet *osacv1.Subnet) (*osacv1.NetworkClass, error) {
+    // Resolve the single provider-owned NetworkClass for the deployment that
+    // owns the Subnet. No tenant VirtualNetwork/Subnet annotation selects it.
+    return networkClassServer.GetDeploymentNetworkClass(ctx,
+        deploymentForSubnet(subnet))
 }
 ```
 
@@ -699,9 +714,7 @@ The existing `meta/osac.yaml` already declares `fabric_manager: netris` with cap
 ---
 fabric_manager: netris
 capabilities:
-  supports_ipv4: true
-  supports_ipv6: false
-  supports_dual_stack: false
+  addressFamily: ipv4
 ```
 
 **tasks/create_subnet.yaml:**
@@ -821,10 +834,7 @@ collections/ansible_collections/osac/templates/roles/cudn_evpn/
 ---
 k8s_manager: cudn_evpn
 capabilities:
-  supports_ipv4: true
-  supports_ipv6: false
-  supports_dual_stack: false
-  dpu_support: false
+  addressFamily: ipv4
 ```
 
 **tasks/create_subnet.yaml:**
@@ -1167,18 +1177,20 @@ metadata:
 data:
   name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
   description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
-  capabilities: "supports_ipv4:true,supports_ipv6:false,single_subnet_for_vms:true"  # Comma-separated string per OSAC-1433
+  capabilities: "addressFamily:ipv4"
+  supportedResources: "virtualNetwork,subnet,securityGroup,externalIPPool,externalIP,externalIPAttachment"
   # template_role field removed - not in OSAC-1433 spec, dispatcher resolves role name from k8s_manager field
 ```
 
 **Capability Fields:**
-- `supports_ipv4:true` — IPv4 address family supported
-- `supports_ipv6:false` — IPv6 not supported in Phase 1
-- `single_subnet_for_vms:true` — NEW capability: permits at most one VM-capable Subnet per VirtualNetwork; additional Subnets are fabric-only while no VMs exist
+- `addressFamily:ipv4` — IPv4 address family supported
+- `supportedResources` — the shared resources handled by this K8s manager;
+  NATGateway is intentionally omitted because Phase 1 does not provide that
+  capability
 
-The `single_subnet_for_vms` capability is checked by fulfillment-service Subnet
-validation (see Subnet Validation section above) to make the VM topology
-constraint pluggable for future k8s managers.
+The single-VM-capable-Subnet rule is a CUDN-EVPN placement validation, not a
+new shared NetworkClass capability. It remains enforced by the
+fulfillment-service Subnet/VM validation described above.
 
 **RBAC:**
 
@@ -1190,6 +1202,9 @@ metadata:
 rules:
 - apiGroups: ["k8s.ovn.org"]
   resources: ["clusteruserdefinednetworks"]
+  # Controller reconciliation permissions for the external CUDN CRD. These
+  # verbs do not expose tenant update/patch operations for OSAC networking
+  # resources, which remain create/read/delete only.
   verbs: ["create", "get", "list", "watch", "update", "patch", "delete"]
 - apiGroups: ["k8s.ovn.org"]
   resources: ["vteps"]
@@ -1391,7 +1406,7 @@ Subnet provisioning takes 2× the time of parallel provisioning (fabric job + k8
 **Cons:**
 - Webhook is async — API returns 201 Created, then webhook rejects, CR never provisions
 - Poor UX: user sees successful API response, then Subnet stuck in Failed state
-- Webhook must query fulfillment-service API to get parent VirtualNetwork's NetworkClass (cross-component dependency)
+- Webhook must query fulfillment-service API to get the deployment's active NetworkClass (cross-component dependency)
 
 **Rejection reason:** Service-side validation provides immediate error feedback (400 Bad Request). Webhook validation adds latency and UX confusion.
 
@@ -1461,11 +1476,14 @@ This is a new API — no existing resources to migrate. Upgrade steps:
 
 **Downgrade (0.3 → 0.2):**
 
-Downgrade requires deleting all Subnets using NetworkClass with k8s_manager="cudn_evpn":
+Downgrade requires deleting all Subnets in deployments whose active
+NetworkClass has `k8s_manager="cudn_evpn"`:
 
-1. List all VirtualNetworks with networkClass containing cudn_evpn
-2. Delete all Subnets under those VirtualNetworks (cascades CUDN deletion)
-3. Delete NetworkClass
+1. Identify each deployment's active NetworkClass and confirm its
+   `k8s_manager` is `cudn_evpn`
+2. List all VirtualNetworks in those deployments and delete their Subnets
+   (cascades CUDN deletion)
+3. Delete the deployment NetworkClass
 4. Downgrade osac components (fulfillment-service, osac-operator, osac-aap, osac-installer)
 5. CUDN CRDs remain on cluster (OVN-Kubernetes owns them, safe to leave)
 
@@ -1536,8 +1554,10 @@ If a VRF device persists on a worker node after CUDN deletion:
 
 **Disabling the Feature:**
 
-1. Delete all VirtualNetworks using NetworkClass with k8s_manager="cudn_evpn"
-2. Delete the NetworkClass
+1. Identify deployments whose active NetworkClass has
+   `k8s_manager="cudn_evpn"` and delete all VirtualNetworks/Subnets in those
+   deployments
+2. Delete each deployment NetworkClass
 3. Delete ConfigMap k8s-manager-cudn-evpn (prevents new registrations)
 
 **Consequences:**

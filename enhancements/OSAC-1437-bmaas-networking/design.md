@@ -151,7 +151,7 @@ message BareMetalNetworkPortSpec {
 }
 ```
 
-`BareMetalInstanceType` is a bare-metal-only resource (OSAC-1201) — BM vs VM is classified by resource type (`BareMetalInstance` vs `ComputeInstance`), not by the contents of `network_ports`. Every `BareMetalInstanceType` must declare at least one `network_ports` entry with `role=fabric`; a bare-metal profile with no fabric port is rejected at creation time because both the operator (provisioning-network port move) and the default-interface resolution (first `role=fabric` port) depend on it. Canonical port-role validation (rejecting unknown or misspelled role values) is owned by OSAC-1201's BareMetalInstanceType schema.
+`BareMetalInstanceType` is a bare-metal-only resource (OSAC-1201) — BM vs VM is classified by resource type (`BareMetalInstance` vs `ComputeInstance`), not by the contents of `network_ports`. Every `BareMetalInstanceType` must declare at least one `network_ports` entry with `role=fabric`; a bare-metal profile with no fabric port is rejected at creation time because both the operator (provisioning-network port move) and the default-interface resolution (first `role=fabric` port) depend on it. OSAC-1201 structurally validates that `role` is non-empty; BMaaS applies the supported attachment-role rules when a port is selected, and does not treat an unknown role as `fabric`.
 
 Interfaces are ordered. When multiple interfaces share the same role, the first one in the list is the default for that role (used by CaaS for automatic resolution — see CaaS design).
 
@@ -323,7 +323,11 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 10. **Delete BaremetalInstance:**
     - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-created-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
-    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
+    - **Manually created resources are NOT cleaned up** — a manually created
+      ExternalIP persists until the tenant deletes it. A manually created
+      ExternalIPAttachment targeting the BaremetalInstance remains a reverse
+      reference and blocks BaremetalInstance deletion until the tenant deletes
+      the attachment; it is not detached or changed to Pending implicitly.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
       - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
@@ -481,9 +485,15 @@ used by CaaS worker provisioning.
 - A supplied attachment defaults only missing fields. A supplied Subnet,
   non-empty SecurityGroup list, or interface is preserved and validated; no
   default may overwrite it.
-- The resolved Subnet and every SecurityGroup must exist, be Ready, be in the
-  caller's effective tenant/project, and belong to the same VirtualNetwork.
-  Duplicate SecurityGroup references are rejected.
+- For standalone, Catalog-based, and tenant-facing creates, the resolved
+  Subnet and every SecurityGroup must exist, be Ready, be in the caller's
+  effective tenant/project, and belong to the same VirtualNetwork. Duplicate
+  SecurityGroup references are rejected.
+- For the trusted private CaaS worker create path, the resolved Subnet and
+  SecurityGroups are resolved in the source Cluster's effective tenant/project
+  and must be Ready and belong to the same VirtualNetwork. The destination
+  BMI's `system` tenant is not required to match that networking-resource
+  scope; this exception does not apply to public or Catalog-based BMI creates.
 - The effective BareMetalInstanceType must exist, be Ready/usable for
   allocation, and expose at least one valid network port with role `fabric`.
   A missing, Pending, or Failed instance type is a create precondition
@@ -497,8 +507,12 @@ used by CaaS worker provisioning.
   an arbitrary interface string.
 - The selected port must be tenant-attachable. Ports with role `lifecycle`
   are reserved for PXE, BMC, and provisioning operations and are rejected.
-  An unknown role is rejected by the BareMetalInstanceType contract rather
-  than treated as `fabric`.
+  The `role` field is a non-empty, extensible string rather than an enum. An
+  unknown role is therefore not treated as `fabric`, is never selected by the
+  implicit defaulting rule, and is rejected when explicitly selected for a
+  tenant attachment because its port semantics cannot be validated. This is
+  BMaaS attachment validation, not a claim that OSAC-1201 defines a closed
+  role enum.
 - If `interface` is omitted, select the first ordered port with role
   `fabric`. If no such port exists, reject the create; never select a
   management, storage, lifecycle, or arbitrary first port as a fallback.

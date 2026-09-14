@@ -125,8 +125,9 @@
   representation is accepted.
 - Physical interface comes from immutable node-set resolution.
 - Primary is implicit/true.
-- BMaaS revalidates scope, same-VN, readiness, instance type, and lifecycle
-  role.
+- BMaaS resolves the local network references in the Cluster tenant/project,
+  does not require them to match the destination BMI's `system` tenant, and
+  revalidates readiness, same-VN, instance type, and lifecycle role.
 - Worker reconciliation never appends a second attachment or silently chooses
   another interface.
 

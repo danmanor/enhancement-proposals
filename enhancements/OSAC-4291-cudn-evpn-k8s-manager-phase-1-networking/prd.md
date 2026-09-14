@@ -78,7 +78,10 @@ The following are out of scope for Phase 1:
 
 - Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic.
 
-- Fabric-level NATGateways (SNAT via softgate) apply to fabric-bridged VM egress traffic.
+- When the resolved NetworkClass includes a NAT-capable fabric manager, its
+  fabric-level NATGateway (SNAT via softgate) applies to fabric-bridged VM
+  egress traffic. The `cudn_evpn` K8s manager does not provide NATGateway;
+  K8s-only OVN deployments reject NATGateway creation.
 
 ## Acceptance Criteria
 

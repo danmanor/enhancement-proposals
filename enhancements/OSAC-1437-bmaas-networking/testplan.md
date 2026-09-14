@@ -215,7 +215,10 @@
 
 - Private request contains exactly one attachment with Cluster Subnet,
   SecurityGroups, and immutable node-set fabric interface.
-- BMaaS revalidates port role, type, scope, readiness, and same-VN.
+- BMaaS revalidates port role, type, readiness, and same-VN. For the trusted
+  private CaaS path, network references are resolved in the source Cluster's
+  tenant/project and are not rejected merely because the destination BMI is
+  owned by the `system` tenant.
 - Private caller cannot inject a second attachment or lifecycle port.
 
 #### TC-R6-02: Catalog and direct BM creates are equivalent

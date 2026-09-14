@@ -156,8 +156,9 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ## 6. Assumptions
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
-- The NetworkClass has at least one manager configured that supports BMaaS
-  networking; the implementation strategy is resolved by the provider.
+- The deployment has a Fabric Manager configured that supports BMaaS switch-port
+  movement and DHCP operations; the implementation strategy is resolved by the
+  provider. A K8s-only manager is not sufficient for the current BMaaS flow.
 - The BareMetalInstanceType for the bare-metal template has at least one `fabric` port. If it does not, creating a server with explicit network attachments fails with a clear error.
 - Out-of-band provisioning interfaces (PXE boot, BMC) are reserved for system use and are NOT tenant-attachable (should not appear in network attachments).
 

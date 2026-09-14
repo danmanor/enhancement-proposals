@@ -33,39 +33,41 @@ design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology
 The shared operation contract is defined by [Supported Operations and
 Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
 
-ComputeInstance currently uses a shared `NetworkAttachment` message. This enhancement introduces `ComputeNetworkAttachment` with a compatible `primary` field, keeps `compute_network_attachments` optional and list-shaped while accepting at most one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. See [PRD](prd.md) for detailed requirements.
+ComputeInstance uses the resource-specific `ComputeNetworkAttachment` message.
+The `compute_network_attachments` field remains optional and list-shaped while
+accepting at most one entry, and `auto_external_ip_attachment` enables fully
+connected VMs in a single API call. See [PRD](prd.md) for detailed
+requirements.
 
 ## Motivation
 
-ComputeInstance already participates in the networking API. Today's flow:
+ComputeInstance already participates in the networking API. The legacy flow
+being replaced by the shared dispatcher was:
 
 1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
-3. Tenant creates ComputeInstance with `network_attachments` (shared message, no `primary` field, single-NIC only)
+3. Tenant creates ComputeInstance with `compute_network_attachments` (resource-specific message, single-interface only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
 5. AAP template (`osac.templates.ocp_virt_vm`) creates KubeVirt VirtualMachine with one `l2bridge` interface in the subnet's CUDN namespace
 
 ### What Already Works
 
-- `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []NetworkAttachment` with CEL immutability rules (the complete list and every network field are immutable)
+- `compute_network_attachments` is the ComputeInstanceSpec attachment field
+- Operator CRD has `NetworkAttachments []ComputeNetworkAttachment` with CEL immutability rules (the complete list and every network field are immutable)
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
 
 ### What's Missing
 
-- Shared `NetworkAttachment` message — no resource-specific `primary` field
-- No per-resource-type attachment message (`ComputeNetworkAttachment`)
 - Single-NIC only — template creates one `l2bridge` interface
-- No dispatcher — uses `implementation_strategy` annotation
 - BM-only deployment validation (reject VM when no k8sManager)
 - Auto ExternalIP allocation (tenant must manually create ExternalIP + ExternalIPAttachment)
 
 ### Goals
 
-- Single-interface support with a list-shaped attachment field for API compatibility
-- Resource-specific attachment message (`ComputeNetworkAttachment`) with a retained `primary` field
+- Single-interface support with a list-shaped attachment field
+- Resource-specific attachment message (`ComputeNetworkAttachment`) with a `primary` field
 - Optional `compute_network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - BM-only deployment validation to reject VM provisioning when no k8s_manager is available
@@ -173,7 +175,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 9. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-created: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
-   - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
+   - **Manually created resources are NOT cleaned up** — if the tenant created an ExternalIP explicitly, it persists until the tenant deletes it. A manually created ExternalIPAttachment that targets the ComputeInstance remains a reverse reference and blocks ComputeInstance deletion until the tenant deletes the attachment; it is not detached or changed to Pending implicitly.
    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
@@ -198,8 +200,7 @@ message ComputeNetworkAttachment {
 
 message ComputeInstanceSpec {
   // ... existing fields ...
-  // DEPRECATED: field 14 (old shared NetworkAttachment)
-  repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional
+  repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional; zero or one supported
   bool auto_external_ip_attachment = 19;  // NEW, create-time only; auto-provision ExternalIP + ExternalIPAttachment
 }
 
@@ -216,6 +217,15 @@ message ComputeInstanceStatus {
 ```
 
 #### Operator CRD (osac-operator)
+
+The public fulfillment API field `spec.compute_network_attachments` maps to the
+operator CRD field `spec.networkAttachments` (Go field
+`ComputeInstanceSpec.NetworkAttachments`). Fulfillment-service performs this
+API-to-CRD conversion when it creates the private CR; the operator does not
+accept the public snake_case field directly. The CRD field is the same
+resource-specific `ComputeNetworkAttachment` message, not the replaced shared
+`NetworkAttachment` message. There is no legacy conversion path because the
+shared field has no users or persisted resources.
 
 Define/extend `ComputeInstanceSpec.NetworkAttachments` with:
 - `Primary bool` field with CEL immutability validation
@@ -253,31 +263,22 @@ Networking validation pipeline](/enhancements/OSAC-1433-unified-networking/desig
 The following checks are VMaaS-specific and are required on every direct,
 Template-based, and Catalog-based ComputeInstance create path.
 
-**Request shape and migration validation:**
+**Request shape validation:**
 
-- Field 14 (`network_attachments`) and field 18
-  (`compute_network_attachments`) are alternative input surfaces during the
-  migration. If both are present, even if one is empty, reject the request
-  with `InvalidArgument`; do not merge them or choose one by precedence.
-- If field 14 is present alone, it must contain zero or one shared
-  `NetworkAttachment` entry. Convert the single entry to
-  `ComputeNetworkAttachment` before applying the canonical validation rules.
-  The deprecated message has no `primary` field, so the converted entry is
-  implicitly primary.
-- If field 18 is present, it must contain zero or one entry. A second entry is
+- `compute_network_attachments` must contain zero or one entry. A second entry is
   rejected before reference lookup, defaulting, capacity reservation, or CR
   creation with a single-interface cardinality error.
 - The optional `primary` presence bit is significant. Omitted and `true` are
-  accepted for the sole entry; explicit `false` is rejected. A defaulted or
-  converted entry is persisted with the canonical primary meaning, but the
-  tenant's explicit `false` must never be rewritten to `true`.
+  accepted for the sole entry; explicit `false` is rejected. A defaulted entry
+  is persisted with the canonical primary meaning, but an explicit `false`
+  must never be rewritten to `true`.
 - Unknown attachment fields, a malformed subnet reference, a malformed
   SecurityGroup reference, or a malformed Boolean presence encoding is
   rejected by the API shape layer.
 
 **Attachment resolution and references:**
 
-- Missing or empty canonical/deprecated attachment input resolves to exactly
+- Missing or empty attachment input resolves to exactly
   one attachment containing the tenant's default Subnet and default
   SecurityGroup. If either default is absent or not Ready, return the shared
   no-default or readiness error; do not create a VM with an unresolved
@@ -355,10 +356,11 @@ Template-based, and Catalog-based ComputeInstance create path.
   attachment field, any nested Subnet/SecurityGroup/primary value, or
   `auto_external_ip_attachment` are rejected. The supported change is delete
   and recreate.
-- A delete is blocked by the shared dependency guards while the VM or its
-  auto-created ExternalIPAttachment still protects a Subnet, ExternalIP, or
-  ExternalIPPool. Auto-created children are deleted in attachment-then-IP
-  order before parent finalizer removal.
+- A delete is blocked by the shared dependency guards while the VM has a
+  manually created ExternalIPAttachment reference or while an auto-created
+  ExternalIPAttachment still protects a Subnet, ExternalIP, or ExternalIPPool.
+  Auto-created children are deleted in attachment-then-IP order before parent
+  finalizer removal.
 - Status writes may update only controller-owned conditions, provisioning
   state, discovered IP, and finalizers. A status callback cannot mutate the
   resolved network spec or make an unready Subnet/SecurityGroup usable.
@@ -373,9 +375,7 @@ when the failure is found during create.
 
 Catalog Item v2 governs the canonical `compute_network_attachments` field as
 one complete list. It may lock the list or make it editable with an optional
-default. A Catalog Item does not govern the deprecated field-14
-`network_attachments` surface separately; compatibility input is converted to
-the canonical representation before the same policy is applied.
+default. The field is the only supported ComputeInstance networking input.
 
 Catalog resolution happens before tenant default networking. A locked list
 rejects conflicting tenant input. An editable list accepts tenant input,
@@ -429,13 +429,14 @@ default tenant-local Subnet or SecurityGroup references.
 - Parent resource finalizer deletes in order: ExternalIPAttachment → ExternalIP
 - On permanent cleanup failure: finalizer removed, parent deleted, orphaned resources left for manual cleanup
 
-#### Backward Compatibility Strategy
+#### API Change
 
-Dual-field support during migration:
-- Server accepts old `network_attachments` (field 14) or new `compute_network_attachments` (field 18)
-- Reject if both set
-- Internal conversion: old → new format (no `primary` on single attachment, implicit primary)
-- Deprecation timeline: TBD (OSAC-1471)
+The ComputeInstance networking API changes from the shared
+`NetworkAttachment` shape to the resource-specific
+`ComputeNetworkAttachment` shape before release. Only
+`compute_network_attachments` is accepted. The previous shared field and
+message are not exposed as a compatibility path because no users or persisted
+resources depend on them yet.
 
 ### Security Considerations
 
@@ -470,7 +471,7 @@ This feature inherits the existing security model:
 No RBAC or tenancy changes. All new resources (ComputeInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
 - OPA policies enforce tenant-scoped list/get/create/delete; update and patch of network-owned fields are rejected
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
+- Tenant User can view auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via the standard API; their network-owned fields are not editable.
 
 ### Observability and Monitoring
 
@@ -513,11 +514,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 ### Drawbacks
 
-#### Dual-field migration complexity
+#### API shape change
 
-Supporting both old `network_attachments` (field 14) and new `compute_network_attachments` (field 18) adds server validation complexity and migration burden. Tenants using the old field must eventually migrate.
-
-**Trade-off:** Backward compatibility vs. clean API surface. Chosen approach: temporary dual-field support with documented migration timeline (OSAC-1471).
+The resource-specific attachment message adds a small pre-release API change,
+but removes dual-field validation and avoids a compatibility and migration
+period before the API has users.
 
 ## Alternatives (Not Implemented)
 
@@ -564,7 +565,6 @@ Tech Preview criteria:
 GA criteria:
 - [ ] k8s_manager implementation (OSAC-1511 or OSAC-1717) delivered and production-tested
 - [ ] Multi-job tracking (OSAC-1459) implemented and stable
-- [ ] Dual-field migration (OSAC-1471) completed, old `network_attachments` deprecated and removed
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
 
@@ -572,28 +572,16 @@ GA criteria:
 
 ### Upgrade
 
-Micro version upgrades (`x.y.N → x.y.N+2`):
-- New fields (`compute_network_attachments`, `auto_external_ip_attachment`) are additive — existing ComputeInstance resources continue to work with old `network_attachments` field (field 14)
-- Server supports both old and new fields during migration (dual-field support)
-- No user action required
-
-Minor version upgrades (`x.N → x.N+1`):
-- Deprecation warning added for old `network_attachments` field (field 14) in fulfillment-service API responses
-- Tenant User encouraged to migrate by creating a replacement VM with the new field (`osac-cli` supports new `--network-attachment` flag with `--primary`); the existing VM's network fields are not updated
-- No breaking changes — old field remains functional
+The resource-specific attachment schema and its server and operator consumers
+are deployed atomically. Because the API change occurs before users or
+persisted resources exist, no dual-field compatibility period or client
+migration is required.
 
 ### Downgrade
 
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service and osac-operator images to `N`
-- Existing ComputeInstance resources with new `compute_network_attachments` field (field 18) will be unrecognized by `N` server
-- Manual cleanup required: delete ComputeInstance resources created with new field, re-create with old field
-- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
-
-Acceptable downgrade steps:
-- Delete CRs using new field (field 18)
-- Re-create using old field (field 14)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`)
+If `N+1` upgrade fails, downgrade across the attachment schema change is not
+supported. The fulfillment-service and operator versions must be rolled back
+as one unit before any ComputeInstance resources are created.
 
 ## Version Skew Strategy
 
@@ -603,15 +591,9 @@ fulfillment-service and osac-operator are deployed together in the same namespac
 
 ### Client Skew
 
-osac-cli (n-1) with fulfillment-service (n):
-- Old CLI uses old `--network-attachments` flag → server accepts via dual-field support, converts internally
-- New CLI uses new `--network-attachment` + `--primary` flags → server accepts new field
-
-osac-cli (n) with fulfillment-service (n-1):
-- New CLI uses new `--network-attachment` flag → old server rejects unknown field
-- Workaround: use old `--network-attachments` flag until server is upgraded
-
-Recommendation: keep osac-cli and fulfillment-service within one minor version.
+The CLI and fulfillment-service must be upgraded together with the
+resource-specific attachment schema. Mixed client/server versions across this
+pre-release API change are unsupported.
 
 ## Support Procedures
 

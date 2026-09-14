@@ -10,8 +10,8 @@
 
 ## 1. Problem Statement
 
-VMaaS needs a stable list-shaped attachment API for future growth, but the
-currently supported VM contract is one interface or none at request time.
+VMaaS retains a list-shaped attachment API while the currently supported VM
+contract is one interface or none at request time.
 Creating a VM with external access requires manual IP allocation and NAT
 configuration, forcing tenants to understand inbound and outbound routing
 before provisioning their first reachable VM. The default networking
@@ -36,7 +36,7 @@ creation flows while VMs require explicit networking details on every create.
 
 ### Tenant User Stories
 
-- As a Tenant User, I want to create a VM with one network attachment using a list-shaped field, so that the API remains list-shaped for compatibility
+- As a Tenant User, I want to create a VM with one network attachment using a list-shaped field, so that the API can retain a stable list shape while supporting only one interface today
 - As a Tenant User, I want the single network interface to be implicitly primary, so that it provides the VM's default gateway and DNS configuration
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
@@ -93,9 +93,9 @@ creation flows while VMs require explicit networking details on every create.
 
 - **FR-6:** When a VM is created, the platform validates that the target deployment supports virtualization. If the deployment only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
 
-#### Backward Compatibility
+#### API Shape Change
 
-- **FR-7:** Existing VMs continue to work without changes. The platform accepts both old and new network configuration formats during a transition period. If both formats are provided, the create request fails with an error. If the old format is provided alone, it is converted to the new format automatically. [User]
+- **FR-7:** Before release, the VM networking field changes from the shared `NetworkAttachment` message to the resource-specific `ComputeNetworkAttachment` message. Only `compute_network_attachments` is accepted; no old/new dual-field compatibility or conversion period is provided because there are no users or persisted resources yet. [User]
 
 - **FR-8:** The complete resolved network attachment list on a ComputeInstance,
   including every Subnet, SecurityGroup, and `primary` value, is immutable
@@ -126,8 +126,7 @@ creation flows while VMs require explicit networking details on every create.
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a `osac.openshift.io/auto-created: "true"` label
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
-- [ ] Creating a VM using the old network configuration format succeeds and is internally converted to the new format
-- [ ] Creating a VM with both old and new configuration formats returns an error
+- [ ] The VM API accepts only the resource-specific `compute_network_attachments` field and rejects the replaced shared attachment format
 - [ ] Creating a VM with `primary: false` on its sole attachment returns a single-interface validation error
 - [ ] Updating or patching a VM's network attachment list or any attachment field is rejected; changing it requires delete and recreate under the [unified networking operation contract](/enhancements/OSAC-1433-unified-networking/prd.md#network-operation-contract)
 

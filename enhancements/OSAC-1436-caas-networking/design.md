@@ -21,6 +21,20 @@ superseded-by:
 
 CaaS networking provides tenant-controlled cluster node networking via VirtualNetwork + Subnet attachments, BM-based node sets with fabric interface resolution from BareMetalInstanceType, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
 
+CaaS is supported in connected single-hub BM-only and combined-manager
+deployments when the selected topology provides the required endpoint-VIP,
+BM-worker, and network reachability prerequisites. A NATGateway is required only when the
+tenant VirtualNetwork and management cluster have no direct route. In that
+case the selected topology must support NATGateway and the VirtualNetwork
+must have a Ready NATGateway before cluster creation. In a combined-manager deployment, the
+K8s manager creates the MetalLB IPAddressPool alongside the K8s overlay. In a
+BM-only deployment, the Subnet controller creates and removes the pool using
+the fabric-level networking path. A topology with neither a direct route nor
+NATGateway support is rejected for CaaS cluster creation. K8s-only mode is
+outside the current BM-worker CaaS flow regardless of its NAT capability. This
+is a CaaS-specific prerequisite and does not change the shared optionality of
+NATGateway for other workloads.
+
 ## Summary
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how CaaS consumes that architecture.
@@ -146,7 +160,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - The controller correlates registered Agents to BMIs via MAC address and labels them for NodePool selection
     - If an Agent does not register within a configurable timeout (default: 30 minutes), the controller sets the worker phase to `Failed` with reason `AgentRegistrationTimeout` and retries with escalating backoff (see OSAC-2135 for full retry logic)
 
-    > **Tenant-network reachability prerequisites.** After the port move, cluster installation runs entirely on the tenant network. The tenant V-Net and the management cluster are in separate VPCs with no direct network path — all communication between them traverses the external network: outbound via NATGateway/SNAT from the tenant V-Net, inbound to the management cluster's external ingress. This applies to assisted-service registration, container image pulls, and post-installation kubelet-to-kube-apiserver heartbeats. All dependencies (container images, RHCOS, OCP release payload) must be pullable from the tenant network via the same egress path. SecurityGroup egress rules must allow outbound `:443`. `AgentRegistrationTimeout` catches tenant-to-assisted-service egress failures (the agent cannot register if it cannot reach assisted-service).
+    > **Tenant-network reachability prerequisites.** After the port move, cluster installation runs entirely on the tenant network. Where the tenant V-Net and the management cluster are in separate VPCs with no direct network path, all communication between them traverses the external network: outbound via a Ready NATGateway/SNAT path, inbound to the management cluster's external ingress. This applies to assisted-service registration, container image pulls, and post-installation kubelet-to-kube-apiserver heartbeats. All dependencies (container images, RHCOS, OCP release payload) must be pullable from the tenant network via the same egress path. SecurityGroup egress rules must allow outbound `:443`. `AgentRegistrationTimeout` catches tenant-to-assisted-service egress failures (the agent cannot register if it cannot reach assisted-service). A topology without both a direct route and NATGateway support is rejected before Cluster persistence.
 
 7. **CaaS template creates the HostedCluster + NodePool; BareMetalWorkerReconciler provisions workers.**
 
@@ -159,9 +173,9 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
     **b. MetalLB VIP provisioning (REPLACES `external_access` step):**
 
-    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, ExternalIPAttachment) is auto-provisioned or managed separately by the tenant. NATGateway is expected to exist on the VN as a default from tenant onboarding, not auto-created per cluster. The template:
+    The VN and Subnet already exist (tenant created them in steps 1-3). External access (ExternalIP, ExternalIPAttachment) is auto-provisioned or managed separately by the tenant. When the VN has no direct route to the management cluster, a Ready NATGateway must already exist on the VN; CaaS does not create one per cluster. If a direct route exists, no NATGateway is required. The template:
     - Creates MetalLB LoadBalancer Services for API server + ingress VIPs
-    - MetalLB allocates VIPs from its IPAddressPool (created by k8s_manager at subnet creation)
+    - MetalLB allocates VIPs from the IPAddressPool created at subnet creation: by the k8s_manager alongside the overlay in a combined-manager deployment, or by the Subnet controller through the fabric-level path in a BM-only deployment
     - Discovers the allocated VIPs and writes them to ClusterOrder CR status:
       ```yaml
       status:
@@ -200,7 +214,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 
 12. **Delete Cluster:**
     - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
-    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
+    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. A manually created ExternalIPAttachment that targets the Cluster remains a reverse reference and blocks Cluster deletion until the tenant deletes the attachment; it is not detached or changed to Pending implicitly.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
@@ -215,7 +229,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Delete NATGateway → fabric manager removes SNAT rule
     - Delete ExternalIPs → fabric manager releases IPs
     - Delete SecurityGroup → fabric manager removes ACL rules
-    - Delete Subnet → dispatcher calls both managers: fabric manager removes network segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
+    - Delete Subnet → dispatcher removes the fabric segment and the component that created the MetalLB IPAddressPool removes it; in combined-manager deployments the k8s_manager also removes the CUDN overlay
     - Delete VirtualNetwork → fabric manager removes tenant segment
 
 ### BareMetalInstanceType and Interface Resolution
@@ -239,7 +253,10 @@ Interfaces are ordered. When multiple interfaces share the same role (e.g., two 
 
 #### How CaaS Uses BareMetalInstanceType
 
-The tenant provides a single `ClusterNetworkAttachment` with `subnet` only — no node_set or interface field. The `BareMetalWorkerReconciler` resolves the interface from the BareMetalInstanceType for each node set:
+The tenant provides a single `ClusterNetworkAttachment` with `subnet` and
+optional `security_groups` — no node-set or interface field. The
+`BareMetalWorkerReconciler` resolves the interface from the
+BareMetalInstanceType for each node set:
 
 1. For each node set in the cluster spec (e.g., "gpu"), read `ClusterSpec.node_sets["gpu"].baremetal_instance_type` = "bm-standard"
 2. BareMetalInstanceType "bm-standard" has network_ports:
@@ -251,7 +268,8 @@ The tenant provides a single `ClusterNetworkAttachment` with `subnet` only — n
 3. The controller picks the first port with `role=fabric` → `data-0`, uses it as the `interface` field on the per-BMI `BareMetalNetworkAttachment`
 4. BMaaS receives the `BareMetalNetworkAttachment` (subnet + interface + primary) on the BMI Create call and handles the fabric port move as part of provisioning (see [On-Demand BMI Provisioning Model](#on-demand-bmi-provisioning-model-osac-2135))
 
-For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
+For the current CaaS contract, **BM node sets only are supported**. VM-based
+cluster node sets are rejected by validation.
 
 For v0.2: **one attachment per cluster → one subnet; each node set resolves its own fabric interface from its BareMetalInstanceType.**
 
@@ -374,8 +392,8 @@ again before creating any private BMaaS worker request.
 **Cluster attachment shape and defaulting:**
 
 - `network_attachment` is singular. The API accepts an omitted field or an
-  empty message for default resolution, but it rejects any legacy/repeated
-  representation that attempts to supply more than one tenant attachment.
+  empty message for default resolution. Any repeated or additional tenant
+  attachment representation is invalid.
 - A supplied attachment may contain only the shared `subnet` and
   `security_groups` fields. `fabric_interface`, physical port names, and
   per-node-set attachment selectors are not tenant input and are rejected if
@@ -423,6 +441,12 @@ again before creating any private BMaaS worker request.
   `BareMetalNetworkAttachment` with the Cluster Subnet, Cluster
   SecurityGroups, the immutable node-set `fabric_interface`, and implicit
   `primary: true`.
+- The private CaaS request carries the Cluster's effective tenant/project as
+  trusted reference-resolution context. BMaaS resolves the local Subnet and
+  SecurityGroup references in that source scope; it does not compare their
+  tenant with the destination BMI's builtin `system` tenant. This exception
+  is limited to CaaS-created BMIs and does not weaken tenant-facing BMaaS
+  validation.
 - BMaaS remains authoritative for the final physical-interface validation:
   the port must still exist in the referenced BareMetalInstanceType, be
   tenant-attachable, and not have role `lifecycle`. A private caller cannot
@@ -437,6 +461,14 @@ again before creating any private BMaaS worker request.
 
 **External access and VIP validation:**
 
+- Before persisting a Cluster, validation must confirm that the deployment has
+  a valid CaaS endpoint-VIP path: the NetworkClass must advertise CaaS/MetalLB
+  VIP support through the shared `metallb_vip_prefix_length` contract, and the
+  selected topology must provide the required worker and network reachability
+  prerequisites. When the tenant and management networks have no direct route,
+  the resolved VirtualNetwork must have a Ready NATGateway. A deployment
+  without that path is rejected; the request is not persisted. These are
+  service/topology prerequisites, not tenant-defined manager capability names.
 - `auto_external_ip_attachment` is create-time-only. When true, the request
   must reserve two IPv4 ExternalIPs atomically: one for `API` and one for
   `INGRESS`. Pool exhaustion or inability to reserve two addresses rejects
@@ -514,7 +546,8 @@ changed here.
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools; the worker reconciler provisions and binds on-demand BMIs/Agents, while the template provisions MetalLB VIPs and writes VIPs to ClusterOrder status |
 | BMaaS (bare-metal-fulfillment-operator) | Owns full BMI provisioning lifecycle including inventory → OS provisioning → fabric port move (provisioning network → tenant) → reboot → DHCP lease query IP discovery; returns fabric port to provisioning network on BMI deletion |
 | configured network manager(s) | Move network attachments where supported, create/delete external-IP attachments (DNAT), and create/delete NATGateway only when the capability is advertised |
-| k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
+| k8s_manager (Ansible role, combined-manager deployments) | create/delete_subnet (CUDN overlay) and create/delete the MetalLB IPAddressPool — called at subnet creation/deletion, NOT at cluster creation |
+| Subnet controller (BM-only deployments) | create/delete the MetalLB IPAddressPool through the fabric-level path — called at subnet creation/deletion, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle
 
@@ -597,9 +630,9 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: MetalLB IPAddressPool missing on hosting cluster
 
-**Impact:** MetalLB needs an IPAddressPool CR covering the subnet CIDR to allocate VIPs from. If the k8s_manager fails to create it at subnet creation, cluster API/ingress endpoints are unreachable.
+**Impact:** MetalLB needs an IPAddressPool CR covering the subnet CIDR to allocate VIPs from. If the selected topology fails to create it at subnet creation, cluster API/ingress endpoints are unreachable.
 
-**Mitigation:** k8s_manager creates IPAddressPool alongside the CUDN overlay at subnet creation (resolved in OQ#3). Subnet remains Pending until both CUDN overlay and IPAddressPool are confirmed on all hosting clusters.
+**Mitigation:** The selected topology creates the IPAddressPool at Subnet creation (the k8s_manager alongside the CUDN overlay in combined-manager deployments, or the Subnet controller through the fabric-level path in BM-only deployments). Subnet remains Pending until the required overlay/fabric resources and IPAddressPool are confirmed on all hosting clusters.
 
 **Reviewed by:** osac-operator team
 
@@ -641,7 +674,7 @@ fabric's DHCP server. The template does not configure static networking.
 
 ### ~~3. MetalLB IP pools~~ — Resolved
 
-Resolved: the **k8s_manager creates the MetalLB IPAddressPool CR at subnet creation time**, alongside the CUDN overlay on each hosting cluster. The IPAddressPool covers the subnet CIDR and is a shared prerequisite for all hosted cluster control planes on that hosting cluster — not a per-cluster resource. The CaaS template creates LoadBalancer Services; MetalLB dynamically allocates VIPs from the pool and announces them. The template discovers the allocated VIPs and writes them to ClusterOrder status.
+Resolved: the MetalLB IPAddressPool is created at subnet creation time and is a shared prerequisite for all hosted cluster control planes on that hosting cluster, not a per-cluster resource. In combined-manager deployments, the **k8s_manager creates the pool alongside the CUDN overlay**. In BM-only deployments, the **Subnet controller creates the pool through the fabric-level path**. The CaaS template creates LoadBalancer Services; MetalLB dynamically allocates VIPs from the pool and announces them. The template discovers the allocated VIPs and writes them to ClusterOrder status.
 
 ### ~~4. How does the operator know the fabric_manager name?~~ — Resolved
 
@@ -657,7 +690,7 @@ Resolved: Return error, no resource persisted. Pool capacity is checked synchron
 
 ### ~~7. How is the subnet CIDR partitioned between MetalLB VIP allocation and fabric DHCP assignment?~~ — Resolved
 
-Resolved: The k8s_manager creates the MetalLB IPAddressPool with a reserved sub-range of the subnet CIDR (e.g., last /28). The fabric manager's DHCP server is configured to exclude this range. The sub-range size is configurable on the NetworkClass. This ensures MetalLB VIPs and DHCP-assigned agent IPs never overlap.
+Resolved: The MetalLB IPAddressPool uses a reserved sub-range of the subnet CIDR (e.g., the last /28), created at Subnet creation time. In combined-manager deployments the k8s_manager creates the pool alongside the overlay; in BM-only deployments the Subnet controller creates it through the fabric-level path. The fabric manager's DHCP server excludes this range. The sub-range size is configurable on the NetworkClass. This ensures MetalLB VIPs and DHCP-assigned agent IPs never overlap.
 
 ### ~~8. What IP addresses do DNS records point to — MetalLB VIPs or ExternalIPs?~~ — Resolved
 
@@ -679,7 +712,8 @@ Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
 - [ ] API fields (`network_attachment`, `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`) implemented in fulfillment-service
-- [ ] Operator CRD updated with `NetworkAttachment`, `APIEndpoint`, `IngressEndpoint` fields
+- [ ] Operator CRD updated with `ClusterNetworkAttachment`, `APIEndpoint`,
+  `IngressEndpoint` fields
 - [ ] BareMetalWorkerReconciler (OSAC-2135) implemented — on-demand BMI creation with enriched network_attachment
 - [ ] Agent-to-BMI MAC correlation and NodePool labeling implemented
 - [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
@@ -752,12 +786,18 @@ kubectl describe cluster <name> -n <namespace>
 # Check status.conditions for NetworkingResolutionFailed
 ```
 
-**Cause:** Subnet not found, not Ready, or BM-only deployment (no k8s_manager)
+**Cause:** Subnet not found or not Ready, the required MetalLB pool is not
+available, or the deployment lacks the NATGateway capability required by the
+CaaS topology.
 
 **Resolution:**
 1. Check Subnet status: `kubectl get subnet <subnet-name> -n <namespace>`
 2. If Subnet is not Ready, investigate Subnet provisioning failure (check AAP job logs)
-3. If BM-only deployment, tenant must create Cluster in a deployment with k8s_manager configured
+3. Verify that the Subnet controller created the MetalLB pool. If the tenant
+   and management networks have no direct route, also verify that a Ready
+   NATGateway exists on the VirtualNetwork; a direct route does not require a
+   NATGateway. For a combined-manager deployment, verify the registered
+   k8s_manager and its pool-creation status.
 
 ### Symptom: Auto-provisioned ExternalIP not cleaned up after Cluster deletion
 
@@ -817,7 +857,7 @@ Consequences:
 | ClusterOrder CRD: singular networkAttachment | OSAC-1505 | New |
 | ClusterOrder CRD: api/ingress endpoint status | OSAC-2080 | New |
 | VIP discovery flow (feedback) | OSAC-1506 | New |
-| CaaS template: accept network_attachment + per-node config | OSAC-1507 | New |
+| CaaS template: accept network_attachment + system-resolved per-node interface config | OSAC-1507 | New |
 | CaaS template: MetalLB VIP provisioning + write to status | OSAC-2077 | New |
 | BareMetalWorkerReconciler (on-demand BMI provisioning + networking) | OSAC-2135 | New |
 | BM provisioning flow — reconcileNetworking dispatcher logic | OSAC-2047 | Closed |

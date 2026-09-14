@@ -61,10 +61,15 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 - **`spec.user_data`**: plain multiline string (cloud-init or Ignition); omit from payload when empty. Stored as Secret → KubeVirt `cloudInitNoCloud`.
 - **`spec.image`**: wizard collects `source_ref` only; payload always sets `spec.image.source_type` to **`registry`**. Future: ComputeImage list picker ([OSAC-979](https://redhat.atlassian.net/browse/OSAC-979)).
 - **`spec.is_windows`**: Configuration-step **OS family** radio — **Linux** → `is_windows: false`; **Windows** → `is_windows: true`. Maps to the optional boolean added in [fulfillment-service PR #734](https://github.com/osac-project/fulfillment-service/pull/734) ([OSAC-13](https://redhat.atlassian.net/browse/OSAC-13)); the reconciler maps this to CR `guestOSFamily` for AAP provisioning. Required on the wizard; default selection **Linux** when no catalog `default` ([§2.1.2](#212-catalog-overlay-and-defaults)). The wizard always sends an explicit value.
-- **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** (instance type name); the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/OSAC-46-vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog `field_definitions` for this path are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
+- **`spec.instance_type`**: Configuration-step **instance type** picker — tenant selects a named compute bundle (cores + memory) from [§2.1.5](#215-vm-instance-type-picker-api). Payload sends **`spec.instance_type` only** as a typed reference containing the selected name; the wizard does **not** collect or send `spec.cores` or `spec.memory_gib` ([VM Instance Types EP](/enhancements/OSAC-46-vm-instance-types), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735) / OSAC-1217). The API validates the name and state; the reconciler resolves cores/memory on the CR. Catalog `field_definitions` for this path are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)).
 - **Disks**: wizard collects `spec.boot_disk.size_gib` only unless [§5](#5-open-decisions) chooses `spec.additional_disks`.
 - **`spec.ssh_key`**: optional on the General step — prefill from catalog `default` when defined ([§2.1.2](#212-catalog-overlay-and-defaults)); tenant may edit when `editable: true` or clear the field. Omit from the client create payload only when the field is blank after catalog selection or user edits. Include the parsed plain string in the payload when the wizard holds a value (prefilled default or user entry).
 - **Networking**: pickers assemble a single `spec.compute_network_attachments` entry; raw JSON not shown. Catalog `field_definitions` for this path (including nested paths) are **ignored** in v1 ([§2.1.2](#212-catalog-overlay-and-defaults)). APIs: [§2.1.4](#214-vm-networking-picker-apis).
+- The direct VM API permits an omitted or empty attachment list and applies the
+  normal tenant-default resolution. The v1 wizard intentionally requires a
+  picker selection and always emits one entry; it does not expose a separate
+  “use defaults” choice. This UI requirement does not change the API's zero-or-
+  one attachment contract.
 
 **Cluster**
 
@@ -82,6 +87,15 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 **Notes:**
 
 - **`spec.node_sets`**: after Catalog Item and Template resolution, the wizard loads `ClusterTemplate.spec.node_sets` with `ClusterTemplates.Get`. The template owns the node-set map keys and each node set's typed `baremetal_instance_type` reference; the wizard displays those values read-only. The Catalog Item may govern only the `size` value for an existing template node-set, using the policy defined in Catalog Items v2. The tenant may edit a size only when the effective policy permits it; the tenant cannot add/remove node sets or replace their hardware type. The create payload preserves the template node-set names and sends each `baremetal_instance_type` as a typed reference object, not a raw ID string.
+
+- **Cluster tenant networking:** the wizard does not expose the CaaS
+  `spec.network_attachment` or `spec.auto_external_ip_attachment` controls in
+  v1. It omits both fields from the create payload. The server applies the
+  normal Catalog/Template/default resolution for `network_attachment` (so the
+  tenant defaults are used when no higher-precedence value exists), and the
+  normal omitted-value behavior for `auto_external_ip_attachment` (normally
+  `false`). Tenants that need to select an explicit CaaS Subnet,
+  SecurityGroups, or automatic external access use the direct API/CLI.
 
 **Create payload:** Only paths in [§2.1.1](#211-static-wizard-fields) plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`; VM sends `spec.instance_type` and `spec.is_windows` explicitly, not `spec.cores` or `spec.memory_gib`.
 
@@ -139,16 +153,16 @@ The wizard loads picker options from the **public** fulfillment APIs (`osac.publ
 **Subnet and security group filters** (after virtual network selection):
 
 ```text
-this.spec.virtual_network == "<vn-id>"
+this.spec.virtual_network.name == "<vn-name>"
 ```
 
 **Picker display and values:**
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Virtual network | `metadata.name` (fallback `id`) | VirtualNetwork `id` — drives subnet/SG list filters only |
-| Subnet | `metadata.name` (fallback `id`) | `SubnetLocalReference` containing `name` or `id` |
-| Security group | `metadata.name` (fallback `id`) | `SecurityGroupLocalReference` containing `name` or `id` (multi-select) |
+| Virtual network | `metadata.name` | VirtualNetwork name — drives subnet/SG list filters only |
+| Subnet | `metadata.name` | `SubnetLocalReference` containing `name` |
+| Security group | `metadata.name` | `SecurityGroupLocalReference` containing `name` (multi-select) |
 
 **Create payload assembly** — one `spec.compute_network_attachments` element:
 
@@ -180,17 +194,20 @@ The Configuration step loads instance type options from the **public** fulfillme
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Instance type | `metadata.name` plus `spec.cores` and `spec.memory_gib` (e.g. `standard-4-16 — 4 vCPU, 16 GiB`); indicate **DEPRECATED** state in the label when `spec.state` is DEPRECATED | Instance type name (`metadata.name` / `id`) → `spec.instance_type` on create |
+| Instance type | `metadata.name` plus `spec.cores` and `spec.memory_gib` (e.g. `standard-4-16 — 4 vCPU, 16 GiB`); indicate **DEPRECATED** state in the label when `spec.state` is DEPRECATED | Instance type name (`metadata.name`) → typed `spec.instance_type` reference on create |
 
-**Create payload:** send only the instance type **name** string:
+**Create payload:** send only the typed instance-type reference, with the
+selected **name**:
 
 ```json
 {
-  "instance_type": "standard-4-16"
+  "instance_type": { "name": "standard-4-16" }
 }
 ```
 
-Do **not** send `cores` or `memory_gib` — they are mutually exclusive with `instance_type` at the API ([PR #735](https://github.com/osac-project/fulfillment-service/pull/735)).
+The reference must contain `name`; identifier-only references are rejected by
+OSAC-1330. Do **not** send `cores` or `memory_gib` — they are mutually
+exclusive with `instance_type` at the API ([PR #735](https://github.com/osac-project/fulfillment-service/pull/735)).
 
 **Deprecation handling:** if the selected type is DEPRECATED, create may succeed with **warnings** in the response; the wizard surfaces those warnings after submit (non-blocking). OBSOLETE types are not offered in the picker.
 

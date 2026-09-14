@@ -100,13 +100,28 @@ Non-editable fields without a catalog `default` render blank and read-only (disa
 
 **VM General specifics:** `spec.ssh_key` is optional — prefill catalog `default` on catalog selection when defined; merge catalog `ssh_key` `field_definition` for label, `editable`, and `validation_schema`. Omit from client payload only when blank (tenant cleared or no catalog default). When non-blank, send the parsed plain string (prefilled default or user edit).
 
-**VM Networking specifics:** Load VN list first; on selection, filter subnets and security groups with `this.spec.virtual_network == "<vn-id>"`. Assemble one `compute_network_attachments` element using OSAC-1330 typed local references: `{ "subnet": { "name": "<subnet-name>" }, "security_groups": [{ "name": "<security-group-name>" }] }`. Virtual network ID is not sent in the attachment payload.
+**VM Networking specifics:** Load VN list first; on selection, filter subnets and security groups with `this.spec.virtual_network.name == "<vn-name>"`. The picker stores resource names and assembles one `compute_network_attachments` element using OSAC-1330 typed local references: `{ "subnet": { "name": "<subnet-name>" }, "security_groups": [{ "name": "<security-group-name>" }] }`. Virtual network name is not sent in the attachment payload. Although the direct VM API permits omission or an empty list and then applies tenant defaults, the v1 wizard requires an explicit picker selection and always sends one entry; “use defaults” is not a separate wizard option.
+
+**VM instance-type specifics:** The picker stores the selected instance-type
+name and the payload emits `spec.instance_type: { "name": "<type-name>" }`.
+Identifier-only values are not accepted under OSAC-1330; `cores` and
+`memory_gib` are not emitted.
 
 **Cluster Configuration specifics:** After Catalog Item selection resolves the ClusterTemplate, call `ClusterTemplates.Get` and render exactly the template's `spec.node_sets` map. The map key and each typed `baremetal_instance_type` reference are read-only; no **Add node set**, **Remove**, hardware picker, or alternate hardware selection is available. The `size` field is editable only when the effective Catalog Item policy permits it and must remain > 0. `buildClusterCreatePayload` preserves the template node-set names and emits each `baremetal_instance_type` as a typed reference object such as `{ "name": "bm-standard" }`. Review shows the template node-set name, hardware reference, and effective node count. A missing or malformed template node set blocks create; there is no tenant-composed fallback.
 
 **Cluster General specifics:** `spec.ssh_public_key` and `spec.pull_secret` follow the same General basics overlay rules as VM `spec.ssh_key` (prefill catalog `default`, label, editable, validation). `spec.pull_secret` remains required on the wizard when no catalog rule makes it optional.
 
-**Cluster Networking specifics:** `spec.network.pod_cidr` and `spec.network.service_cidr` are optional — omit from payload when empty. Yup validates format only when a value is present.
+**Cluster Networking specifics:** `spec.network.pod_cidr` and
+`spec.network.service_cidr` are optional cluster-internal network settings —
+omit them from the payload when empty, and validate format only when a value is
+present. The wizard does not expose the CaaS tenant-facing
+`spec.network_attachment` or `spec.auto_external_ip_attachment` controls in
+v1, so it sends neither field. The server applies the normal
+Catalog/Template/default resolution for the omitted attachment (using tenant
+defaults when no higher-precedence value exists) and the normal omitted-value
+behavior for automatic external access (normally `false`). Explicit CaaS
+Subnet/SecurityGroup selection or automatic external access remains available
+through the direct API/CLI.
 
 **Step validation:** Next is always enabled. On click, run the step Yup schema, `setTouched` for all step fields, surface inline errors for untouched fields, and show an alert if invalid; do not advance until the step passes.
 

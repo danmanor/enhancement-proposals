@@ -7,15 +7,14 @@
 - **Source design:** [design.md](design.md)
 - **Shared contract:** [Unified Networking test plan](../OSAC-1433-unified-networking/testplan.md)
 - **Current support boundary:** `compute_network_attachments` remains a list
-  for compatibility but accepts zero or one entry. Multi-interface VM support
-  is not supported.
-- **Compatibility boundary:** deprecated field-14 `network_attachments` may
-  be converted when supplied alone; supplying both old and canonical fields is
-  rejected.
+  but accepts zero or one entry. Multi-interface VM support is not supported.
+- **API shape:** the resource-specific `ComputeNetworkAttachment` replaces the
+  shared attachment format before release; no dual-field compatibility or
+  conversion path is supported.
 
 ## Execution strategy
 
-- **Unit:** fulfillment-service migration/defaulting/reference validators,
+- **Unit:** fulfillment-service defaulting/reference validators,
   Compute controller helpers, template input validation, feedback/status
   parsing, and ExternalIP transaction logic.
 - **Integration:** real PostgreSQL, public/private/Catalog handlers, Compute
@@ -26,7 +25,7 @@
 
 ## Test cases
 
-### R1: Single-interface request and migration contract
+### R1: Single-interface request contract
 
 #### TC-R1-01: Zero or one canonical attachment is accepted
 
@@ -65,20 +64,6 @@
   reservation, persistence, or template dispatch.
 - Error identifies `spec.compute_network_attachments` or the precise primary
   field.
-
-#### TC-R1-03: Deprecated field conversion is safe
-
-| Test type | Priority | Automation |
-|---|---|---|
-| Unit, integration, E2E | high | automated |
-
-##### Expected results
-
-- Field 14 alone with zero/one entry is converted to the canonical message.
-- A converted sole entry is implicitly primary.
-- Field 14 and field 18 supplied together are rejected even when one is empty.
-- A second deprecated entry is rejected.
-- Explicit invalid values are never rewritten during conversion.
 
 ### R2: Attachment defaulting and readiness
 
@@ -275,6 +260,6 @@
 ## Graduation gate
 
 - Every VMaaS validation rule has unit or integration coverage.
-- One-interface success, defaults, migration, auto ExternalIP, cleanup, and
+- One-interface success, defaults, auto ExternalIP, cleanup, and
   K8s-only capability have E2E coverage.
 - Every user-visible unsupported VM networking path has a negative E2E test.

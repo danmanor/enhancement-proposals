@@ -84,8 +84,9 @@ This section defines key terms used throughout this document.
 
 - **K8s Manager**: A provider-registered networking manager. It may bridge a
   K8s overlay to a fabric when paired with a Fabric Manager, or provide the
-  complete supported networking surface in a K8s-only deployment. NATGateway
-  is unsupported in the K8s-only OVN mode.
+  complete supported networking surface for eligible workloads in a K8s-only
+  deployment. Service-specific designs determine workload eligibility.
+  NATGateway is unsupported in the K8s-only OVN mode.
 
 - **Fabric**: The physical network infrastructure — switches, routers,
   gateways — that connects bare-metal servers and provides external
@@ -236,7 +237,9 @@ the cluster's VIPs are discovered (see
 - Provide a unified networking API across VMaaS, CaaS, and BMaaS with a single, consistent resource model
 - Enable tenants to manage networking resources (VirtualNetworks, Subnets, SecurityGroups, ExternalIPs) without choosing implementation backends
 - Support pluggable networking backends that can be added without API changes
-- Enable VMs, clusters, and bare-metal servers to coexist in the same VirtualNetwork
+- Enable VMs, clusters, and bare-metal servers to coexist in the same
+  VirtualNetwork where the selected manager and service-specific placement
+  contract support the workload
 - Support one tenant network attachment for each bare-metal server, selected from the BareMetalInstanceType's physical network ports
 - Provide IPv4-only networking; IPv6 and dual-stack networking are not supported
 
@@ -311,9 +314,11 @@ system enforces isolation uniformly across all resource types.
 
 #### FR-2: Infrastructure-agnostic subnets (R2)
 
-The same subnet must be able to host VMs, BM servers, and cluster nodes.
-The tenant does not declare the resource type when creating a VirtualNetwork
-or Subnet. Multiple deployment locations are supported — VMs on different
+The same subnet may host VMs, BM servers, and cluster nodes when the selected
+manager combination supports each workload's placement contract. The tenant
+does not declare the resource type when creating a VirtualNetwork or Subnet;
+service-specific validation rejects unsupported placement before workload
+persistence. Multiple deployment locations are supported — VMs on different
 infrastructure share the same subnet.
 
 #### FR-3: Uniform networking across all service types (R3)
@@ -340,8 +345,8 @@ on the provider's configuration.
 
 At least one of Fabric Manager or K8s Manager must be configured. A K8s-only
 deployment supports VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
-ExternalIP, and ExternalIPAttachment; NATGateway creation is rejected because
-of the current OVN limitation.
+ExternalIP, and ExternalIPAttachment for workloads eligible for that manager
+mode; NATGateway creation is rejected because of the current OVN limitation.
 
 #### FR-6a: Deployment baseline and tenant SecurityGroups
 
@@ -381,10 +386,10 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 - [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
 - [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
 - [ ] The system provisions all necessary networking infrastructure for each subnet automatically
-- [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
+- [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet for which the selected manager and service-specific placement contract report support; unsupported placement is rejected before persistence
 - [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
 - [ ] SecurityGroup enforcement is uniform across all resource types
-- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., BMaaS uses one physical attachment, clusters use a single shared attachment)
+- [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., BMaaS uses one physical attachment, clusters use one shared subnet and one tenant-facing physical interface per node)
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
 - [ ] NetworkClass manager combinations are resolved by the provider; tenants do not select a NetworkClass per VirtualNetwork
@@ -394,8 +399,8 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 
 - [ ] Network resources expose create, read/list, and delete operations only; user/API update, patch, and replace requests for network-owned `spec` fields are rejected or not exposed
 - [ ] All network-owned `spec` fields on NetworkClass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway are immutable after creation
-- [ ] `ComputeInstance.compute_network_attachments` and deprecated `network_attachments` are immutable as complete lists, including every attachment field
-- [ ] `ComputeInstance.compute_network_attachments` and deprecated `network_attachments` retain list-shaped APIs but accept zero or one entry only; requests with more than one entry are rejected
+- [ ] `ComputeInstance.compute_network_attachments` is immutable as a complete list, including every attachment field
+- [ ] `ComputeInstance.compute_network_attachments` retains a list-shaped API but accepts zero or one entry only; requests with more than one entry are rejected
 - [ ] `Cluster.network_attachment` and `BaremetalInstance.network_attachments` are immutable, including every attachment field
 - [ ] `auto_external_ip_attachment` is immutable after workload creation; changing it requires delete and recreate
 - [ ] Every network-owned field documents its wire type, format, presence/default behavior, allowed values, reference scope, and cross-field validation
@@ -432,10 +437,9 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 
 ### Resource-Specific (VMaaS)
 
-- [ ] `ComputeInstance.compute_network_attachments` remains a repeated/list field for API compatibility but accepts zero or one entry only
-- [ ] The deprecated `ComputeInstance.network_attachments` compatibility field follows the same zero-or-one cardinality when supplied alone
+- [ ] `ComputeInstance.compute_network_attachments` remains a repeated/list field but accepts zero or one entry only
 - [ ] A single VM attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one entry are rejected
-- [ ] Multi-interface VM support is deferred until it has an implemented and tested contract
+- [ ] Multi-interface VM requests are unsupported and rejected by the current contract
 
 ## 6. Dependencies
 

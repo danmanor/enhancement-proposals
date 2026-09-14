@@ -56,7 +56,7 @@ SecurityGroup rule evaluation is defined by the [Unified Networking
 SecurityGroup rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics).
 Default networking creates the tenant fallback SecurityGroup. It may have an
 empty tenant rule list because the deployment-wide baseline policy supplies
-the configured default action.
+the hard-coded `permit` action.
 
 ### Catalog Item interaction
 
@@ -112,7 +112,7 @@ ExternalIP provisioning.
    apiVersion: osac.openshift.io/v1alpha1
    kind: NetworkClass
    metadata:
-     name: moc-region-1
+     name: moc-site-1
    spec:
      fabricManager: netris
      defaults:
@@ -162,8 +162,8 @@ ExternalIP provisioning.
    ```yaml
    spec:
      compute_network_attachments:
-       - subnet: "default-subnet-id"
-         security_groups: ["default-sg-id"]
+       - subnet: { name: "default-subnet" }
+         security_groups: [{ name: "default-sg" }]
          primary: true
    ```
 
@@ -223,10 +223,14 @@ ExternalIP provisioning.
       - Deletes ExternalIPAttachment first (DNAT rule removed)
       - Deletes ExternalIP second (IP returned to pool)
       - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
-    - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
+    - **Manually created resources are NOT cleaned up** — a manually created
+      ExternalIP persists until the tenant deletes it. A manually created
+      ExternalIPAttachment targeting the parent remains a reverse reference and
+      blocks parent deletion until the tenant deletes the attachment; it is not
+      detached or changed to Pending implicitly.
     - **Default networking resources (VN, Subnet, SG, and NATGateway when supported) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
-11. **Tenant Admin inspects and customizes default resources:**
+11. **Tenant Admin inspects and replaces default resources when needed:**
     ```bash
     # List default resources
     osac get virtualnetworks --filter 'labels["osac.openshift.io/default"]="true"'
@@ -477,7 +481,10 @@ an alternative resource or attachment contract.
 - **Cleanup:** Parent resource finalizer deletes auto-created ExternalIP/ExternalIPAttachment on parent deletion
 - **Cleanup order:** ExternalIPAttachment → ExternalIP → parent resource removal
 - **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
-- **Manual resources NOT cleaned up:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
+- **Manual resources NOT cleaned up:** A manually created ExternalIP persists
+  until the tenant deletes it. A manually created ExternalIPAttachment targeting
+  the parent blocks parent deletion until the tenant deletes the attachment; it
+  is not detached or changed to Pending implicitly.
 
 #### Prerequisite Ordering for Clusters
 
@@ -515,12 +522,12 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent resource
 - Default resources (VN, Subnet, SG, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
-- The deployment-wide baseline policy uses the hard-coded `permit` default action defined by Unified Networking for all tenants; it remains active regardless of the selected tenant SecurityGroup
+- The deployment-wide baseline policy uses the hard-coded `permit` action defined by Unified Networking for all tenants; it remains active regardless of the selected tenant SecurityGroup
 - The tenant fallback SecurityGroup is fixed at creation; replacing it requires delete and recreate after dependencies are removed
 
 **Risk: Deployment baseline policy is misconfigured**
-- Mitigation: The deployment-wide baseline is provider-owned and its configured
-  hard-coded `permit` action is reviewed as deployment policy. It is evaluated
+- Mitigation: The deployment-wide baseline is provider-owned and its hard-coded
+  `permit` action is reviewed as deployment policy. It is evaluated
   together with tenant rules, and the most-specific matching tenant rule wins.
   The tenant fallback SecurityGroup is only the default attachment and is not
   the source of the baseline policy.

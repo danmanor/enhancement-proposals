@@ -111,7 +111,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 #### Auto-Provisioned Resource Cleanup
 
-- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled with `osac.openshift.io/auto-created: "true"`. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled with `osac.openshift.io/auto-created: "true"`. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up; a manually created ExternalIPAttachment targeting the cluster blocks cluster deletion until the tenant deletes that attachment. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -136,15 +136,20 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
 - [ ] The system determines which physical network interface to use from the node set's BareMetalInstanceType network ports
 - [ ] Updating or patching the Cluster network attachment or any of its fields is rejected under the [unified networking operation contract](/enhancements/OSAC-1433-unified-networking/prd.md#network-operation-contract)
+- [ ] Cluster creation is rejected before persistence when the deployment does not provide the shared CaaS/MetalLB endpoint-VIP path or the network reachability path required by the selected topology; a Ready NATGateway is required only when no direct route exists
 
 ## 6. Assumptions
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
-- The deployment's NetworkClass configures at least one manager that supports
-  VirtualNetworks, Subnets, SecurityGroups, ExternalIPs, and
-  ExternalIPAttachments. NATGateway is required only when the configured
-  manager capability advertises it; K8s-only OVN deployments do not support
-  NATGateway.
+- The current CaaS BM-worker flow is supported only in BM-only or
+  combined-manager deployments. The selected NetworkClass must configure at
+  least one manager that supports VirtualNetworks, Subnets, SecurityGroups,
+  ExternalIPs, and ExternalIPAttachments, plus the shared CaaS/MetalLB
+  endpoint-VIP and worker-reachability prerequisites required by the selected topology. A
+  Ready NATGateway is required when the tenant and management networks have
+  no direct route; a direct route is sufficient without NATGateway. A K8s-only
+  OVN deployment is outside the current BM-worker CaaS scope regardless of
+  NAT capability.
 - BareMetalInstanceTypes have structured network port configuration. The system uses this to determine which interface to configure for each subnet.
 
 ## 7. Dependencies
@@ -172,7 +177,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 ### 8.4 IP address pool configuration for API and ingress endpoints
 
 - **Owner:** Platform team / Cloud Infrastructure Admin
-- **Mitigation:** The cluster provisioning system needs IP address pools configured for the subnet so it can allocate addresses for API server and ingress endpoints. Clarify whether this is created when the subnet is created or during cluster provisioning.
+- **Mitigation:** The networking control plane creates the MetalLB IPAddressPool when the Subnet is created, before any Cluster uses it. In combined-manager deployments the k8s_manager creates the pool alongside the overlay; in BM-only deployments the Subnet controller creates it through the fabric-level path. Cluster provisioning fails before persistence if the required pool is not available.
 
 ## 9. Open Questions
 

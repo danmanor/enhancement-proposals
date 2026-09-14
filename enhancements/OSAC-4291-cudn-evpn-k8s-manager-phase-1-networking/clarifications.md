@@ -10,9 +10,9 @@
 
 ### R1.Q1: Personas — Who configures EVPN?
 
-The feature describes k8s manager registration, CUDN creation, and BGP peering setup. Which OSAC persona(s) are responsible for enabling EVPN for a deployment/region? Is this:
+The feature describes k8s manager registration, CUDN creation, and BGP peering setup. Which OSAC persona(s) are responsible for enabling EVPN for a deployment? Is this:
 - Cloud Infrastructure Admin work during initial OSAC installation?
-- Cloud Provider Admin work when onboarding a new region?
+- Cloud Provider Admin work when onboarding a new deployment?
 - Automatically enabled based on infrastructure detection?
 
 #### Answer
@@ -25,7 +25,7 @@ PRD user stories will target Cloud Infrastructure Admin for EVPN setup/configura
 
 #### Decision (D1)
 
-EVPN configuration is Cloud Infrastructure Admin responsibility during installation - not tenant-facing, not automatic, not per-region onboarding.
+EVPN configuration is Cloud Infrastructure Admin responsibility during installation - not tenant-facing, not automatic, not per-deployment tenant onboarding.
 
 ---
 

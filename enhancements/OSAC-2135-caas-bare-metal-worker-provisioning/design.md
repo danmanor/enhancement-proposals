@@ -660,6 +660,15 @@ type, not ComputeInstance's `NetworkAttachment`. This design requires the
 field to be present on the ClusterOrder CRD before the BM controller can read
 it.
 
+The network references in this private request intentionally remain scoped to
+the Cluster's tenant/project even though the resulting BMI is created in the
+builtin `system` tenant. The trusted CaaS controller supplies the Cluster's
+effective tenant/project as the reference-resolution context. BMaaS must not
+reject this request solely because the BMI tenant differs from the Subnet or
+SecurityGroup tenant; it must still require the resolved resources to be
+Ready, belong to the same VirtualNetwork, and be the resources selected by the
+ClusterOrder. This exception applies only to this private CaaS flow.
+
 The fulfillment-service resolves the `interface` once per node set when the
 Cluster is created and stores it as immutable `fabric_interface` in the
 ClusterOrder node-set definition. The BareMetalWorkerReconciler reads that
