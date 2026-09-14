@@ -187,6 +187,35 @@ being replaced by the shared dispatcher was:
     - Each networking resource controller triggers its delete AAP job
     - Dispatcher calls the appropriate manager role for each
 
+### CLI networking contract
+
+VMaaS inherits the shared [Unified Networking CLI contract](../OSAC-1433-unified-networking/design.md#normative-cli-contract).
+The VM-specific mapping is:
+
+| API field | CLI form | Allowed values |
+|---|---|---|
+| `spec.network_attachments` | One optional `--network-attachment` | Zero or one attachment; repeating the option is rejected |
+| `ComputeNetworkAttachment.subnet` | `subnet=<name>` inside the attachment value | Optional; omission receives only the tenant default Subnet |
+| `ComputeNetworkAttachment.security_groups` | One or more repeated `security-groups=<name>` keys inside the attachment value | Optional; omission receives only the tenant default SecurityGroup; supplied groups are all used |
+| `ComputeNetworkAttachment.primary` | Not emitted by the CLI | Omission is implicitly primary; `true` is accepted only through a structured client; `false` is rejected |
+| `auto_external_ip_attachment` | `--external-ip-attachment` | Presence means `true`; omission means `false`; create-time only |
+
+The canonical explicit command is:
+
+```bash
+osac create computeinstance --template ocp_virt_vm \
+  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --name my-vm
+```
+
+The CLI must not expose `--network-attachments`, `interface=...`, or a
+multi-NIC mode for VMaaS. Omitting `--network-attachment` invokes both tenant
+defaults; supplying only one attachment key invokes field-level defaulting for
+the other key. The CLI constructs typed local references for the Subnet and
+SecurityGroups and sends the resource-specific `ComputeNetworkAttachment`
+message. VM network fields and `auto_external_ip_attachment` cannot be changed
+through update or patch commands; delete and recreate is required.
+
 ### API Extensions
 
 #### Proto (fulfillment-service)

@@ -905,6 +905,190 @@ them. Air-gapped deployment behavior is outside the supported contract.
 ExternalIPPools are provider-managed and deployment-scoped. The configured
 manager handles ExternalIP allocation — one pool serves all resource types.
 
+### Normative CLI contract
+
+The CLI is a client of the public API; the server remains authoritative for
+all validation. The CLI may reject malformed syntax locally, but it must not
+silently repair, drop, replace, or default an explicitly supplied value.
+Server validation errors are displayed with their API field path and backend
+status: `InvalidArgument` for malformed or contradictory input,
+`FailedPrecondition` for an existing dependency that is not Ready/Allocated,
+and `PermissionDenied` or visibility-safe `NotFound` for unauthorized scope.
+
+#### Common command and reference rules
+
+- Network-owned resources expose `create`, `get/list`, and `delete` through
+  the CLI. They do not expose update, patch, or replace operations for
+  network-owned `spec` fields. Workload update commands may update
+  non-network fields only; attempts to change a network-owned field or
+  `auto_external_ip_attachment` are rejected and require delete/recreate.
+- Resource names use `--name`. Network references use the target's name in
+  the field-specific flag. Where the generic typed-reference client supports
+  an ID form, `--<field>-id` is accepted and must resolve to the same object
+  as `--<field>` when both are supplied. Project/shared scope modifiers are
+  allowed only for full references whose API field permits that scope; local
+  Subnet, SecurityGroup, and VirtualNetwork references remain in the caller's
+  tenant/project.
+- The CLI serializes every reference as the typed reference object required by
+  the API, for example `{ "name": "app-subnet" }`; it never sends a raw ID or
+  string in a reference-bearing field. Names, IDs, project scope, and shared
+  scope follow [OSAC-1330](../OSAC-1330-type-safe-resource-references/design.md).
+- `--cidr` and `--cidrs` values must be canonical IPv4 CIDRs in
+  `a.b.c.d/prefix` form, with host bits zero. IPv6, dual-stack values, bare
+  addresses, host bits, and invalid prefixes are rejected. There is no
+  `--ipv6`, `--dual-stack`, `--hub`, or `--air-gapped` networking mode.
+- The deployment baseline policy is hard-coded to `permit`; there is no CLI
+  flag for changing it. `implementation_strategy`, manager selection on a
+  tenant VirtualNetwork, and provider capabilities are not tenant CLI inputs.
+
+#### Provider networking commands
+
+NetworkClass is provider-owned. Tenants have no NetworkClass create, update,
+patch, or delete command. If the provider CLI manages NetworkClass, its
+canonical create shape is:
+
+```bash
+osac admin create networkclass \
+  --fabric-manager <name> \
+  --k8s-manager <name> \
+  --virtual-network-cidr <ipv4-cidr> \
+  --ipv4-subnet-cidr <ipv4-cidr> \
+  [--metallb-vip-prefix-length <prefix>]
+```
+
+`--fabric-manager` and `--k8s-manager` are independently optional, but at
+least one must be present. The two default CIDRs are required and canonical;
+the subnet CIDR must be contained by the VirtualNetwork CIDR. The MetalLB
+prefix is supplied only when CaaS VIP allocation is supported and must satisfy
+the shared prefix and containment validation. `implementation_strategy` is
+derived from the managers and is never accepted as a flag. There is no
+policy flag because the deployment baseline is always `permit`.
+
+ExternalIPPool is provider-managed and deployment-scoped:
+
+```bash
+osac admin create externalippool \
+  --cidrs <one-canonical-ipv4-cidr> \
+  --ip-family ipv4 \
+  --name <pool-name>
+```
+
+`--cidrs` retains its plural API-compatible spelling but accepts exactly one
+value and may occur only once. A second value, IPv6 value, omitted
+`--ip-family`, or an unsupported family is rejected. Separate pools are used
+instead of multiple CIDRs in one pool.
+
+#### Tenant network resource commands
+
+```bash
+osac create virtualnetwork --cidr <ipv4-cidr> --name <vn-name>
+osac create subnet --virtual-network <vn-name> \
+  --cidr <contained-ipv4-cidr> --name <subnet-name>
+osac create security-group --virtual-network <vn-name> \
+  --rule 'action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0' \
+  --name <security-group-name>
+```
+
+`--virtual-network` and `--pool`/target reference flags identify existing
+resources by name (or by the corresponding typed-reference ID form where the
+field supports it). The referenced VirtualNetwork must be Ready and in the
+same tenant/project for Subnet and SecurityGroup creation. The Subnet CIDR
+must be contained by its parent and must not overlap a sibling Subnet.
+
+`--rule` is repeatable, one SecurityGroupRule per occurrence. Each rule uses
+the key/value grammar shown above and must contain:
+
+- `action`: `allow` or `deny`;
+- `direction`: `ingress` or `egress`;
+- `protocol`: `tcp`, `udp`, `icmp`, or `any`;
+- `port`: required for `tcp`/`udp`, omitted for `icmp`/`any`, and within
+  `1..65535`; and
+- exactly one of `source-cidr` for ingress or `destination-cidr` for egress,
+  using a canonical IPv4 CIDR.
+
+Port ranges, unknown keys, duplicate rules, conflicting equal-specificity
+rules, IPv6 CIDRs, and an empty rule list for an ordinary tenant-created
+SecurityGroup are rejected. The onboarding fallback/default replacement is
+the only tenant SecurityGroup path that may be empty, and its special status
+is not selected by a tenant CLI flag. The deployment baseline permit rule is
+not represented by `--rule`.
+
+#### Workload attachment grammar
+
+All three workload commands use one CLI option even though VM and BM API
+fields are repeated:
+
+```text
+--network-attachment subnet=<subnet-name>,security-groups=<sg-name>[,security-groups=<sg-name>...]
+```
+
+The option may occur zero or one time. Repeating the option, using an unknown
+key, or providing an empty key/value is rejected. Repeating the
+`security-groups` key inside the one attachment supplies multiple groups; it
+does not create multiple attachments. Omitting the entire option means the
+API receives an omitted/empty attachment field and resolves both tenant
+defaults. Omitting only `subnet` or only `security-groups` requests field-level
+defaulting for that missing field. Supplied references are never replaced.
+
+The CLI does not emit `primary`; the sole attachment is implicitly primary.
+If a raw structured CLI input exposes the compatibility field, only omitted
+or `primary=true` is accepted and `primary=false` is rejected. The CLI does
+not expose `--network-attachments`, a multi-NIC mode, or a way to bypass
+defaulting.
+
+The canonical resource mappings are:
+
+| Resource | API field and value type | CLI form | Additional allowed keys |
+|---|---|---|---|
+| ComputeInstance | repeated `network_attachments` of `ComputeNetworkAttachment`, zero or one | one optional `--network-attachment` | `subnet`, repeated `security-groups`; `interface` is forbidden |
+| BaremetalInstance | repeated `network_attachments` of `BareMetalNetworkAttachment`, zero or one | one optional `--network-attachment` | `subnet`, repeated `security-groups`, optional `interface` |
+| Cluster | singular `network_attachment` of `ClusterNetworkAttachment` | one optional `--network-attachment` | `subnet`, repeated `security-groups`; `interface` and `primary` are forbidden |
+
+For BaremetalInstance, `interface=<port-name>` must identify a valid
+non-lifecycle port from the effective BareMetalInstanceType. When omitted,
+BMaaS selects the first valid `fabric` port. For ComputeInstance and Cluster,
+an interface key is invalid rather than ignored. Cluster has one attachment
+for all node sets; the system resolves each node set's physical fabric
+interface and the tenant cannot provide per-node-set network values.
+
+#### External access and attachment commands
+
+The create-time flag `--external-ip-attachment` maps to
+`auto_external_ip_attachment: true` for ComputeInstance, BaremetalInstance,
+and Cluster. If omitted, the value is false. The flag cannot be used on an
+update command because the field is immutable after create.
+
+Explicit ExternalIP creation and attachment use:
+
+```bash
+osac create externalip --pool <ready-pool-name> --name <ip-name>
+osac create externalipattachment --externalip <allocated-ip-name> \
+  --compute-instance <ready-vm-name> --name <attachment-name>
+osac create externalipattachment --externalip <allocated-ip-name> \
+  --baremetal-instance <ready-bm-name> --name <attachment-name>
+osac create externalipattachment --externalip <allocated-ip-name> \
+  --cluster <ready-cluster-name> --target-endpoint api \
+  --name <attachment-name>
+```
+
+Exactly one target flag is required: `--compute-instance`,
+`--baremetal-instance`, or `--cluster`. `--target-endpoint` is required for
+Cluster and accepts only `api` or `ingress`; it is forbidden for VM and BM.
+The ExternalIP must be Allocated and unused, the target must be Ready, and a
+Cluster endpoint must already be discovered. A caller cannot create a
+Pending forward reference; only internal auto-provisioning can do that.
+
+NATGateway uses:
+
+```bash
+osac create natgateway --virtual-network <ready-vn-name> \
+  --externalip <allocated-unused-ip-name> --name <gateway-name>
+```
+
+Only one NATGateway may exist per VirtualNetwork. The command is rejected when
+the resolved deployment manager does not advertise NATGateway support,
+including K8s-only OVN deployments. NATGateway has no update/replace command.
+
 ### End-to-End Flows
 
 This section shows how the unified networking API works from the tenant's

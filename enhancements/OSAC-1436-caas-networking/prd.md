@@ -64,6 +64,8 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 #### Network Configuration
 
 - **FR-1:** Cluster creation supports the singular `network_attachment` field carrying one `ClusterNetworkAttachment` with a subnet and security groups. The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType's `network_ports`. The complete attachment and every field, including security groups, are immutable after creation; changing them requires deleting and recreating the Cluster. [User]
+- **FR-1a:** The CLI accepts at most one `--network-attachment` value for a Cluster and maps it to the singular `network_attachment` field. The value may contain only `subnet` and `security-groups`; `interface`, `primary`, repeated attachments, and per-node-set network values are rejected. [User]
+- **FR-1b:** The CLI maps `--external-ip-attachment` to `auto_external_ip_attachment: true`; omission maps to false, and the field cannot be updated after Cluster creation. [User]
 
 #### Optional Network Configuration with Defaults
 

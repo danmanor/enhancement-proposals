@@ -613,6 +613,54 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - Provider-only or future behavior is not advertised as a capability and does
   not dispatch a backend operation.
 
+### R10: CLI contract and validation parity
+
+#### TC-R10-01: Shared resource CLI parsing and typed references
+
+**Unit:** Parse VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
+ExternalIP, ExternalIPAttachment, and NATGateway commands. Verify canonical
+IPv4 CIDR parsing, `--cidrs` exactly-one behavior, enum values, repeated
+`--rule` parsing, typed local/full reference construction, and rejection of
+unknown flags or malformed key/value pairs.
+
+**Integration:** Submit parsed CLI requests through public REST/gRPC and
+private handlers. Verify field paths and `InvalidArgument`,
+`FailedPrecondition`, `PermissionDenied`, or visibility-safe `NotFound`
+behavior matches direct API requests. Verify no rejected request persists a
+resource or invokes a manager.
+
+#### TC-R10-02: Workload attachment CLI mapping
+
+**Unit:** Verify one optional `--network-attachment` maps to VM/BM repeated
+`network_attachments` or Cluster singular `network_attachment`; repeated
+attachment options, unsupported keys, `interface` on VM/Cluster, `primary` on
+Cluster, and empty values are rejected. Verify repeated
+`security-groups=<name>` keys remain one attachment with multiple groups.
+
+**Integration:** Verify omitted, partial, and complete CLI attachments receive
+the same defaulting and readiness validation as direct API requests. Verify
+VM/BM use their resource-specific message types and Cluster uses
+`ClusterNetworkAttachment`.
+
+**E2E:** Create one VM, one BM, and one Cluster using explicit and defaulted
+CLI attachments, inspect the resolved fields, and verify delete succeeds.
+Attempt a second attachment, an invalid interface, `primary=false`, IPv6,
+multi-CIDR, and a non-Ready reference; verify the expected error and no
+partial resource or backend side effect.
+
+#### TC-R10-03: CLI operation and external-access restrictions
+
+**Integration:** Verify CLI create/get/list/delete succeeds, while update,
+patch, replace, network-field mutation, and `auto_external_ip_attachment`
+mutation are rejected. Verify `--external-ip-attachment` maps to the boolean
+for all three workload types and that explicit ExternalIPAttachment requires
+exactly one target and the correct Cluster endpoint flags.
+
+**E2E:** Verify VM/BM external access creates one automatic ExternalIP and
+Cluster creates API and ingress external access. Verify endpoint misuse,
+unallocated IPs, non-Ready targets, unsupported NATGateway capability, and
+cross-scope references fail without orphaned state.
+
 ## Graduation gate
 
 - Every normative shared validation rule maps to a unit or integration test.

@@ -323,6 +323,27 @@
 - Shared Catalog Items cannot lock/default tenant-local references.
 - Catalog updates do not mutate existing VM network specs or Catalog metadata.
 
+### R8: VM CLI contract
+
+#### TC-R8-01: CLI mapping, defaulting, and rejection
+
+**Unit:** Verify one optional `--network-attachment` maps to repeated
+`spec.network_attachments` containing `ComputeNetworkAttachment`. Verify
+repeated attachment options, `interface=...`, explicit `primary=false`,
+unknown keys, invalid CIDRs, and malformed typed references are rejected.
+Verify omitted/partial Subnet and SecurityGroup keys preserve the shared
+defaulting matrix.
+
+**Integration:** Run CLI-created VM requests through the same public and
+private validation paths as direct API requests. Verify typed local-reference
+serialization, readiness errors, field paths, rollback, and
+`--external-ip-attachment` mapping.
+
+**E2E:** Create a VM with one explicit attachment, with partial attachment
+defaulting, and with no attachment. Inspect the resolved plural field and
+status. Attempt a second attachment, an update/patch, and an unsupported
+multi-NIC value; verify rejection and no side effect.
+
 ## Graduation gate
 
 - Every VMaaS validation rule has unit or integration coverage.

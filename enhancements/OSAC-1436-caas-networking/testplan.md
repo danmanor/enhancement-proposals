@@ -386,6 +386,27 @@
 - Unsupported behavior is rejected or excluded from the CaaS API.
 - No Cluster, worker, VIP, IP, or port move is partially created.
 
+### R7: Cluster CLI contract
+
+#### TC-R7-01: Singular attachment CLI mapping and rejection
+
+**Unit:** Verify one optional `--network-attachment` maps to singular
+`spec.network_attachment` containing `ClusterNetworkAttachment`. Verify
+repeated options, `interface=...`, `primary=...`, per-node-set values, unknown
+keys, invalid CIDRs, and malformed references are rejected.
+
+**Integration:** Verify omitted, partial, and complete CLI attachments use the
+shared defaulting/readiness rules and reach the private BMaaS handoff with
+one enriched `BareMetalNetworkAttachment` per worker. Verify
+`--external-ip-attachment` maps to the create-time boolean and endpoint
+validation remains authoritative.
+
+**E2E:** Create a Cluster with explicit and defaulted CLI networking, verify
+one shared Subnet and resolved per-node-set interfaces, then delete it.
+Attempt multi-attachment, tenant-selected interface, primary, network-field
+update, and invalid target/reference requests; verify no partial Cluster,
+worker, VIP, IP, or port-move state.
+
 ## Graduation gate
 
 - Every CaaS server-validation and worker-handoff rule has unit/integration

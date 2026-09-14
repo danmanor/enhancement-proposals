@@ -373,6 +373,27 @@
 - Unsupported behavior is rejected or remains deployment-owned/out of scope.
 - No tenant access or backend mutation occurs.
 
+### R8: BM CLI contract
+
+#### TC-R8-01: CLI mapping, interface, and defaulting
+
+**Unit:** Verify one optional `--network-attachment` maps to repeated
+`spec.network_attachments` containing `BareMetalNetworkAttachment`. Verify
+the compound `interface=<port-name>` key, repeated SecurityGroup keys,
+omitted interface selection, invalid/lifecycle interfaces, repeated
+attachments, and explicit `primary=false` behavior.
+
+**Integration:** Verify CLI requests use typed local references and the same
+readiness, same-VirtualNetwork, capability, and rollback rules as direct API
+requests. Verify `--external-ip-attachment` mapping and no separate
+`--interface` syntax.
+
+**E2E:** Create a BM with an explicit interface, with a default interface,
+with partial networking, and with no attachment. Verify the resolved list,
+port move, reboot, DHCP discovery, and cleanup. Attempt a second attachment,
+an invalid interface, update/patch, IPv6, and malformed references; verify no
+partial BM, port move, or allocation remains.
+
 ## Graduation gate
 
 - Every BMaaS server-validation rule and phase-ordering rule has unit or

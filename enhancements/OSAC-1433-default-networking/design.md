@@ -209,8 +209,11 @@ ExternalIP provisioning.
    - See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow
    - Result: Cluster is reachable via ExternalIPs for both API and ingress
 
-9. **CLI flag mapping for clusters:**
-   - `--external-ip-attachment` → `auto_external_ip_attachment: true` (auto-provision ExternalIP + ExternalIPAttachment for both API and ingress)
+9. **CLI flag mapping for all workload types:**
+   - `--external-ip-attachment` → `auto_external_ip_attachment: true` for VM and BM (one automatic ExternalIP + ExternalIPAttachment) and Cluster (one API and one ingress ExternalIP + ExternalIPAttachment)
+   - Omitting the flag → `auto_external_ip_attachment: false`
+   - The flag is create-time-only; changing it requires deleting and recreating the workload
+   - `--network-attachment` follows the shared CLI contract: zero or one value, with omitted/empty input resolving all defaults and a partial value defaulting only its missing Subnet or SecurityGroup fields
 
 #### Auto-Cleanup on Deletion
 

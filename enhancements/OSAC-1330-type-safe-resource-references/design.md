@@ -823,14 +823,17 @@ their filter expressions as part of the same delivery chunk.
 
 The CLI currently accepts reference values as string flags (e.g.,
 `--template my-template`, `--subnet my-subnet`). After the change, the CLI
-constructs reference messages from flag values:
+constructs typed reference messages from flag values. Networking workload
+commands use the canonical compound `--network-attachment` option defined by
+Unified Networking; the option remains singular at the CLI even when the VM
+or BM API field is a repeated `network_attachments` field.
 
 **For local references (by name):**
 
 ```bash
 # By name (common case):
-osac compute-instance create --name my-vm --catalog-item standard-vm \
-  --subnet app-subnet --security-group app-sg
+osac create computeinstance --name my-vm --template ocp_virt_vm \
+  --network-attachment subnet=app-subnet,security-groups=app-sg
 
 # The CLI internally constructs:
 # network_attachments[0].subnet: { name: "app-subnet" }
@@ -841,14 +844,14 @@ osac compute-instance create --name my-vm --catalog-item standard-vm \
 
 ```bash
 # Reference in a specific project:
-osac cluster create --name my-cluster \
+osac create cluster --name my-cluster \
   --template team-template --template-project team-a.staging
 
 # The CLI internally constructs:
 # template: { name: "team-template", project: "team-a.staging" }
 
 # Reference in the shared tenant:
-osac cluster create --name my-cluster \
+osac create cluster --name my-cluster \
   --template shared-template --template-shared
 
 # The CLI internally constructs:

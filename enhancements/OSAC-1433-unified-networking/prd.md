@@ -405,6 +405,11 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 - [ ] `auto_external_ip_attachment` is immutable after workload creation; changing it requires delete and recreate
 - [ ] Every network-owned field documents its wire type, format, presence/default behavior, allowed values, reference scope, and cross-field validation
 - [ ] Unsupported, unknown, or otherwise undefined network field values are rejected rather than inferred by clients or agents
+- [ ] The CLI exposes create, read/list, and delete for network-owned resources only; network-owned update, patch, and replace operations are not exposed or are rejected
+- [ ] The CLI maps one optional `--network-attachment` to VM and BM list-shaped `network_attachments` fields and to the singular CaaS `network_attachment` field
+- [ ] The CLI accepts only canonical IPv4 CIDRs, typed reference values, supported enums, and the documented SecurityGroup rule grammar
+- [ ] The CLI rejects repeated workload attachment options, unsupported `interface`/`primary` fields, IPv6 or multi-CIDR values, invalid target combinations, and non-Ready dependencies
+- [ ] `--external-ip-attachment` maps to the create-time `auto_external_ip_attachment` field for VM, BM, and Cluster and cannot be changed later
 - [ ] Changing any network-owned field requires deleting and recreating the affected resource or workload
 - [ ] Controllers can update status, conditions, readiness, IP-discovery results, and finalizers without changing network-owned `spec` fields
 - [ ] Non-network workload fields and Catalog Item definitions and metadata remain governed by their existing designs

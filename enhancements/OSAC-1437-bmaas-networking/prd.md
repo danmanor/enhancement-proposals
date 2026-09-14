@@ -171,6 +171,8 @@ Provisioning bare-metal servers requires manual switch configuration outside the
   manager supports it; K8s-only OVN deployments reject NATGateway
 - **External access for BM targets** — the external IP attachment system must support bare-metal servers as targets
 - **CLI support** — the CLI must support specifying network attachments when creating bare-metal servers
+- **CLI contract** — one optional `--network-attachment` value maps to the repeated `network_attachments` field and carries `subnet`, repeated `security-groups`, and optional `interface` keys; a second value, lifecycle interface, `primary: false`, or any update/patch is rejected
+- **Auto ExternalIP CLI contract** — `--external-ip-attachment` maps to `auto_external_ip_attachment: true`; omission maps to false and the field is immutable after creation
 - **Fabric manager BM networking role** — at least one fabric manager (e.g., Netris) must implement the switch port configuration role for bare-metal servers
 
 ## 8. Risks

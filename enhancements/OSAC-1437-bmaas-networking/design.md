@@ -368,6 +368,39 @@ available (e.g., the fabric manager's DHCP server has not propagated the
 lease to the new network segment) and the BMI appears as RUNNING with
 no internal IP.
 
+### CLI networking contract
+
+BMaaS inherits the shared [Unified Networking CLI contract](../OSAC-1433-unified-networking/design.md#normative-cli-contract).
+The BM-specific mapping is:
+
+| API field | CLI form | Allowed values |
+|---|---|---|
+| `spec.network_attachments` | One optional `--network-attachment` | Zero or one attachment; repeating the option is rejected |
+| `BareMetalNetworkAttachment.subnet` | `subnet=<name>` inside the attachment value | Optional; omission receives only the tenant default Subnet |
+| `BareMetalNetworkAttachment.security_groups` | One or more repeated `security-groups=<name>` keys inside the attachment value | Optional; omission receives only the tenant default SecurityGroup; supplied groups are all used |
+| `BareMetalNetworkAttachment.interface` | Optional `interface=<port-name>` inside the attachment value | Must name a valid non-lifecycle port; omission selects the first valid `fabric` port |
+| `BareMetalNetworkAttachment.primary` | Not emitted by the CLI | Omission is implicitly primary; `true` is accepted only through a structured client; `false` is rejected |
+| `auto_external_ip_attachment` | `--external-ip-attachment` | Presence means `true`; omission means `false`; create-time only |
+
+The canonical explicit command is:
+
+```bash
+osac create baremetalinstance --template bcm_h100 \
+  --network-attachment interface=data-0,subnet=my-subnet,security-groups=my-sg \
+  --name my-server
+```
+
+The CLI must not expose `--network-attachments`, a second attachment, a
+lifecycle interface, or a multi-NIC mode. The `interface` key is part of the
+single compound `--network-attachment` value; a separate `--interface` flag
+is not a second syntax. Omitting the option invokes both tenant defaults and
+selects the default fabric interface. Omitting only one attachment key
+invokes field-level defaulting for that key. The CLI constructs typed local
+Subnet and SecurityGroup references and sends the resource-specific
+`BareMetalNetworkAttachment` message. Network fields and
+`auto_external_ip_attachment` cannot be changed through update or patch
+commands; delete and recreate is required.
+
 ### API Extensions
 
 #### Proto (fulfillment-service)
@@ -1006,7 +1039,7 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 - No user action required
 
 Minor version upgrades (`x.N → x.N+1`):
-- Tenant User encouraged to migrate by creating a replacement BaremetalInstance with the new networking fields (`osac-cli` supports the single `--network-attachment` flag with `--interface`); an existing instance's network fields are not updated
+- Tenant User is encouraged to migrate by creating a replacement BaremetalInstance with the new networking fields. `osac-cli` supports the single compound `--network-attachment` value with an optional `interface=<port-name>` key; an existing instance's network fields are not updated.
 - No breaking changes — networking fields remain optional
 
 ### Downgrade

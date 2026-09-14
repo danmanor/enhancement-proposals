@@ -118,6 +118,8 @@ creation flows while VMs require explicit networking details on every create.
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a VM with zero or one `--network-attachment` value while the API field remains list-shaped
+- [ ] The CLI maps the single `--network-attachment` value to `spec.network_attachments` containing a `ComputeNetworkAttachment`, rejects a second value, and never exposes `interface` or multi-NIC input
+- [ ] The CLI maps `--external-ip-attachment` to `auto_external_ip_attachment: true`; omission maps to false and updates are rejected
 - [ ] Creating a VM with more than one network attachment returns a single-interface validation error
 - [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
 - [ ] Creating a VM in a bare-metal-only deployment returns an error with a clear message

@@ -318,6 +318,37 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 - Wait for nodes + cluster operators (same)
 - AAP workflow structure (create → post-install → report-status)
 
+### CLI networking contract
+
+CaaS inherits the shared [Unified Networking CLI contract](../OSAC-1433-unified-networking/design.md#normative-cli-contract).
+The Cluster-specific mapping is:
+
+| API field | CLI form | Allowed values |
+|---|---|---|
+| `spec.network_attachment` | One optional `--network-attachment` | Omitted or one structured attachment; a second option is rejected |
+| `ClusterNetworkAttachment.subnet` | `subnet=<name>` inside the attachment value | Optional; omission receives only the tenant default Subnet |
+| `ClusterNetworkAttachment.security_groups` | One or more repeated `security-groups=<name>` keys inside the attachment value | Optional; omission receives only the tenant default SecurityGroup; supplied groups are all used |
+| `auto_external_ip_attachment` | `--external-ip-attachment` | Presence means `true`; omission means `false`; create-time only |
+
+The canonical explicit command is:
+
+```bash
+osac create cluster --template ocp_4_17_small \
+  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --node-set-size workers=3 --name my-cluster
+```
+
+The CLI must not expose `--network-attachments`, `interface=...`,
+`primary=...`, per-node-set network values, or a VM-style multi-NIC mode.
+The one attachment applies to the entire Cluster; the system resolves one
+fabric interface per node set from the template-owned BareMetalInstanceType.
+Omitting the option invokes both tenant defaults, while omitting only one
+attachment key invokes field-level defaulting for that key. The CLI constructs
+typed local references and sends the singular resource-specific
+`ClusterNetworkAttachment` message. Network fields and
+`auto_external_ip_attachment` cannot be changed through update or patch
+commands; delete and recreate is required.
+
 ### API Extensions
 
 #### Proto (fulfillment-service)
