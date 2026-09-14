@@ -859,8 +859,12 @@ osac create cluster --name my-cluster \
 ```
 
 For each reference field, the CLI accepts `--<field>` (name) and
-`--<field>-id` (identifier). For full reference fields, `--<field>-project`
-scopes within a project and `--<field>-shared` targets the shared tenant.
+`--<field>-id` (identifier) as a consistency check alongside the name. The
+`--<field>-id` form is not a standalone reference; ID-only input is rejected
+because every reference requires `name`. For full reference fields,
+`--<field>-project` scopes within a project and `--<field>-shared` targets the
+shared tenant; both may be supplied together to scope a lookup to a project
+within the shared tenant.
 
 The CLI's `describe` output displays references with their resolved names:
 
@@ -869,6 +873,12 @@ Spec:
   Virtual Network: prod-net
   IPv4 CIDR:       10.0.1.0/24
 ```
+
+For full references, `describe` also displays the resolved tenant, project, or
+shared scope when that scope is meaningful. A shared reference with an
+explicit project is shown as a project within the shared tenant. Local
+references show their resolved resource name and do not expose tenant/project
+selectors.
 
 #### Private API and Status-Level References
 
@@ -1148,23 +1158,33 @@ details on the URI/ARN trade-off.
 
 **CLI tests (osac-cli):**
 
+**CLI unit tests:**
+
 - Parse a local name-only reference such as `--subnet app-subnet` and verify
   the CLI emits the corresponding typed `{name: "app-subnet"}` message.
 - Parse an ID-only reference such as `--subnet-id <id>` and verify the CLI
-  rejects it because local references require the name; for a full reference,
-  verify name-only, ID-only, and both-name-and-ID forms follow the documented
-  full-reference grammar.
+  rejects it because all references require the name. For a full reference,
+  verify name-only and both-name-and-ID forms are accepted when valid, while
+  ID-only is rejected before persistence.
+
+**CLI integration tests:**
+
 - Supply matching name and ID and verify the request is accepted and resolved;
   supply a conflicting name and ID and verify `InvalidArgument` identifies the
   reference field and no create occurs.
 - Supply `--<field>-project` and verify project-scoped resolution; supply
   `--<field>-shared` and verify shared-tenant resolution. Verify local
-  networking references reject project/shared selectors, and project/shared
-  selectors cannot be used together.
+  networking references reject project/shared selectors. When both full
+  reference selectors are supplied, verify `shared=true` selects the shared
+  tenant and `project` scopes the lookup within that tenant.
 - Run the same cases for typed references nested in VM/BM attachments and the
   singular Cluster attachment, including repeated SecurityGroup references.
+
+**CLI E2E tests:**
+
 - Run `describe` on resources containing resolved references and verify it
-  renders the resolved resource names and scope rather than raw IDs only.
+  renders the resolved resource names and applicable tenant/project/shared
+  scope rather than raw IDs only.
 - Pass an unknown reference, malformed ID, empty name, unsupported flag, or
   malformed compound attachment key and verify a field-specific CLI error,
   no API call for parser errors, and no persisted resource for server-side

@@ -924,8 +924,9 @@ and `PermissionDenied` or visibility-safe `NotFound` for unauthorized scope.
   `auto_external_ip_attachment` are rejected and require delete/recreate.
 - Resource names use `--name`. Network references use the target's name in
   the field-specific flag. Where the generic typed-reference client supports
-  an ID form, `--<field>-id` is accepted and must resolve to the same object
-  as `--<field>` when both are supplied. Project/shared scope modifiers are
+  an ID form, `--<field>-id` is accepted only as a consistency check alongside
+  `--<field>` and must resolve to the same object; ID-only input is rejected
+  because every reference requires `name`. Project/shared scope modifiers are
   allowed only for full references whose API field permits that scope; local
   Subnet, SecurityGroup, and VirtualNetwork references remain in the caller's
   tenant/project.

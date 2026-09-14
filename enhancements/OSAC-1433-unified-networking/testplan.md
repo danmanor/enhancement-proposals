@@ -629,7 +629,23 @@ combined-manager configurations resolves the documented implementation
 strategy. Verify that neither manager is rejected, `--metallb-vip-prefix-length`
 is required only for the CaaS/MetalLB capability path, and
 `implementation_strategy` is derived rather than caller-set. Verify tenant
-callers cannot invoke this command.
+callers cannot invoke this command. Explicitly parse the supported shared
+resource command forms and required arguments:
+
+- `virtualnetwork`: required `--name` and canonical `--cidr`;
+- `subnet`: required `--name`, `--virtual-network`, and contained `--cidr`;
+- `security-group`: required `--name`, `--virtual-network`, and at least one
+  `--rule` for an ordinary tenant group;
+- `externalippool`: required `--name`, exactly one `--cidrs`, and
+  `--ip-family ipv4`;
+- `externalip`: required `--name` and provider-visible `--pool`;
+- `externalipattachment`: required `--name`, `--externalip`, and exactly one
+  target flag (`--compute-instance`, `--baremetal-instance`, or `--cluster`);
+  `--target-endpoint` is required only for Cluster; and
+- `natgateway`: required `--name`, `--virtual-network`, and `--externalip`.
+
+Verify required arguments, wrong target combinations, and unsupported
+resource-specific flags are rejected before an API call.
 
 For ExternalIPPool, explicitly test exactly one value for the plural
 `--cidrs` option: a single canonical IPv4 CIDR succeeds; repeating the option,
@@ -642,10 +658,14 @@ For SecurityGroup, enumerate the complete rule grammar: `allow`/`deny`,
 `ingress`/`egress`, and `tcp`/`udp`/`icmp`/`any` are the only enum values;
 TCP/UDP require one port from 1 through 65535, ICMP/any must omit ports, and
 ingress requires exactly `source-cidr` while egress requires exactly
-`destination-cidr`. Verify canonical IPv4 CIDRs only, no host bits, duplicate
+`destination-cidr`. Test missing action, direction, protocol, required port,
+and required direction-specific CIDR, as well as both source and destination
+being supplied. Verify canonical IPv4 CIDRs only, no host bits, duplicate
 normalized rules and conflicting equal-specificity rules are rejected, an
 ordinary empty group is rejected, and only the documented onboarding or
-authorized replacement fallback may be empty.
+authorized replacement fallback may be empty. Explicitly test the named
+unsupported `--ipv6`, `--dual-stack`, `--hub`, `--air-gapped`, any deployment
+baseline-policy flag, and any implementation-strategy flag.
 
 **Integration:** Submit parsed CLI requests through public REST/gRPC and
 private handlers. Verify field paths and `InvalidArgument`,
@@ -653,8 +673,25 @@ private handlers. Verify field paths and `InvalidArgument`,
 behavior matches direct API requests. Verify no rejected request persists a
 resource or invokes a manager. Verify the NetworkClass provider command is
 provider-scoped and the CLI and direct API enforce the same conditional
-MetalLB/default validation. Verify each SecurityGroup and ExternalIPPool
-grammar branch returns the field-specific error without persistence.
+MetalLB/default validation. Verify each shared command's field-specific
+validation, readiness, scope, and dependency error without persistence.
+
+**E2E:** In a connected single-hub deployment, execute the supported CLI
+resource workflow as a provider admin and tenant user: create/read/list a
+NetworkClass and ExternalIPPool as the provider, then create/read/list/delete
+a VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment,
+and—when the resolved manager supports it—a NATGateway as the tenant. Use a
+Ready dependency at every step and verify the CLI output contains the
+resolved typed-reference names.
+Exercise ExternalIPAttachment once for each target type, with Cluster API and
+ingress endpoints, and verify the wrong endpoint/target combinations fail.
+Verify deletion guards for a referenced Subnet, SecurityGroup, ExternalIP,
+ExternalIPPool, VirtualNetwork, and NetworkClass. After all dependents are
+deleted, verify provider read/list/delete succeeds for the provider-owned
+resources. Verify tenant attempts to create/update/patch/delete NetworkClass
+or ExternalIPPool fail before persistence. Repeat the provider/resource setup
+in a K8s-only deployment and verify NATGateway creation is rejected while the
+other supported IPv4 resource workflows remain available.
 
 #### TC-R10-02: Workload attachment CLI mapping
 

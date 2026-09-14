@@ -213,7 +213,7 @@ ExternalIP provisioning.
    - `--external-ip-attachment` → `auto_external_ip_attachment: true` for VM and BM (one automatic ExternalIP + ExternalIPAttachment) and Cluster (one API and one ingress ExternalIP + ExternalIPAttachment)
    - Omitting the flag → `auto_external_ip_attachment: false`
    - The flag is create-time-only; changing it requires deleting and recreating the workload
-   - `--network-attachment` follows the shared CLI contract: zero or one value, with omitted/empty input resolving all defaults and a partial value defaulting only its missing Subnet or SecurityGroup fields
+   - `--network-attachment` follows the shared CLI contract: zero or one structured value; omitting the option resolves all defaults, an API empty attachment message/list follows the same rule, an empty CLI key/value is rejected, and a partial value defaults only its missing Subnet or SecurityGroup fields
 
 #### Auto-Cleanup on Deletion
 
