@@ -24,7 +24,7 @@ Default networking provides automatic resource provisioning at tenant onboarding
 
 ## Summary
 
-This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, and SecurityGroup, plus a NATGateway only when the NetworkClass supports it. The deployment-wide baseline policy is provider-owned and is always evaluated with its configured `permit` or `deny` action; it is not the tenant default SecurityGroup's rule set. The tenant default SecurityGroup is the fallback attachment when a workload does not supply SecurityGroups. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit their resource-specific network attachment field and use tenant defaults. For BMaaS, default resolution produces one tenant network attachment on one physical NIC; BMaaS does not support multi-NIC or multi-homed attachments. Auto ExternalIP modes create Pending records synchronously and complete allocation and activation asynchronously. See [PRD](prd.md) for detailed requirements.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, and SecurityGroup, plus a NATGateway only when the NetworkClass supports it. Deployment-wide baseline policy semantics are inherited from Unified Networking; the baseline is separate from the tenant default SecurityGroup. The tenant default SecurityGroup is the fallback attachment when a workload does not supply SecurityGroups. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit their resource-specific network attachment field and use tenant defaults. For BMaaS, default resolution produces one tenant network attachment on one physical NIC; BMaaS does not support multi-NIC or multi-homed attachments. Auto ExternalIP modes create Pending records synchronously and complete allocation and activation asynchronously. See [PRD](prd.md) for detailed requirements.
 Shared field types, formats, presence rules, allowed values, and validation
 are defined by the [Unified Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#field-types-formats-and-validation).
 
@@ -364,7 +364,7 @@ an alternative resource or attachment contract.
 - `virtual_network_cidr` must be canonical IPv4 CIDR notation
 - `ipv4_subnet_cidr` must be canonical IPv4 CIDR notation and within `virtual_network_cidr`
 - `metallb_vip_prefix_length` has no universal default and is required only when CaaS/MetalLB VIP support is advertised
-- The deployment-wide baseline policy is provider-owned, has a configured `permit` or `deny` action, and is not stored in the tenant default SecurityGroup
+- The deployment-wide baseline policy is provider-owned and follows the hard-coded `permit` action defined by Unified Networking; it is not stored in the tenant default SecurityGroup
 
 **Resource creation with optional network attachments:**
 - For ComputeInstance, if `compute_network_attachments` is omitted or empty, resolve both the tenant's default Subnet and SecurityGroup (labeled `osac.openshift.io/default: "true"`). A supplied list may contain at most one entry; default only that entry's missing subnet or missing/empty SecurityGroup list, and reject a second entry.
@@ -400,7 +400,7 @@ an alternative resource or attachment contract.
 - The tenant fallback SecurityGroup is the one exception to the tenant
   SecurityGroup rule-count requirement: it may have an empty rule list because
   the provider-owned deployment baseline policy is always evaluated with its
-  configured `permit` or `deny` action. A
+  hard-coded `permit` action. A
   tenant-created non-default SecurityGroup still requires at least one valid
   rule.
 - In K8s-only mode, onboarding must not attempt to create a NATGateway. The
@@ -515,12 +515,12 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent resource
 - Default resources (VN, Subnet, SG, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
-- The deployment-wide baseline policy uses its configured `permit` or `deny` default action for all tenants; it remains active regardless of the selected tenant SecurityGroup
+- The deployment-wide baseline policy uses the hard-coded `permit` default action defined by Unified Networking for all tenants; it remains active regardless of the selected tenant SecurityGroup
 - The tenant fallback SecurityGroup is fixed at creation; replacing it requires delete and recreate after dependencies are removed
 
 **Risk: Deployment baseline policy is misconfigured**
 - Mitigation: The deployment-wide baseline is provider-owned and its configured
-  `permit` or `deny` action is reviewed as deployment policy. It is evaluated
+  hard-coded `permit` action is reviewed as deployment policy. It is evaluated
   together with tenant rules, and the most-specific matching tenant rule wins.
   The tenant fallback SecurityGroup is only the default attachment and is not
   the source of the baseline policy.
@@ -583,11 +583,12 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 #### Risk: Deployment baseline policy is misconfigured
 
 **Impact:** All tenants receive the same deployment-wide baseline policy. Its
-configured `permit` or `deny` action can affect reachability whenever no
-more-specific tenant rule matches.
+hard-coded `permit` action applies whenever no more-specific tenant rule
+matches.
 
 **Mitigation:** Rule evaluation follows the [Unified Networking SecurityGroup
-rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics).
+rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics),
+including its hard-coded `permit` baseline.
 Tenant rules with a more-specific `deny` action override the baseline;
 changing a tenant fallback group requires replacing it and its dependent
 workloads.

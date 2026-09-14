@@ -185,7 +185,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - conflicting equal-specificity rule;
 - tenant-created empty rule list;
 - system-created fallback SecurityGroup with an empty list and the provider
-  baseline policy configured with either `permit` or `deny`.
+  baseline policy's hard-coded `permit` action.
 
 ##### Expected results
 

@@ -86,8 +86,8 @@
 - NATGateway and its auto ExternalIP are created only when capability supports
   NATGateway.
 - The deployment-wide baseline policy is present independently of the tenant
-  fallback SecurityGroup's rule list and its configured `permit` or `deny`
-  action is effective.
+  fallback SecurityGroup's rule list and its hard-coded `permit` action is
+  effective.
 
 #### TC-R2-02: K8s-only onboarding excludes NATGateway
 

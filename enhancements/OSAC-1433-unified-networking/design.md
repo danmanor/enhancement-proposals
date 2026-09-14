@@ -177,7 +177,7 @@ arbitrary strings:
 | `protocol` | Required enum: `tcp`, `udp`, `icmp`, or `any`. Protocol matching is case-sensitive; unknown values are rejected. |
 | `port` | Optional `int32`; required for `tcp` and `udp`, omitted for `icmp` and `any`; valid range is `1..65535`. Port ranges are not supported. |
 | `source_cidr` / `destination_cidr` | Exactly one direction-specific field is required. It must be a canonical IPv4 CIDR; `source_cidr` is used for ingress and `destination_cidr` for egress. |
-| Rule evaluation | The provider-owned deployment baseline is an always-present, least-specific policy with a configured `permit` or `deny` default action; it is not part of any tenant `SecurityGroup.spec.rules`. Attached tenant rules are stateful and the most-specific matching rule wins, ordered by CIDR prefix length, exact protocol over `any`, and exact port over an omitted port. Conflicting equal-specificity effective rules are rejected. |
+| Rule evaluation | The provider-owned deployment baseline is an always-present, least-specific policy with a hard-coded `permit` action; it is not part of any tenant `SecurityGroup.spec.rules`. Attached tenant rules are stateful and the most-specific matching rule wins, ordered by CIDR prefix length, exact protocol over `any`, and exact port over an omitted port. Conflicting equal-specificity effective rules are rejected. |
 
 ### Workload network fields
 
@@ -881,8 +881,8 @@ SecurityGroup behavior is uniform across VMaaS, CaaS, and BMaaS and is
 enforced by the selected network backend.
 
 The deployment has one provider-owned baseline ACL policy that is always
-present and applies its configured `permit` or `deny` action when no
-more-specific tenant rule matches. This baseline is not a tenant
+present and applies a hard-coded `permit` action when no more-specific tenant
+rule matches. This baseline is not a tenant
 `SecurityGroup`, is not stored in `SecurityGroup.spec.rules`, and remains
 active even when a tenant explicitly attaches one or more SecurityGroups.
 

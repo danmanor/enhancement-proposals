@@ -100,8 +100,8 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
   parameters (IPv4 VN and Subnet CIDRs) when creating the single deployment
   NetworkClass. A NetworkClass without `defaults` is rejected at creation
   time, and the NetworkClass network configuration is immutable thereafter.
-  The deployment-wide baseline policy is always present, uses its configured
-  `permit` or `deny` default action, and is separate from the tenant fallback
+  The deployment-wide baseline policy is always present, uses the hard-coded
+  `permit` action defined by Unified Networking, and is separate from the tenant fallback
   SecurityGroup. [User]
 - **FR-3:** All tenants receive the same default IPv4 CIDR ranges as configured
   on the NetworkClass. Tenants are isolated at the
@@ -230,8 +230,8 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
 
 - **Owner:** Cloud Infrastructure Admin
 - **Mitigation:** The deployment baseline policy is provider-owned and is
-  always evaluated, with its configured default action (`permit` or `deny`)
-  applying when no more-specific rule matches. The tenant default
+  always evaluated, with the hard-coded `permit` action applying when no
+  more-specific rule matches. The tenant default
   SecurityGroup is a separate tenant-scoped fallback used only when an
   attachment omits an explicit SecurityGroup. It is immutable after creation;
   tenants must create or select another SecurityGroup rather than tightening

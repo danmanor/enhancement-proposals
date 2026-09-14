@@ -345,8 +345,8 @@ of the current OVN limitation.
 
 #### FR-6a: Deployment baseline and tenant SecurityGroups
 
-The deployment has one provider-owned baseline policy with a configured
-`permit` or `deny` default action. It is always evaluated and is not
+The deployment has one provider-owned baseline policy with a hard-coded
+`permit` default action. It is always evaluated and is not
 represented as a tenant SecurityGroup rule. A tenant
 default SecurityGroup is used only as the fallback attachment when a workload
 does not provide SecurityGroups. Tenant-created SecurityGroups require at
@@ -375,7 +375,7 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 - [ ] Resources in the same Subnet are in the same L2 broadcast domain
 - [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
 - [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced uniformly for all resource types
-- [ ] The provider-owned deployment baseline policy, with its configured `permit` or `deny` action, remains active with both default and explicitly selected tenant SecurityGroups
+- [ ] The provider-owned deployment baseline policy, with its hard-coded `permit` action, remains active with both default and explicitly selected tenant SecurityGroups
 - [ ] Tenant-created SecurityGroups contain at least one explicit rule with a supported action, direction, protocol, and IPv4 CIDR
 - [ ] Bare-metal servers in the same Subnet are in the same broadcast domain regardless of their physical location (rack, switch)
 - [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
