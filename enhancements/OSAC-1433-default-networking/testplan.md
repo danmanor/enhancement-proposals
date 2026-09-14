@@ -6,21 +6,76 @@
 - **Source design:** [design.md](design.md)
 - **Shared contract:** [Unified Networking test plan](../OSAC-1433-unified-networking/testplan.md)
 - **Scope:** Tenant onboarding, default-resource lifecycle, readiness, default
-  attachment resolution, auto ExternalIP creation, cleanup, and supported
+  attachment resolution, automatic ExternalIP creation, cleanup, and supported
   combined-manager/K8s-only behavior.
-- **Non-goals:** Per-tenant default configuration, additional automatic VN or
-  Subnet creation, retroactive migration of existing resources, and UI
-  support. API, REST, private API, and CLI are the tested surfaces.
+- **Non-goals:** Per-tenant default configuration, additional automatic
+  VirtualNetwork or Subnet creation, retroactive migration of existing
+  resources, and UI support. API, REST, private API, and CLI are the tested
+  surfaces.
 
-## Execution strategy
+## Test infrastructure and traceability
 
-- **Unit:** fulfillment-service defaulting, onboarding, readiness, pool
-  selection, and rollback logic with fake manager status.
-- **Integration:** real ephemeral PostgreSQL, fulfillment-service validation
-  and authorization, envtest/Kind CRDs/controllers, and controllable manager
-  jobs/feedback.
-- **E2E:** connected single-hub deployments using real tenants, API/CLI,
-  operators, supported managers, and workload connectivity.
+The test cases below are design-level requirements with implementation anchors
+in the OSAC monorepo. New or extended tests should follow these existing
+patterns rather than inventing a separate harness.
+
+| Test level | Framework and environment | Existing implementation anchors |
+|---|---|---|
+| Unit | Ginkgo v2/Gomega; fulfillment-service in-memory DAO and fake manager state | `fulfillment-service/internal/servers/default_networking_provisioner_test.go`, `fulfillment-service/internal/servers/external_ip_pool_selector_test.go`, `fulfillment-service/internal/servers/cidr_validation_test.go`, `fulfillment-service/internal/servers/private_virtual_networks_server_test.go` |
+| Integration | Ginkgo v2/Gomega; fulfillment-service integration harness with private gRPC clients, ephemeral database, and Kubernetes test clients | `fulfillment-service/it/it_default_networking_test.go`, `fulfillment-service/it/it_tenant_onboarding_test.go`, `fulfillment-service/it/it_validation_test.go`, `fulfillment-service/it/it_external_ip_test.go` |
+| Operator integration | Ginkgo v2/Gomega with Kind and Kubernetes CR clients | `osac-operator/test/integration/networking_test.go` |
+| E2E | pytest; connected single-hub deployment, `GRPCClient`, `K8sClient`, bounded polling helpers | `tests/e2e/vmaas/conftest.py`, `tests/e2e/core/grpc_client.py`, `tests/e2e/core/k8s_client.py`, `tests/e2e/core/helpers.py`, `tests/e2e/vmaas/sanity/test_virtual_network_lifecycle.py`, `tests/e2e/vmaas/sanity/test_subnet_lifecycle.py`, `tests/e2e/vmaas/sanity/test_security_group_lifecycle.py`, `tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_capacity.py`, `tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_lifecycle.py` |
+
+### Shared test data and assertion contract
+
+Unless a case overrides the value, use these concrete objects:
+
+| Object | Concrete value |
+|---|---|
+| NetworkClass | `test-default-nc` |
+| Tenant | `test-defnet-001` |
+| VirtualNetwork CIDR | `10.200.0.0/16` |
+| Default Subnet CIDR | `10.200.0.0/20` |
+| Valid alternate Subnet CIDR | `10.200.1.0/24` |
+| Invalid IPv6 CIDR | `2001:db8::/32` |
+| Invalid host-bit CIDR | `10.200.0.7/20` |
+| Invalid outside Subnet | `10.201.0.0/24` |
+| MetalLB prefix | `32` |
+| Default label | `osac.openshift.io/default: "true"` |
+| Auto-created label | `osac.openshift.io/auto-created: "true"` |
+
+Use private gRPC methods such as `NetworkClasses/Create`, `Tenants/Create`,
+`Tenants/Get`, `VirtualNetworks/List`, `VirtualNetworks/Get`,
+`Subnets/List`, `SecurityGroups/List`, and `ExternalIPs/Create`. For rejected
+requests assert the gRPC status described by the shared design:
+
+- `InvalidArgument` for malformed, missing, contradictory, or unsupported
+  request values;
+- `FailedPrecondition` for a valid request whose referenced resource is not in
+  the required Ready/Allocated state, or for exhausted capacity/deletion
+  dependencies; and
+- `PermissionDenied` when a tenant attempts a provider-only operation and the
+  resource is visible to the caller.
+
+Assert the exact condition reason and message where the Default Networking
+design defines one, including `ResourcesPending`, `AllResourcesReady`,
+`NoDefaultNetworking`, `VirtualNetworkProvisioningFailed`,
+`SubnetProvisioningFailed`, `SecurityGroupProvisioningFailed`,
+`NATGatewayProvisioningFailed`, and:
+
+`ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
+
+## Coverage summary
+
+| Requirement | Test cases | Unit | Integration | E2E |
+|---|---:|---:|---:|---:|
+| R1 NetworkClass defaults | 2 | Yes | Yes | Rejection path |
+| R2 Tenant onboarding | 3 | Yes | Yes | Yes |
+| R3 Readiness/recovery | 2 | Yes | Yes | Yes |
+| R4 Workload default resolution and immutability | 2 | Yes | Yes | Yes |
+| R5 Automatic ExternalIP lifecycle | 2 | Yes | Yes | Yes |
+| R6 Unsupported behavior | 1 | Yes | Yes | Rejection paths |
+| **Total** | **12** | **All applicable** | **All applicable** | **All user-visible flows** |
 
 ## Test cases
 
@@ -32,39 +87,72 @@
 |---|---|---|
 | Unit, integration | critical | automated |
 
+**Implementation references:**
+`default_networking_provisioner_test.go` default-class builders,
+`network_classes_server_test.go`, and `it_default_networking_test.go`.
+
+##### Preconditions
+
+- The test database has no active `test-default-nc`.
+- The caller uses the provider/private client authorized to create a
+  deployment NetworkClass.
+
 ##### Steps
 
-1. Configure canonical IPv4 `virtual_network_cidr`.
-2. Configure a contained canonical IPv4 `ipv4_subnet_cidr`.
-3. Configure `metallb_vip_prefix_length` when CaaS/MetalLB capability is
-   advertised.
+1. Call `NetworkClasses/Create` with `metadata.name: test-default-nc`,
+   `is_default: true`, `fabric_manager: cudn_net`, and:
+
+   ```yaml
+   spec:
+     defaults:
+       virtual_network_ipv4_cidr: 10.200.0.0/16
+       subnet_ipv4_cidr: 10.200.0.0/20
+       metallb_vip_prefix_length: 32
+   ```
+
+2. Read the response and then call `NetworkClasses/Get` using the returned ID.
+3. Run the same request through the integration client used by
+   `it_default_networking_test.go`.
 
 ##### Expected results
 
-- NetworkClass is accepted.
-- There is no separate enable/disable knob for defaults.
-- The conditional MetalLB field is required only when its capability is
-  advertised; no universal default is invented.
+- The create call succeeds with gRPC status `OK`.
+- `spec.defaults.virtual_network_ipv4_cidr` is exactly `10.200.0.0/16`.
+- `spec.defaults.subnet_ipv4_cidr` is exactly `10.200.0.0/20`.
+- `metallb_vip_prefix_length` is accepted only when the CaaS/MetalLB
+  capability is advertised.
+- No separate enable/disable flag is accepted or required.
 
-#### TC-R1-02: Invalid defaults are rejected
+#### TC-R1-02: Invalid defaults are rejected before persistence
 
 | Test type | Priority | Automation |
 |---|---|---|
 | Unit, integration, E2E rejection | critical | automated |
 
-##### Cases
+**Implementation references:** `cidr_validation_test.go`,
+`network_classes_server_test.go`, `it_validation_test.go`, and
+`tests/e2e/core/grpc_client.py` request/error helpers.
 
-- missing `spec.defaults`;
-- malformed, IPv6, dual-stack, or host-bit CIDR;
-- Subnet outside/equal to VN;
-- missing conditional MetalLB prefix;
-- unsupported manager capability;
-- tenant attempts to configure provider-only defaults.
+##### Preconditions
 
-##### Expected results
+- Use a fresh NetworkClass name for every invalid request.
+- The caller has provider authorization so failures test validation rather
+  than authorization, except for the final tenant-authorization case.
 
-- NetworkClass creation fails before any tenant onboarding.
-- No partial default graph is created.
+##### Steps and expected results
+
+| Input mutation | Expected status and assertion |
+|---|---|
+| Omit `spec.defaults` | `InvalidArgument`; field violation identifies `spec.defaults`; no NetworkClass or tenant resources are persisted. |
+| Set VN CIDR to `2001:db8::/32` | `InvalidArgument`; IPv6 is rejected. |
+| Set VN CIDR to `10.200.0.7/20` | `InvalidArgument`; host bits are rejected. |
+| Set Subnet CIDR to `10.201.0.0/24` | `InvalidArgument`; Subnet is outside the VN. |
+| Set Subnet CIDR to `10.200.0.0/16` | `InvalidArgument`; Subnet cannot equal the VN range. |
+| Advertise MetalLB capability but omit prefix length | `InvalidArgument`; `metallb_vip_prefix_length` is required for the advertised capability. |
+| Submit provider-only defaults as a tenant | `PermissionDenied` or the platform visibility error; no provider configuration is changed. |
+
+3. For each case call `NetworkClasses/Get` and verify the rejected object is
+   absent or unchanged.
 
 ### R2: Tenant onboarding creates exactly the supported graph
 
@@ -74,20 +162,44 @@
 |---|---|---|
 | Integration, E2E | critical | automated |
 
+**Implementation references:** `it_default_networking_test.go`,
+`it_tenant_onboarding_test.go`, `default_networking_provisioner_test.go`,
+`tests/e2e/vmaas/conftest.py`, and `tests/e2e/core/helpers.py`.
+
 ##### Preconditions
 
-- Valid combined-manager NetworkClass.
-- Tenant does not already have defaults.
+- `test-default-nc` exists with the valid values from the shared test-data
+  table and both Fabric Manager and K8s Manager capabilities enabled.
+- `test-defnet-001` does not exist.
+
+##### Steps
+
+1. Call `Tenants/Create` with `metadata.name: test-defnet-001`.
+2. Poll `Tenants/Get` with `wait_for_tenant_condition` until the condition
+   type is `DEFAULT_NETWORKING_READY`.
+3. List `VirtualNetworks`, `Subnets`, and `SecurityGroups` with the tenant and
+   default-label filter:
+
+   ```text
+   this.metadata.labels['osac.openshift.io/default'] == 'true'
+   ```
+
+4. If NAT capability is enabled, list `NATGateways` and auto-created
+   `ExternalIPs` for the tenant.
 
 ##### Expected results
 
-- Exactly one default VirtualNetwork, IPv4 Subnet, and fallback SecurityGroup
-  are created with tenant ownership and default labels.
-- NATGateway and its auto ExternalIP are created only when capability supports
-  NATGateway.
-- The deployment-wide baseline policy is present independently of the tenant
-  fallback SecurityGroup's rule list and its hard-coded `permit` action is
-  effective.
+- `Tenants/Create` returns `OK` and one tenant ID.
+- Exactly one default VirtualNetwork, one IPv4 Subnet, and one fallback
+  SecurityGroup exist for `test-defnet-001`.
+- Each default resource has tenant ownership and the default label.
+- The deployment baseline is separate from the fallback SecurityGroup and its
+  hard-coded `permit` action remains effective even if the fallback group has
+  no rules.
+- NATGateway and its auto ExternalIP exist only when NAT capability is
+  enabled; their auto-created resources carry the auto-created label.
+- `DefaultNetworkingReady` transitions from `ResourcesPending` to
+  `AllResourcesReady` only after every capability-required resource is Ready.
 
 #### TC-R2-02: K8s-only onboarding excludes NATGateway
 
@@ -95,12 +207,37 @@
 |---|---|---|
 | Unit, integration, E2E | critical | automated |
 
+**Implementation references:** `default_networking_provisioner_test.go`,
+`it_default_networking_test.go`, `it_tenant_onboarding_test.go`, and
+`tests/e2e/conftest.py` K8s-only NetworkClass fixture.
+
+##### Preconditions
+
+- Configure `test-k8s-only-nc` with `k8s_manager: cudn_evpn`, no Fabric
+  Manager, and the same valid IPv4 defaults.
+- No NATGateway capability is advertised.
+- `test-k8s-only-001` does not exist.
+
+##### Steps
+
+1. Call `NetworkClasses/Create` for `test-k8s-only-nc`.
+2. Call `Tenants/Create` for `test-k8s-only-001`.
+3. Poll `Tenants/Get` and list the tenant's default resources.
+4. Inspect the fake manager calls in the unit test and the Kubernetes CRs in
+   the integration/E2E environment.
+5. Call `NATGateways/Create` as the tenant.
+
 ##### Expected results
 
-- VN, Subnet, and fallback SecurityGroup become Ready.
-- No NATGateway create or NAT backend operation is attempted.
-- NATGateway is excluded from the readiness set, not left Pending or Failed.
-- A later tenant NATGateway request is rejected by capability validation.
+- VN, Subnet, and fallback SecurityGroup reach Ready.
+- No `NATGateways/Create` call is dispatched to any manager.
+- NATGateway is excluded from the readiness set; it is not left Pending or
+  Failed.
+- Tenant onboarding reaches `DefaultNetworkingReady=True` with reason
+  `AllResourcesReady`.
+- The tenant NATGateway request is rejected with `InvalidArgument` or
+  `Unimplemented`, according to the advertised capability contract, and no
+  NATGateway is persisted.
 
 #### TC-R2-03: Onboarding is idempotent and does not create extra defaults
 
@@ -108,18 +245,34 @@
 |---|---|---|
 | Unit, integration | high | automated |
 
+**Implementation references:** `default_networking_provisioner_test.go`,
+`it_default_networking_test.go`, and `it_tenant_lifecycle_test.go` concurrency
+and reconciliation patterns.
+
+##### Preconditions
+
+- `test-idempotent-001` has no default resources.
+- `test-default-nc` has the valid shared test data.
+
 ##### Steps
 
-1. Submit duplicate/concurrent onboarding requests.
-2. Restart onboarding reconciliation between each default resource.
-3. Repeat with an exactly matching existing graph.
-4. Repeat with a mismatched existing graph.
+1. Submit two concurrent `Tenants/Create`/onboarding requests for
+   `test-idempotent-001`.
+2. Interrupt reconciliation after VN creation, after Subnet creation, and
+   after SecurityGroup creation, then invoke the tenant signal/reconciliation
+   path.
+3. Repeat onboarding after the graph is complete.
+4. Create a deliberately mismatched default resource with the same tenant and
+   default label, then rerun onboarding.
 
 ##### Expected results
 
-- Matching graph is adopted idempotently.
-- No duplicate default resources, jobs, or capacity reservations are created.
-- A mismatched graph is a provider configuration error, not silently adopted.
+- The matching graph is adopted idempotently.
+- Exactly one default VN, Subnet, and SecurityGroup exist after every retry.
+- No duplicate jobs, ExternalIP capacity reservations, or default resources
+  are created.
+- The mismatched graph returns a provider configuration error and is not
+  silently adopted or overwritten.
 
 ### R3: Default readiness and failure recovery
 
@@ -129,23 +282,26 @@
 |---|---|---|
 | Unit, integration, E2E | critical | automated |
 
-##### Cases
+**Implementation references:** `it_default_networking_test.go`,
+`default_networking_provisioner_test.go`, `tests/e2e/core/helpers.py`
+(`wait_for_tenant_condition`), and `tests/e2e/core/k8s_client.py`.
 
-- VN Pending/Failed;
-- Subnet Pending/Failed;
-- fallback SecurityGroup Pending/Failed;
-- supported NATGateway Pending/Failed;
-- feedback for another tenant or another VN;
-- all expected resources Ready.
+##### Preconditions
 
-##### Expected results
+- Use a controllable fake manager for unit/integration tests.
+- Create `test-readiness-001` under a NetworkClass with the valid defaults.
 
-- `DefaultNetworkingReady` stays false until every capability-required object
-  is Ready and has the expected parent/identity.
-- A workload relying on an unavailable default is rejected or remains blocked
-  according to the shared contract.
-- Existing immutable workload attachments are not rewritten if readiness later
-  degrades.
+##### Steps and expected results
+
+| Manager/resource state | Required assertion |
+|---|---|
+| VN Pending | `DefaultNetworkingReady=False`, reason `ResourcesPending`; workload create is rejected with `FailedPrecondition`. |
+| VN Failed | `DefaultNetworkingReady=False`, reason `VirtualNetworkProvisioningFailed`; the event includes `DefaultNetworkingFailed`. |
+| Subnet Failed | `DefaultNetworkingReady=False`, reason `SubnetProvisioningFailed`; no workload receives a default Subnet. |
+| SecurityGroup Failed | `DefaultNetworkingReady=False`, reason `SecurityGroupProvisioningFailed`; no workload receives a default SecurityGroup. |
+| Supported NATGateway Failed | `DefaultNetworkingReady=False`, reason `NATGatewayProvisioningFailed`. |
+| Feedback for another tenant/VN | Ignore the feedback; the target tenant condition and resource state do not change. |
+| All required resources Ready | `DefaultNetworkingReady=True`, reason `AllResourcesReady`; all returned references are Ready. |
 
 #### TC-R3-02: Failure and documented recovery path
 
@@ -153,19 +309,32 @@
 |---|---|---|
 | Integration, E2E | high | automated |
 
+**Implementation references:** `it_default_networking_test.go`,
+`it_tenant_lifecycle_test.go`, and `tests/e2e/core/helpers.py` bounded polling
+helpers.
+
+##### Preconditions
+
+- `test-recovery-001` has a valid NetworkClass and a controllable manager.
+- Configure the manager to fail one operation at a time.
+
 ##### Steps
 
-1. Fail each default manager operation independently.
-2. Verify condition reason and non-Ready tenant state.
-3. Restore the manager and exercise controller retry.
-4. Exercise provider repair followed by tenant recreation, the documented
-   recovery path for a terminal onboarding graph.
+1. Fail VN provisioning and read `Tenants/Get` plus the Kubernetes Tenant CR.
+2. Restore the manager and signal reconciliation.
+3. Repeat steps 1–2 for Subnet, SecurityGroup, and supported NATGateway.
+4. For a terminal graph error, delete the tenant as specified by the design,
+   recreate it, and poll until recovery completes.
 
 ##### Expected results
 
-- Failure is visible on the Tenant condition and events.
-- Controllers requeue transient failures without marking false Ready.
-- Recovery produces one clean default graph.
+- Each failure emits `DefaultNetworkingFailed` and the exact reason listed in
+  TC-R3-01; the message includes the failed resource name.
+- Transient failure retries without setting `DefaultNetworkingReady=True`.
+- After recovery, exactly one clean default graph exists and the condition is
+  `DefaultNetworkingReady=True/AllResourcesReady`.
+- Existing immutable workload attachments are not rewritten while readiness
+  is degraded.
 
 ### R4: Workload default resolution
 
@@ -175,39 +344,72 @@
 |---|---|---|
 | Unit, integration, E2E | critical | automated |
 
-##### Matrix
+**Implementation references:** `default_networking_provisioner_test.go`,
+`fulfillment-service/internal/servers/private_virtual_networks_server_test.go`,
+`tests/e2e/vmaas/conftest.py`, `tests/e2e/core/grpc_client.py`, and the
+service-specific VM/CaaS/BMaaS networking test plans.
 
-| Resource/input | Expected result |
+##### Preconditions
+
+- Tenant `test-defaulting-001` has Ready default Subnet
+  `default-ipv4` (`10.200.0.0/20`) and default SecurityGroup `default-sg`.
+- Create an explicit Ready alternate Subnet `explicit-subnet`
+  (`10.200.1.0/24`) in the same VN and an explicit Ready SecurityGroup
+  `explicit-sg`.
+- Use typed local references: `{name: "explicit-subnet"}` and
+  `{name: "explicit-sg"}`.
+
+##### Steps and expected results
+
+| Request | Expected result and assertion |
 |---|---|
-| VM field omitted or empty | One default Subnet and SecurityGroup |
-| Cluster message omitted or empty | One attachment containing both defaults |
-| BM list omitted or empty | One attachment with defaults and first eligible fabric interface |
-| Only Subnet supplied | Preserve Subnet; fill only SecurityGroups |
-| Only SecurityGroups supplied | Preserve SecurityGroups; fill only Subnet |
-| Complete input supplied | Preserve every network field |
-| Invalid explicit value | Reject; never repair with defaults |
+| VM `compute_network_attachments` omitted | One resolved attachment: Subnet `default-ipv4`, SecurityGroup `default-sg`, `primary=true`. |
+| VM attachment list empty | Same result as omitted; no second attachment is created. |
+| Cluster `network_attachment` omitted | One cluster attachment containing both defaults. |
+| Cluster attachment message empty | Same result as omitted; no arbitrary Subnet is selected. |
+| BM `network_attachments` omitted or empty | Exactly one resolved attachment with default Subnet, default SecurityGroup, and the first eligible fabric interface. |
+| Only Subnet supplied as `{name: "explicit-subnet"}` | Preserve `explicit-subnet`; fill only `default-sg`. |
+| Only SecurityGroup supplied as `[{name: "explicit-sg"}]` | Preserve `explicit-sg`; fill only `default-ipv4`. |
+| Complete Subnet and SecurityGroup input supplied | Preserve both references and do not replace them with defaults. |
+| Non-Ready explicit Subnet or SecurityGroup | `FailedPrecondition`; no fallback substitution occurs. |
+| VM/BM list has two attachments | `InvalidArgument`; no workload is persisted or dispatched. |
+| VM attachment has `primary=false` | `InvalidArgument`; the supported single attachment is always primary. |
 
-##### Expected results
-
-- Catalog/Template precedence runs before tenant defaulting.
-- Every resolved reference is Ready, same-scope, same-VN, and valid for the
-  owning service.
-- VM/BM cardinality and primary restrictions remain enforced.
-
-#### TC-R4-02: Default resources and fields are immutable
+#### TC-R4-02: Default resources and network-owned fields are immutable
 
 | Test type | Priority | Automation |
 |---|---|---|
 | Unit, integration, E2E rejection | critical | automated |
 
+**Implementation references:** `private_virtual_networks_server_test.go`,
+`private_subnets_server_test.go`, `security_groups_server_test.go`,
+`it_validation_test.go`, and `tests/e2e/vmaas/regression/test_name_immutability.py`.
+
+##### Preconditions
+
+- Create Ready default VN `default`, Subnet `default-ipv4`, and fallback
+  SecurityGroup `default-sg` for `test-defaulting-001`.
+- Create a VM referencing `default-ipv4` so deletion has a dependency.
+
+##### Steps
+
+1. Call `VirtualNetworks/Update`, `Subnets/Update`, and
+   `SecurityGroups/Update` with a network-owned field mask.
+2. Repeat with `PATCH` and full replacement payloads.
+3. Call `Subnets/Delete` while the VM exists.
+4. Delete the VM, then call `Subnets/Delete` and recreate the desired Subnet.
+
 ##### Expected results
 
-- Update, patch, replace, and field-mask changes to default network fields are
-  rejected.
-- Delete is blocked while workloads or reverse references remain.
-- Delete/recreate is required to change a default network specification.
+- Every network-owned update, patch, and replacement returns
+  `InvalidArgument` or `FailedPrecondition` according to the shared API
+  operation guard; the stored spec is unchanged.
+- Subnet deletion while referenced returns `FailedPrecondition` and leaves the
+  Subnet present.
+- After dependencies are removed, delete succeeds and a replacement can be
+  created with a new immutable specification.
 
-### R5: Auto ExternalIP lifecycle
+### R5: Automatic ExternalIP lifecycle
 
 #### TC-R5-01: Successful automatic external access
 
@@ -215,20 +417,39 @@
 |---|---|---|
 | Integration, E2E | critical | automated |
 
+**Implementation references:** `it_default_networking_test.go`,
+`it_external_ip_test.go`, `external_ip_pool_selector_test.go`,
+`tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_lifecycle.py`,
+`tests/e2e/core/grpc_client.py`, and `tests/e2e/core/helpers.py`.
+
+##### Preconditions
+
+- A Ready IPv4 ExternalIPPool exists with CIDR `198.51.100.0/29`, at least
+  four available addresses, and no overlapping pool.
+- The VM, Cluster, and BM target resources each have one Ready network
+  attachment and a discoverable workload IP/VIP.
+
 ##### Steps
 
-1. Enable auto external access for VM, Cluster, and BM workflows.
-2. Verify pool selection and atomic child creation.
-3. Complete target IP/VIP discovery.
-4. Verify ExternalIPAttachment dispatch and connectivity.
+1. Set `auto_external_ip_attachment=true` in the VM and BM create requests.
+2. Set it for the Cluster API and Ingress endpoints in the Cluster create
+   request.
+3. Observe `ExternalIPs/Create` and `ExternalIPAttachments/Create` records
+   through the private API.
+4. Complete target IP/VIP discovery and wait for the attachment status.
+5. Delete each parent resource and observe the cleanup order.
 
 ##### Expected results
 
-- Correct number of ExternalIPs is allocated: one for VM/BM and two for
-  Cluster API/Ingress.
-- Children start Pending and dispatch only after all prerequisites are Ready.
-- DNAT targets the discovered workload IP/VIPs.
-- Parent deletion removes auto-created attachment before ExternalIP.
+- VM and BM receive one ExternalIP; Cluster receives two, one for API and one
+  for Ingress.
+- Create persists Pending records only after synchronous capacity validation;
+  allocation, discovery, DNAT, and Ready transitions are asynchronous.
+- `ExternalIP` transitions `Pending -> Allocated` and the attachment
+  transitions `Pending -> Ready`.
+- DNAT targets the discovered workload IP/VIP.
+- Auto-created attachments are deleted before their ExternalIPs and carry
+  `osac.openshift.io/auto-created: "true"`.
 
 #### TC-R5-02: Capacity and partial-failure rollback
 
@@ -236,14 +457,40 @@
 |---|---|---|
 | Unit, integration, E2E rejection | critical | automated |
 
+**Implementation references:** `external_ip_pool_selector_test.go`,
+`external_ip_pools_server_test.go`, `it_external_ip_test.go`,
+`tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_capacity.py`,
+and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
+
+##### Preconditions
+
+- Create a Ready IPv4 pool `small-pool` with CIDR `198.51.100.0/30`; the
+  usable capacity is two addresses.
+- Allocate both addresses, or configure the fake pool status with
+  `available: 0`.
+
+##### Steps
+
+1. Call `ExternalIPs/Create` for `small-pool` when `available: 0`.
+2. Call automatic ExternalIP creation for a VM whose parent is otherwise
+   valid.
+3. Force attachment or DNAT programming to fail after reservation.
+4. Poll `ExternalIPPool/Get` until allocation returns to zero, then inspect
+   `ExternalIPs/List`, `ExternalIPAttachments/List`, and parent status.
+5. Attempt `ExternalIPPool/Delete` while an IP is allocated, then repeat after
+   releasing all addresses.
+
 ##### Expected results
 
-- Pool selection prefers greatest available capacity and deterministic ties.
-- Exhaustion returns an API error.
-- Parent, ExternalIP, ExternalIPAttachment, and capacity reservation are all
-  absent after failure.
-- Transient cleanup failure retries; permanent cleanup follows the documented
-  orphan/manual-cleanup behavior.
+- Pool selection chooses the Ready pool with greatest available capacity and
+  breaks equal-capacity ties by pool ID.
+- Exhaustion returns `FailedPrecondition` with the exact message:
+  `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`.
+- Exhaustion persists no parent, ExternalIP, attachment, or reservation.
+- A post-reservation failure releases capacity and leaves no orphaned
+  auto-created records.
+- Pool deletion with allocated IPs returns `FailedPrecondition`; deletion
+  succeeds after all addresses are released.
 
 ### R6: Unsupported Default Networking behavior
 
@@ -251,29 +498,48 @@
 
 | Test type | Priority | Automation |
 |---|---|---|
-| Unit, integration, E2E rejection | high | automated where user-visible |
+| Unit, integration, E2E rejection | high | automated |
 
-##### Cases
+**Implementation references:** `it_default_networking_test.go`,
+`it_validation_test.go`, `private_virtual_networks_server_test.go`,
+`tests/e2e/vmaas/sanity/test_virtual_network_lifecycle.py`, and
+`tests/e2e/vmaas/regression/test_name_immutability.py`.
 
-- per-tenant custom default CIDRs/configuration;
-- automatic additional VN/Subnet creation;
-- retroactive defaults for existing tenants;
-- UI-only simplified creation;
-- tenant-created empty SecurityGroup used as fallback;
-- workload create with missing/Pending/Failed defaults;
-- unsafe parent/default deletion;
-- network-owned update/patch/replace;
-- arbitrary ExternalIP selection.
+##### Preconditions
 
-##### Expected results
+- Use `test-default-nc` and tenant `test-unsupported-001` with the valid
+  shared test data.
+- The default graph is Ready before exercising workload and deletion guards.
 
-- Unsupported behavior is rejected or excluded from this API/CLI scope.
-- No hidden fallback or partial resource graph is created.
+##### Steps and expected results
+
+| Unsupported request | Expected result |
+|---|---|
+| Tenant supplies custom default CIDRs or provider defaults | `PermissionDenied`/`InvalidArgument`; provider defaults remain unchanged. |
+| Tenant requests an automatic second VN or Subnet | `InvalidArgument`; no second resource or manager job is created. |
+| Existing tenant is retroactively assigned defaults | No mutation; request is rejected or excluded by the API contract. |
+| UI-only simplified creation through the API/CLI | No hidden UI behavior is exposed; normal API validation applies. |
+| Tenant-created empty SecurityGroup used as fallback | `InvalidArgument`; only the system-created fallback may be empty because the deployment baseline is hard-coded `permit`. |
+| Workload references Missing, Pending, or Failed defaults | `FailedPrecondition`; no workload or attachment is persisted. |
+| Delete a default resource with active dependents | `FailedPrecondition`; parent and dependent resources remain. |
+| Network-owned update, patch, or replacement | Rejected with the shared CRUD guard; stored network fields are unchanged. |
+| Tenant supplies an arbitrary ExternalIP address instead of a Ready pool | `InvalidArgument`; only pool allocation is accepted. |
+
+##### Final assertions
+
+1. For every rejected request, call the corresponding `Get`/`List` method.
+2. Assert no hidden fallback, partial resource graph, manager job, capacity
+   reservation, or workload dispatch was created.
+3. Assert the rejection includes the expected gRPC status and field path when
+   the API contract defines one.
 
 ## Graduation gate
 
+- All 12 test cases have explicit implementation references.
+- Every test case has concrete preconditions, numbered steps or a complete
+  input/case table, and observable expected results.
 - Every onboarding and defaulting rule maps to a unit or integration test.
 - Combined-manager and K8s-only supported workflows have E2E coverage.
 - All three workload services have omitted/empty/partial/complete coverage.
 - Failure, retry, idempotency, capacity rollback, cleanup, and immutability
-  tests pass.
+  tests assert exact condition reasons, gRPC statuses, or resource fields.
