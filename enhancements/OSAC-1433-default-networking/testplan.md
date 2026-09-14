@@ -107,7 +107,7 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
      defaults:
        virtual_network_ipv4_cidr: 10.200.0.0/16
        subnet_ipv4_cidr: 10.200.0.0/20
-       metallb_vip_prefix_length: 32
+     metallb_vip_prefix_length: 32
    ```
 
 2. Read the response and then call `NetworkClasses/Get` using the returned ID.
@@ -119,7 +119,7 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 - The create call succeeds with gRPC status `OK`.
 - `spec.defaults.virtual_network_ipv4_cidr` is exactly `10.200.0.0/16`.
 - `spec.defaults.subnet_ipv4_cidr` is exactly `10.200.0.0/20`.
-- `metallb_vip_prefix_length` is accepted only when the CaaS/MetalLB
+- `spec.metallb_vip_prefix_length` is accepted only when the CaaS/MetalLB
   capability is advertised.
 - No separate enable/disable flag is accepted or required.
 
@@ -139,7 +139,14 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 - The caller has provider authorization so failures test validation rather
   than authorization, except for the final tenant-authorization case.
 
-##### Steps and expected results
+##### Steps
+
+1. Submit each input mutation to `NetworkClasses/Create` using a fresh
+   NetworkClass name.
+2. For each rejected request, call `NetworkClasses/Get` and verify the
+   rejected object is absent or unchanged.
+
+##### Expected results
 
 | Input mutation | Expected status and assertion |
 |---|---|
@@ -148,11 +155,8 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 | Set VN CIDR to `10.200.0.7/20` | `InvalidArgument`; host bits are rejected. |
 | Set Subnet CIDR to `10.201.0.0/24` | `InvalidArgument`; Subnet is outside the VN. |
 | Set Subnet CIDR to `10.200.0.0/16` | `InvalidArgument`; Subnet cannot equal the VN range. |
-| Advertise MetalLB capability but omit prefix length | `InvalidArgument`; `metallb_vip_prefix_length` is required for the advertised capability. |
+| Advertise MetalLB capability but omit prefix length | `InvalidArgument`; `spec.metallb_vip_prefix_length` is required for the advertised capability. |
 | Submit provider-only defaults as a tenant | `PermissionDenied` or the platform visibility error; no provider configuration is changed. |
-
-3. For each case call `NetworkClasses/Get` and verify the rejected object is
-   absent or unchanged.
 
 ### R2: Tenant onboarding creates exactly the supported graph
 
@@ -184,8 +188,8 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
    this.metadata.labels['osac.openshift.io/default'] == 'true'
    ```
 
-4. If NAT capability is enabled, list `NATGateways` and auto-created
-   `ExternalIPs` for the tenant.
+4. If NAT capability is enabled, list `NATGateways` and inspect the
+   referenced `ExternalIP` for the tenant.
 
 ##### Expected results
 
@@ -196,10 +200,12 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 - The deployment baseline is separate from the fallback SecurityGroup and its
   hard-coded `permit` action remains effective even if the fallback group has
   no rules.
-- NATGateway and its auto ExternalIP exist only when NAT capability is
-  enabled; their auto-created resources carry the auto-created label.
+- NATGateway exists only when NAT capability is enabled, carries the default
+  label, and references a Ready/Allocated unconsumed ExternalIP.
 - `DefaultNetworkingReady` transitions from `ResourcesPending` to
   `AllResourcesReady` only after every capability-required resource is Ready.
+- The `DefaultNetworkingCreated` event is emitted when supported default
+  resource creation starts.
 
 #### TC-R2-02: K8s-only onboarding excludes NATGateway
 
@@ -235,8 +241,8 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
   Failed.
 - Tenant onboarding reaches `DefaultNetworkingReady=True` with reason
   `AllResourcesReady`.
-- The tenant NATGateway request is rejected with `InvalidArgument` or
-  `Unimplemented`, according to the advertised capability contract, and no
+- The tenant NATGateway request is rejected with `FailedPrecondition` because
+  the resolved NetworkClass does not advertise NATGateway capability, and no
   NATGateway is persisted.
 
 #### TC-R2-03: Onboarding is idempotent and does not create extra defaults
@@ -252,6 +258,7 @@ and reconciliation patterns.
 ##### Preconditions
 
 - `test-idempotent-001` has no default resources.
+- `test-tenant-delete-001` has no default resources.
 - `test-default-nc` has the valid shared test data.
 
 ##### Steps
@@ -262,7 +269,9 @@ and reconciliation patterns.
    after SecurityGroup creation, then invoke the tenant signal/reconciliation
    path.
 3. Repeat onboarding after the graph is complete.
-4. Create a deliberately mismatched default resource with the same tenant and
+4. Onboard `test-tenant-delete-001`, wait for its default graph to be Ready,
+   delete the Tenant, and list its former default resources.
+5. Create a deliberately mismatched default resource with the same tenant and
    default label, then rerun onboarding.
 
 ##### Expected results
@@ -271,6 +280,8 @@ and reconciliation patterns.
 - Exactly one default VN, Subnet, and SecurityGroup exist after every retry.
 - No duplicate jobs, ExternalIP capacity reservations, or default resources
   are created.
+- Deleting `test-tenant-delete-001` removes its default resources through
+  tenant owner-reference cleanup.
 - The mismatched graph returns a provider configuration error and is not
   silently adopted or overwritten.
 
@@ -291,7 +302,14 @@ and reconciliation patterns.
 - Use a controllable fake manager for unit/integration tests.
 - Create `test-readiness-001` under a NetworkClass with the valid defaults.
 
-##### Steps and expected results
+##### Steps
+
+1. Set each manager/resource state in the table below.
+2. Call `Tenants/Get` and inspect the Tenant condition and Kubernetes events.
+3. Attempt workload creation without an explicit attachment while the default
+   graph is not Ready.
+
+##### Expected results
 
 | Manager/resource state | Required assertion |
 |---|---|
@@ -301,7 +319,7 @@ and reconciliation patterns.
 | SecurityGroup Failed | `DefaultNetworkingReady=False`, reason `SecurityGroupProvisioningFailed`; no workload receives a default SecurityGroup. |
 | Supported NATGateway Failed | `DefaultNetworkingReady=False`, reason `NATGatewayProvisioningFailed`. |
 | Feedback for another tenant/VN | Ignore the feedback; the target tenant condition and resource state do not change. |
-| All required resources Ready | `DefaultNetworkingReady=True`, reason `AllResourcesReady`; all returned references are Ready. |
+| All required resources Ready | `DefaultNetworkingReady=True`, reason `AllResourcesReady`; all returned references are Ready, and the `DefaultNetworkingReady` event is present. |
 
 #### TC-R3-02: Failure and documented recovery path
 
@@ -359,7 +377,15 @@ service-specific VM/CaaS/BMaaS networking test plans.
 - Use typed local references: `{name: "explicit-subnet"}` and
   `{name: "explicit-sg"}`.
 
-##### Steps and expected results
+##### Steps
+
+1. Submit each request row below as a separate VM, Cluster, or BM create
+   request.
+2. Read the created parent with the corresponding `Get` method.
+3. Inspect the resolved network fields and assert the
+   `NetworkAttachmentsPopulated` event when defaulting occurred.
+
+##### Expected results
 
 | Request | Expected result and assertion |
 |---|---|
@@ -428,6 +454,8 @@ service-specific VM/CaaS/BMaaS networking test plans.
   four available addresses, and no overlapping pool.
 - The VM, Cluster, and BM target resources each have one Ready network
   attachment and a discoverable workload IP/VIP.
+- A separate explicitly managed ExternalIP and ExternalIPAttachment exist for
+  one Ready target and do not carry the auto-created label.
 
 ##### Steps
 
@@ -438,6 +466,8 @@ service-specific VM/CaaS/BMaaS networking test plans.
    through the private API.
 4. Complete target IP/VIP discovery and wait for the attachment status.
 5. Delete each parent resource and observe the cleanup order.
+6. Delete the target that owns the explicitly managed ExternalIPAttachment and
+   inspect that attachment and ExternalIP.
 
 ##### Expected results
 
@@ -449,9 +479,15 @@ service-specific VM/CaaS/BMaaS networking test plans.
   transitions `Pending -> Ready`.
 - DNAT targets the discovered workload IP/VIP.
 - Auto-created attachments are deleted before their ExternalIPs and carry
-  `osac.openshift.io/auto-created: "true"`.
+  `osac.openshift.io/auto-created: "true"`; auto-created ExternalIPs also
+  carry `osac.openshift.io/auto-created-for: <resource-id>`.
+- The `AutoExternalIPCreated` event is present on each workload that received
+  automatic external access.
+- The explicitly managed ExternalIP and ExternalIPAttachment remain after
+  their target parent is deleted because they do not carry the auto-created
+  label.
 
-#### TC-R5-02: Capacity and partial-failure rollback
+#### TC-R5-02: Capacity and cleanup-failure behavior
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -466,31 +502,59 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
 
 - Create a Ready IPv4 pool `small-pool` with CIDR `198.51.100.0/30`; the
   usable capacity is two addresses.
-- Allocate both addresses, or configure the fake pool status with
-  `available: 0`.
+- Configure every pool considered by automatic selection with `available: 0`
+  for the exhaustion subcase.
+- Create two additional Ready IPv4 pools with non-overlapping CIDRs and
+  controlled capacities so that one has the greatest capacity and two can be
+  configured with equal capacity for the deterministic tie-break check.
+- Provide a controllable manager/finalizer fixture that can inject transient
+  and permanent cleanup failures.
 
 ##### Steps
 
-1. Call `ExternalIPs/Create` for `small-pool` when `available: 0`.
-2. Call automatic ExternalIP creation for a VM whose parent is otherwise
-   valid.
-3. Force attachment or DNAT programming to fail after reservation.
-4. Poll `ExternalIPPool/Get` until allocation returns to zero, then inspect
-   `ExternalIPs/List`, `ExternalIPAttachments/List`, and parent status.
-5. Attempt `ExternalIPPool/Delete` while an IP is allocated, then repeat after
-   releasing all addresses.
+1. Call `ExternalIPs/Create` for `small-pool` when `available: 0`, then call
+   `ComputeInstances/Create` with `auto_external_ip_attachment=true` for an
+   otherwise valid VM while every candidate pool is exhausted.
+2. Restore capacity in the additional pools and submit equivalent automatic
+   ExternalIP requests while the pools have different available capacities,
+   then reset capacity and repeat while two candidate pools have equal
+   capacity.
+3. Complete one automatic allocation successfully, delete its parent, and
+   observe attachment deletion, ExternalIP release, and parent finalizer
+   completion.
+4. Create another automatic allocation, inject a transient cleanup failure,
+   delete its parent, and observe the finalizer retry before allowing parent
+   deletion.
+5. Create another automatic allocation, inject a permanent cleanup failure,
+   delete its parent, and wait until the controller exhausts its retry policy.
+6. Inspect the orphaned resources, then manually delete the orphaned
+   ExternalIPAttachment before the orphaned ExternalIP.
 
 ##### Expected results
 
-- Pool selection chooses the Ready pool with greatest available capacity and
-  breaks equal-capacity ties by pool ID.
+- Pool selection chooses the Ready pool with greatest available capacity.
+  Equal-capacity selection is deterministic, but the tie-break remains
+  implementation-defined as specified by the design; the test asserts that
+  repeated equivalent requests select the same pool without imposing a
+  pool-ID ordering that the contract does not define.
 - Exhaustion returns `FailedPrecondition` with the exact message:
   `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`.
-- Exhaustion persists no parent, ExternalIP, attachment, or reservation.
-- A post-reservation failure releases capacity and leaves no orphaned
-  auto-created records.
-- Pool deletion with allocated IPs returns `FailedPrecondition`; deletion
-  succeeds after all addresses are released.
+- Both explicit and automatic exhaustion failures happen before persistence;
+  no parent, ExternalIP, attachment, or capacity reservation remains.
+- A successful automatic request persists the ExternalIP and attachment as
+  `Pending`; manager allocation and attachment/DNAT activation then proceed
+  asynchronously.
+- After successful parent deletion, cleanup order is
+  `ExternalIPAttachment -> ExternalIP -> parent`, and the released capacity
+  is available again.
+- A transient cleanup failure retries through the parent finalizer.
+- After permanent cleanup failure, the finalizer is removed, the parent is
+  deleted, and orphaned ExternalIP/ExternalIPAttachment resources remain with
+  `osac.openshift.io/auto-created: "true"` and no parent reference; manual
+  cleanup is then required. The orphaned ExternalIP retains its
+  `osac.openshift.io/auto-created-for: <resource-id>` label.
+- Manual cleanup must delete the attachment before the ExternalIP; after both
+  are removed, the previously reserved capacity is released.
 
 ### R6: Unsupported Default Networking behavior
 
@@ -511,7 +575,16 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
   shared test data.
 - The default graph is Ready before exercising workload and deletion guards.
 
-##### Steps and expected results
+##### Steps
+
+1. Submit each unsupported request in the table below through its corresponding
+   API or CLI operation.
+2. For every rejection, call the relevant `Get`/`List` method and inspect
+   Kubernetes events for the affected Tenant or workload.
+3. Verify that no manager job, capacity reservation, or partial resource graph
+   was created.
+
+##### Expected results
 
 | Unsupported request | Expected result |
 |---|---|
@@ -520,7 +593,8 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
 | Existing tenant is retroactively assigned defaults | No mutation; request is rejected or excluded by the API contract. |
 | UI-only simplified creation through the API/CLI | No hidden UI behavior is exposed; normal API validation applies. |
 | Tenant-created empty SecurityGroup used as fallback | `InvalidArgument`; only the system-created fallback may be empty because the deployment baseline is hard-coded `permit`. |
-| Workload references Missing, Pending, or Failed defaults | `FailedPrecondition`; no workload or attachment is persisted. |
+| Workload omits networking while defaults are missing | `FailedPrecondition` with `No default networking resources available. Please contact your administrator.`; no workload or attachment is persisted. |
+| Workload references Pending or Failed defaults | `FailedPrecondition`; no workload or attachment is persisted and no fallback substitution occurs. |
 | Delete a default resource with active dependents | `FailedPrecondition`; parent and dependent resources remain. |
 | Network-owned update, patch, or replacement | Rejected with the shared CRUD guard; stored network fields are unchanged. |
 | Tenant supplies an arbitrary ExternalIP address instead of a Ready pool | `InvalidArgument`; only pool allocation is accepted. |
@@ -541,5 +615,5 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
 - Every onboarding and defaulting rule maps to a unit or integration test.
 - Combined-manager and K8s-only supported workflows have E2E coverage.
 - All three workload services have omitted/empty/partial/complete coverage.
-- Failure, retry, idempotency, capacity rollback, cleanup, and immutability
+- Failure, retry, idempotency, capacity exhaustion, cleanup, and immutability
   tests assert exact condition reasons, gRPC statuses, or resource fields.
