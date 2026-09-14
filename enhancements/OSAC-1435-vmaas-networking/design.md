@@ -201,7 +201,7 @@ message ComputeNetworkAttachment {
 message ComputeInstanceSpec {
   // ... existing fields ...
   repeated ComputeNetworkAttachment compute_network_attachments = 18; // optional; zero or one supported
-  bool auto_external_ip_attachment = 19;  // NEW, create-time only; auto-provision ExternalIP + ExternalIPAttachment
+  optional bool auto_external_ip_attachment = 19; // NEW, create-time only; omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment
 }
 
 message ComputeNetworkAttachmentStatus {

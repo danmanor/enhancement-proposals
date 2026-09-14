@@ -865,7 +865,13 @@ authenticate and resolve visibility
 
 Catalog resolution requires the effective tenant and project, so Create attribution happens before Catalog or Template resolution. The resulting object then follows the normal persistence path.
 
-Resource-specific default-network resolution runs after Catalog and Template resolution. It runs only when the resolved tenant-facing attachment remains unset: `compute_network_attachments` for Compute, `network_attachment` for Cluster, and `network_attachments` for Bare Metal. The resolved value is then validated using the same subnet, SecurityGroup, VirtualNetwork, primary, interface, and cardinality rules as direct resource creation.
+Resource-specific default-network resolution runs after Catalog and Template precedence has been resolved and applies the shared field-level defaulting matrix to the resulting tenant-facing attachment:
+
+- An omitted or empty `compute_network_attachments` or `network_attachments` list, or an empty `network_attachment` message, receives both tenant defaults.
+- A supplied attachment entry or non-empty `network_attachment` message receives a default only for each missing subnet or SecurityGroup field (and the applicable Bare Metal interface field). Supplied non-empty fields are preserved.
+- An empty repeated network policy is therefore treated as unset. An empty structured Cluster policy is also treated as unset; a partial structured policy remains partial and is completed field-by-field rather than being replaced wholesale.
+
+The resulting value is then validated using the same subnet, SecurityGroup, VirtualNetwork, primary, interface, readiness, and cardinality rules as direct resource creation.
 
 Resource Create validates dependencies and Template parameters again. A later Template or lifecycle change may make a Catalog Item temporarily unprovisionable even though the item remains structurally valid. Reference-valued policies are materialized like other field values; reference lifecycle semantics are defined in [Reference semantics](#reference-semantics).
 
@@ -914,10 +920,12 @@ apply the following rules:
 - A Cluster `network_attachment` policy is one structured attachment. It may
   govern only the tenant-facing Subnet and SecurityGroup fields; node-set
   fabric-interface derivation and VIP endpoint values remain system-owned.
-- Empty repeated network policy values have the existing Catalog semantics of
-  “unset” and fall through to the next defaulting source. An empty locked or
-  editable default is rejected where the target resource treats empty as
-  unset. This does not make an explicitly invalid non-empty value acceptable.
+- Empty repeated network policy values and empty structured Cluster attachment
+  policies have the existing Catalog semantics of “unset” and fall through to
+  the next defaulting source. A partial structured policy is not empty and is
+  completed field-by-field by the shared defaulting matrix. An empty locked or
+  editable default is rejected where the target resource treats empty as unset.
+  This does not make an explicitly invalid non-empty value acceptable.
 - Locked and editable policy values are checked for reference scope. A shared
   Catalog Item cannot lock or default tenant-local Subnet/SecurityGroup
   references. A tenant-owned item may reference resources in its own scope,

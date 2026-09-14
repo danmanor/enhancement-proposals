@@ -268,19 +268,19 @@ message NetworkDefaults {
 // ComputeInstance
 message ComputeInstanceSpec {
   // ... existing fields ...
-  bool auto_external_ip_attachment = 19;  // auto-provision ExternalIP + ExternalIPAttachment
+  optional bool auto_external_ip_attachment = 19;  // omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment
 }
 
 // BaremetalInstance
 message BareMetalInstanceSpec {
   // ... existing fields ...
-  bool auto_external_ip_attachment = 9;  // auto-provision ExternalIP + ExternalIPAttachment
+  optional bool auto_external_ip_attachment = 9;  // omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment
 }
 
 // Cluster
 message ClusterSpec {
   // ... existing fields ...
-  bool auto_external_ip_attachment = 10;  // auto-provision ExternalIP + ExternalIPAttachment for API and ingress
+  optional bool auto_external_ip_attachment = 10;  // omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment for API and ingress
 }
 ```
 
@@ -401,6 +401,15 @@ an alternative resource or attachment contract.
   SecurityGroup must reference that VN. The default NATGateway, when
   supported, must reference that VN and a Ready/Allocated unconsumed
   ExternalIP.
+- When NATGateway is supported, onboarding selects a Ready IPv4
+  ExternalIPPool using the shared most-available-capacity rule and reserves
+  one address atomically with creation of the auto-created ExternalIP and
+  Pending default NATGateway under the shared internal default-resource
+  transaction exception. If no Ready pool has capacity, onboarding
+  creates neither the ExternalIP nor the NATGateway and reports
+  `DefaultNetworkingReady: false` with an explicit ExternalIPPool exhaustion
+  condition. The NATGateway is not dispatched until the ExternalIP becomes
+  `Allocated`; readiness requires both resources to be Ready/Allocated.
 - The tenant fallback SecurityGroup is the one exception to the tenant
   SecurityGroup rule-count requirement: it may have an empty rule list because
   the provider-owned deployment baseline policy is always evaluated with its
@@ -415,6 +424,29 @@ an alternative resource or attachment contract.
   and manager-derived capability. A mismatched existing default is a terminal
   configuration error requiring provider repair; it must not be silently
   adopted.
+
+**Manual default replacement validation:**
+
+- A Tenant Admin may create a replacement default only in that tenant's
+  effective scope and only after the existing default of the same resource
+  kind has been deleted after its dependencies are removed. The server
+  rejects a second active default of the same kind; list order never selects
+  between competing defaults.
+- The `osac.openshift.io/default: "true"` label is reserved. Only the
+  system onboarding path or the authorized Tenant Admin replacement path may
+  set it, and the service writes and
+  verifies the tenant ownership annotation rather than trusting a caller's
+  cross-tenant value. A default label with the wrong tenant, parent, family,
+  or canonical CIDR is rejected and cannot satisfy default readiness.
+- A manually replaced fallback SecurityGroup may have an empty rule list
+  only when it is the single tenant default SecurityGroup. Every other
+  tenant-created SecurityGroup requires at least one valid rule. A manually
+  replaced default still passes all ordinary readiness, same-VN, immutable
+  field, and manager capability validation.
+- Manual replacement does not make the resource mutable: changing the
+  default requires deleting it and creating a validated replacement, and the
+  tenant remains unable to use omitted/empty attachment defaulting until the
+  replacement graph is Ready.
 
 **Default readiness validation:**
 

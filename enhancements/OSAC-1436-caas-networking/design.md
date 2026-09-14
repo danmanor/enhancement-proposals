@@ -130,13 +130,17 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     # Explicit networking:
     osac create cluster --template ocp_4_17_small \
       --network-attachment subnet=my-subnet,security-groups=my-sg \
-      --node-set compute=large,size=3 --name my-cluster
+      --node-set-size compute=3 --name my-cluster
 
     # Or with defaults + auto external access:
     osac create cluster --template ocp_4_17_small \
       --external-ip-attachment \
-      --node-set compute=large,size=3 --name my-cluster
+      --node-set-size compute=3 --name my-cluster
     ```
+
+    The template owns the node-set names and
+    `baremetal_instance_type`; the request may provide only the permitted
+    size values for those existing node sets.
 
 5. **fulfillment-service:**
     - If `network_attachment` is omitted or an empty message: populates both tenant defaults. If present with only one field, defaults only the missing subnet or SecurityGroup list (see Default Networking PRD)
@@ -326,12 +330,12 @@ message ClusterNetworkAttachment {
 // reads this stored value — it does not re-resolve from BareMetalInstanceType.
 
 message ClusterSpec {
-  string template = 1;
+  ClusterTemplateReference template = 1;
   map<string, google.protobuf.Any> template_parameters = 2;
   map<string, ClusterNodeSet> node_sets = 3;
   // ... existing fields ...
   ClusterNetworkAttachment network_attachment = 9;   // NEW, optional, singular
-  bool auto_external_ip_attachment = 10;              // NEW, create-time only; auto-provision ExternalIP + ExternalIPAttachment for API and ingress
+  optional bool auto_external_ip_attachment = 10;     // NEW, create-time only; omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment for API and ingress
 }
 
 message ClusterStatus {
@@ -415,6 +419,14 @@ again before creating any private BMaaS worker request.
   node model. v0.2 accepts BM node sets only; VM-based node sets and a
   multi-NIC node request are rejected before networking resources are
   created.
+- The resolved `ClusterSpec.node_sets` map must have exactly the same keys as
+  the selected ClusterTemplate's authoritative `spec.node_sets` map. Missing
+  template node sets, extra caller-supplied node sets, and renamed node-set
+  keys are rejected before persistence. For every key, the submitted
+  `baremetal_instance_type` must equal the Template's typed reference;
+  Catalog policy and tenant input may change only the permitted `size` value.
+  The server must not accept a caller-provided hardware reference merely
+  because it independently names a Ready BareMetalInstanceType.
 - Every node set must identify a valid `baremetal_instance_type` in the
   permitted scope. The referenced BareMetalInstanceType must be Ready/usable,
   contain at least one ordered port with role `fabric`, and contain no
@@ -469,6 +481,14 @@ again before creating any private BMaaS worker request.
   the resolved VirtualNetwork must have a Ready NATGateway. A deployment
   without that path is rejected; the request is not persisted. These are
   service/topology prerequisites, not tenant-defined manager capability names.
+- The reachability check is provider-owned and evaluates the resolved tenant
+  VirtualNetwork against the management cluster's connected routing state.
+  `direct_route_available == true` is accepted without NAT; when it is false,
+  validation requires a Ready NATGateway on that VirtualNetwork. If the
+  provider cannot establish either result, or reports no direct route and no
+  Ready NATGateway, validation returns `FailedPrecondition` before any
+  Cluster, worker, VIP, or ExternalIP records are persisted. There is no
+  tenant-settable route override and no fallback to an unready NATGateway.
 - `auto_external_ip_attachment` is create-time-only. When true, the request
   must reserve two IPv4 ExternalIPs atomically: one for `API` and one for
   `INGRESS`. Pool exhaustion or inability to reserve two addresses rejects

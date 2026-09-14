@@ -301,7 +301,7 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 | `public_ip_type.proto` | Add `PublicIPPoolReference`. Replace `PublicIPSpec.pool`. |
 | `nat_gateway_type.proto` | Add references for VirtualNetwork and ExternalIP. Replace string fields. |
 | `cluster_type.proto` | Add `ClusterTemplateReference`, `ClusterCatalogItemReference`, `BareMetalInstanceTypeReference`, `SubnetLocalReference`, and `SecurityGroupLocalReference` usage in the canonical `ClusterNetworkAttachment`. Replace string fields in `ClusterSpec`, `ClusterNodeSet`, and the cluster attachment. |
-| `baremetal_instance_type.proto` | Add `BareMetalInstanceCatalogItemReference`, `SubnetLocalReference`, and `SecurityGroupLocalReference` usage in the canonical `BareMetalNetworkAttachment`. Replace string fields in `BareMetalInstanceSpec` and the bare-metal attachment. |
+| `baremetal_instance_type.proto` | Add `BareMetalInstanceCatalogItemReference` and `BareMetalInstanceTypeReference` to `BareMetalInstanceSpec`, plus `SubnetLocalReference` and `SecurityGroupLocalReference` usage in the canonical `BareMetalNetworkAttachment`. Replace the corresponding string fields. |
 | `role_binding_type.proto` | Add `RoleReference`, `UserReference`. Replace string fields. |
 | `project_membership_type.proto` | Add `ProjectReference`, `UserReference` (reuse). Replace string fields. |
 | `catalog_item_type.proto` (cluster, compute, baremetal) | Add template references. Replace string fields. |
@@ -327,7 +327,7 @@ attachments use the resource-specific messages defined by Unified Networking:
 |---|---|---|---|
 | ComputeInstance | `spec.compute_network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
 | Cluster | `spec.network_attachment` | `ClusterNetworkAttachment` (singular) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
-| BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
+| BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `BareMetalInstanceSpec.catalog_item: BareMetalInstanceCatalogItemReference`; `BareMetalInstanceSpec.instance_type: BareMetalInstanceTypeReference`; attachment `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
 
 The resource-specific messages retain the API shapes required by the service
 contracts, but all reference-bearing fields use the typed messages above. The
@@ -492,6 +492,7 @@ resource can be in a different tenant or project from the referencing resource:
 | `ExternalIPSpec.pool` | `ExternalIPPoolReference` | Pools are provider/deployment-scoped, not tenant-local |
 | `PublicIPSpec.pool` | `PublicIPPoolReference` | Pools are platform-scoped |
 | `BareMetalInstanceSpec.catalog_item` | `BareMetalInstanceCatalogItemReference` | Catalog items may be shared |
+| `BareMetalInstanceSpec.instance_type` | `BareMetalInstanceTypeReference` | BareMetalInstanceTypes are platform-scoped |
 | `ClusterCatalogItem.template` | `ClusterTemplateReference` | Cross-tenant template reference |
 | `ComputeInstanceCatalogItem.template` | `ComputeInstanceTemplateReference` | Cross-tenant template reference |
 | `BareMetalInstanceCatalogItem.template` | `BareMetalInstanceTemplateReference` | Cross-tenant template reference |

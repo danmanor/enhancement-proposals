@@ -549,7 +549,7 @@ message BareMetalInstanceSpec {
   optional BareMetalInstanceImage image = ...;              // RHCOS DiskImage reference (see RHCOS DiskImage Resolution)
   optional string user_data = ...;                          // inline discovery ignition content (max 64KB)
   repeated BareMetalNetworkAttachment network_attachments = ...;
-  string instance_type = 20;                                // BareMetalInstanceType name from ClusterNodeSet (OSAC-1201)
+  BareMetalInstanceTypeReference instance_type = 20;         // typed BareMetalInstanceType reference from ClusterNodeSet
   // ... other existing fields (ssh_public_key, run_strategy, template_parameters, etc.) omitted
 }
 

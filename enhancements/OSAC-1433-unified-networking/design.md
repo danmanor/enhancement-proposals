@@ -95,11 +95,11 @@ its own design, which may support update and resize operations.
 
 | Network-owned object or field | Allowed user/API operations | Immutability boundary |
 |---|---|---|
-| `NetworkClass` | Create, read, delete | All provider-selected manager and capability configuration in `spec` is fixed after creation. |
+| `NetworkClass` | Provider create, read, delete; tenant no access to create/update/delete | All provider-selected manager and capability configuration in `spec` is fixed after creation. The provider may delete it only after the deployment has no networking resources or workload network attachments that depend on its manager resolution. |
 | `VirtualNetwork` | Create, read, delete | Provider-resolved implementation strategy, CIDR/address-family, and all other network `spec` fields are fixed after creation. |
 | `Subnet` | Create, read, delete | VirtualNetwork reference, CIDR/address-family, and all other network `spec` fields are fixed after creation. |
-| `SecurityGroup` | Create, read, delete | VirtualNetwork reference and the complete rule set are fixed after creation; tenant-created groups require rules at create time, while the system-created fallback group may be empty. |
-| `ExternalIPPool` | Create, read, delete | Address-family, CIDR ranges, and all other pool `spec` fields are fixed after creation. |
+| `SecurityGroup` | Create, read, delete | VirtualNetwork reference and the complete rule set are fixed after creation; non-default tenant-created groups require rules at create time, while the provider-created onboarding fallback or an authorized default replacement may be empty only when it is the single validated tenant fallback. |
+| `ExternalIPPool` | Provider create, read, delete; tenant read/reference only | Address-family, CIDR ranges, and all other pool `spec` fields are fixed after creation. Tenants cannot create, update, patch, replace, or delete deployment-scoped pools. |
 | `ExternalIP` | Create, read, delete | Pool reference, address/allocation identity, and all other network `spec` fields are fixed after creation. |
 | `ExternalIPAttachment` | Create, read, delete | ExternalIP, target, endpoint, and all other binding `spec` fields are fixed after creation; retargeting requires delete and create. |
 | `NATGateway` | Create, read, delete | VirtualNetwork, ExternalIP, and all other gateway `spec` fields are fixed after creation; changing the ExternalIP requires delete and create. |
@@ -149,7 +149,7 @@ cardinality or placement constraints.
 | `Subnet.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
 | `Subnet.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR contained by the parent VirtualNetwork and non-overlapping with sibling Subnets in that VN. |
 | `SecurityGroup.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
-| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for tenant-created groups | Tenant-created SecurityGroups must contain at least one rule. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected when the effective attachment set is resolved. The system-created tenant fallback SecurityGroup may have an empty list because the deployment baseline policy supplies the hard-coded `permit` action. |
+| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for non-default tenant-created groups | Non-default tenant-created SecurityGroups must contain at least one rule. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected when the effective attachment set is resolved. The provider-created onboarding fallback or an authorized default replacement may have an empty list only when it is the single validated tenant fallback, because the deployment baseline policy supplies the hard-coded `permit` action. |
 | `ExternalIPPool.spec.ip_family` | Enum, required | `IPV4` only. IPv6 and dual-stack values are rejected. |
 | `ExternalIPPool.spec.cidrs` | Repeated IPv4 CIDR strings, required, exactly one supported | The list must contain exactly one canonical IPv4 CIDR. Multi-CIDR pools are not part of the supported contract; create separate pools instead. |
 | `ExternalIP.spec.pool` | Provider/deployment-scoped ExternalIPPool reference, required | The pool must exist, be Ready, and have capacity. The allocated address is selected by the provider/fabric manager; tenants do not supply an arbitrary address. |
@@ -300,7 +300,19 @@ service creates.
   `natGateway` must be false for K8s-only OVN, and the supported-resource set
   must not claim a resource or operation that the selected managers cannot
   complete. Status capability changes are provider/controller operations, not
-  tenant updates.
+  tenant updates;
+- verify the deployment admission boundary before accepting the NetworkClass:
+  exactly one hub cluster must be registered for the deployment and the
+  deployment connectivity provider must report a connected topology. A zero-
+  or multi-hub deployment, or an air-gapped deployment, is rejected with a
+  provider configuration precondition; there is no tenant-settable override.
+  All networking API and reconciliation paths must resolve through that one
+  hub, and every persisted `status.hub` must identify it; and
+- verify the operation set required by each enabled workload service. In
+  particular, BMaaS requires a Fabric Manager operation set containing
+  `move_network_attachment` and `query_dhcp_lease` in addition to the shared
+  networking lifecycle. A K8s-only manager may provide the shared VM surface,
+  but it cannot make BMaaS or the current CaaS BM-worker flow available.
 
 **VirtualNetwork.** The API and controller must:
 
@@ -344,9 +356,11 @@ provision an ambiguous address space.
 **SecurityGroup and rules.** The API and controller must:
 
 - require a Ready, same-scope VirtualNetwork;
-- distinguish the system-created tenant fallback SecurityGroup from a
-  tenant-created group. A tenant-created group must contain at least one rule;
-  only the system-created fallback may be empty;
+- distinguish the validated tenant fallback SecurityGroup from other
+  tenant-created groups. The provider-created onboarding fallback and an
+  authorized Tenant Admin replacement that passes Default Networking's
+  default-resource validation may be empty only when it is the single tenant
+  fallback; every other tenant-created group must contain at least one rule;
 - validate every rule independently before evaluating the rule set: required
   action, direction, and protocol; supported enum value; correct port
   presence/range for the protocol; exactly one direction-appropriate CIDR;
@@ -454,6 +468,12 @@ tenant surface is intentionally narrow:
   before persistence, resolves defaults, and stores the complete effective
   network spec. A caller cannot create an object with an unresolved
   dependency merely because a manager might become Ready later.
+- **Provider-owned resources:** NetworkClass and ExternalIPPool operations
+  are provider/deployment operations. A tenant create, update, patch, replace,
+  or delete request for either resource is rejected by authorization before
+  semantic validation. A tenant may read or reference only the pool made
+  visible by the provider's scope policy; it cannot supply a deployment pool
+  definition or mutate its CIDRs, family, capacity, or lifecycle.
 - **Read and list:** the API applies the existing tenant/project/provider
   scope before returning network resources, attachments, or references. A
   caller cannot use a list filter, typed reference, Catalog Item, or status
@@ -652,6 +672,14 @@ and `supportedResources` fields above.
 Each manager ships a ConfigMap declaring its type and capabilities. These
 ConfigMaps are deployed as part of the OSAC installation alongside the
 manager's Ansible roles.
+
+The ConfigMap's shared `supportedResources` declaration is not the complete
+workload integration contract. Provider deployment metadata must also bind
+the dispatcher operations implemented by the selected manager. This metadata
+is provider-owned and is not a tenant-settable capability or public resource
+field. A manager is eligible for BMaaS only when that binding includes
+`move_network_attachment` and `query_dhcp_lease`; the BMaaS server repeats the
+check before each create/worker dispatch.
 
 **Fabric managers:**
 
@@ -927,9 +955,10 @@ active even when a tenant explicitly attaches one or more SecurityGroups.
 
 The tenant default SecurityGroup is a tenant-scoped fallback resource. It is
 attached only when an attachment omits its SecurityGroups; it is not the
-deployment baseline. The system-created fallback group may have an empty
-rule list because the deployment baseline supplies the hard-coded `permit`
-action. A
+deployment baseline. The provider-created onboarding fallback or an
+authorized Tenant Admin replacement that passes Default Networking's
+default-resource validation may have an empty rule list because the
+deployment baseline supplies the hard-coded `permit` action. Every other
 tenant-created SecurityGroup must contain at least one explicit rule.
 
 Tenant rules have an explicit `allow` or `deny` action. When the baseline and
@@ -987,8 +1016,12 @@ Validation rules:
 ```bash
 osac create cluster --template ocp_4_17_small \
   --network-attachment subnet=my-subnet,security-groups=my-sg \
-  --node-set workers=large,size=3 --name my-cluster
+  --node-set-size workers=3 --name my-cluster
 ```
+
+The resolved ClusterTemplate owns the node-set names and
+`baremetal_instance_type`; the request may provide only permitted sizes for
+those existing node sets.
 
 For the current supported release, **CaaS supports BM node sets only**.
 VM-based cluster node sets are not supported. The fulfillment-service resolves
@@ -1348,8 +1381,10 @@ message SecurityGroupRule {
 }
 ```
 
-The default tenant fallback SecurityGroup is system-created and may have an
-empty `rules` list. Tenant-created SecurityGroups require at least one rule.
+The default tenant fallback SecurityGroup created during onboarding, or an
+authorized replacement that passes Default Networking's default-resource
+validation, may have an empty `rules` list. Every other tenant-created
+SecurityGroup requires at least one rule.
 The deployment-wide baseline policy is provider-owned and is not
 serialized as a `SecurityGroupRule`; its hard-coded `permit` action is not
 serialized in the tenant SecurityGroup either.
@@ -1483,7 +1518,7 @@ period is part of this design.
 
 ```protobuf
 message BareMetalInstanceSpec {
-  string catalog_item = 1;
+  BareMetalInstanceCatalogItemReference catalog_item = 1;
   optional string ssh_public_key = 2;
   optional string user_data = 3;
   optional BareMetalInstanceRunStrategy run_strategy = 4;
@@ -1493,6 +1528,8 @@ message BareMetalInstanceSpec {
 
   // NEW: OSAC networking
   repeated BareMetalNetworkAttachment network_attachments = 8;
+  BareMetalInstanceTemplateReference template = 10;
+  BareMetalInstanceTypeReference instance_type = 20;
 }
 ```
 
@@ -1500,7 +1537,7 @@ message BareMetalInstanceSpec {
 
 ```protobuf
 message ClusterSpec {
-  string template = 1;
+  ClusterTemplateReference template = 1;
   map<string, google.protobuf.Any> template_parameters = 2;
   map<string, ClusterNodeSet> node_sets = 3;
 
@@ -1662,7 +1699,9 @@ of their own deletion state), the controller requeues with a short interval
 | Controller | Gate deprovision on |
 |---|---|
 | VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
+| NetworkClass | No VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, or NATGateway resources, workload network attachments, or manager integrations remain dependent on this deployment configuration |
 | Subnet | No ComputeInstance CRs with `spec.computeNetworkAttachments[].subnet`, no ClusterOrder CRs with `spec.networkAttachment.subnet`, and no BareMetalInstance CRs with `spec.networkAttachments[].subnet` referencing this Subnet (see the per-service designs) |
+| SecurityGroup | No ComputeInstance, ClusterOrder, or BareMetalInstance network attachment references this SecurityGroup, and no stored Catalog policy has a governed reference to it |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
@@ -1759,6 +1798,13 @@ not supported. All networking resources (VirtualNetwork, Subnet,
 SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
 NATGateway) are reconciled through that hub, and their `status.hub` fields
 identify the deployment's hub.
+
+Provider deployment inventory is the source of truth for this admission check;
+the tenant-facing networking API does not accept a hub or connectivity-mode
+field. Before the provider creates or marks the deployment NetworkClass Ready,
+the inventory must identify exactly one active hub and report
+`connectivity_mode=connected`. Missing, duplicate, or non-connected inventory
+state is a provider configuration error and prevents NetworkClass acceptance.
 
 The currently supported deployment boundary is connected deployments only;
 air-gapped deployments are not currently supported. All shared networking

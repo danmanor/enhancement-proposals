@@ -379,7 +379,7 @@ message BareMetalNetworkAttachment {
 }
 
 message BareMetalInstanceSpec {
-  string catalog_item = 1;              // immutable
+  BareMetalInstanceCatalogItemReference catalog_item = 1; // immutable
   optional string ssh_public_key = 2;   // immutable
   optional string user_data = 3;        // immutable
   optional BareMetalInstanceRunStrategy run_strategy = 4;
@@ -387,7 +387,9 @@ message BareMetalInstanceSpec {
   map<string, google.protobuf.Any> template_parameters = 6;  // immutable
   optional BareMetalInstanceImage image = 7;                  // immutable
   repeated BareMetalNetworkAttachment network_attachments = 8; // NEW, optional; at most one entry; immutable after create
-  bool auto_external_ip_attachment = 9;  // NEW, create-time only; auto-provision ExternalIP + ExternalIPAttachment
+  BareMetalInstanceTemplateReference template = 10;            // immutable; materialized provisioning source
+  BareMetalInstanceTypeReference instance_type = 20;           // immutable hardware profile reference
+  optional bool auto_external_ip_attachment = 9;  // NEW, create-time only; omitted/false disables auto-provisioning; true creates ExternalIP + ExternalIPAttachment
 }
 
 message BareMetalInstanceStatus {
@@ -476,6 +478,22 @@ used by CaaS worker provisioning.
 - The repeated status field is also limited to zero or one entry while the
   server is provisioning. A Ready BM must eventually report the single
   selected interface and its canonical IPv4 address.
+
+**Deployment capability validation:**
+
+- Before accepting a standalone, Catalog-based, or private CaaS
+  BaremetalInstance create, resolve the single deployment NetworkClass and
+  verify that it selects an enabled Fabric Manager. The manager's dispatcher
+  operation registry must provide both `move_network_attachment` for the
+  provisioning-to-tenant port handoff and `query_dhcp_lease` for tenant IP
+  discovery, in addition to the ordinary networking resource lifecycle.
+- A K8s-only NetworkClass, a disabled Fabric Manager, or a Fabric Manager
+  missing either BM operation returns `FailedPrecondition` before the
+  BaremetalInstance, auto-ExternalIP records, or operator CR are persisted.
+  BMaaS must not create a long-lived Pending instance and wait for an
+  unsupported manager capability to appear. The same check is repeated before
+  private CaaS worker dispatch because provider capability may change after
+  NetworkClass creation.
 
 **Attachment and dependency resolution:**
 

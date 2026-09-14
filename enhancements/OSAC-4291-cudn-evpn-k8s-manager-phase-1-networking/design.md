@@ -28,6 +28,14 @@ superseded-by:
 
 This design extends OSAC-1433's NetworkClass two-manager architecture with a new k8s manager (`cudn_evpn`) that provisions OVN-Kubernetes ClusterUserDefinedNetwork (CUDN) with EVPN transport, enabling KubeVirt VMs to join the physical fabric via BGP EVPN route advertisement. The design covers sequential provisioning (fabric → k8s manager data flow), CUDN lifecycle, single-subnet validation, and integration test patterns. FRRConfiguration for BGP underlay peering is an installation prerequisite (not created by k8s manager); OVN-Kubernetes auto-updates it when CUDN appears. See [PRD](prd.md) for detailed requirements.
 
+Shared field types, formats, presence rules, allowed values, and validation
+are defined by the [Unified Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#field-types-formats-and-validation).
+The shared networking resource model, IPv4-only scope, and connected
+single-hub deployment boundary are defined by the [Unified Networking
+design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology).
+The shared create/read/delete-only operation contract is defined by
+[Supported Operations and Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
+
 ## Related Designs
 
 This design builds on and interacts with several networking designs:
@@ -291,7 +299,16 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
 
         // If at least one subnet exists, check if it has VMs (via k8s API)
         if len(listResp.GetSubnets()) > 0 {
-            firstSubnet := listResp.GetSubnets()[0]
+            // "First" is an immutable deployment identity, not list order.
+            // The helper selects the Subnet with the earliest persisted
+            // creation sequence; metadata.created_at plus immutable resource
+            // ID is the deterministic fallback when timestamps tie.
+            firstSubnet, err := s.getCUDNPrimarySubnet(ctx,
+                vnetResp.GetVirtualNetwork().GetId())
+            if err != nil {
+                return nil, status.Errorf(codes.Internal,
+                    "failed to resolve CUDN primary subnet: %v", err)
+            }
 
             // Check if first subnet has CUDN namespace with VMs
             hasVMs, err := s.checkSubnetHasVMs(ctx, firstSubnet.GetMetadata().GetName())
@@ -444,8 +461,12 @@ These additional rules are mandatory whenever the resolved NetworkClass uses
 
 **VirtualNetwork and Subnet topology:**
 
-- The first Subnet under a VirtualNetwork is the only Subnet that receives a
-  CUDN and VM-capable overlay in Phase 1. Its CIDR must pass the shared IPv4
+- The first Subnet under a VirtualNetwork means the Subnet with the earliest
+  immutable persisted creation sequence; it is never inferred from an
+  unordered List response. The API and controller use the same deterministic
+  identity (creation sequence, then resource ID as a tie-breaker) for every
+  first-Subnet check. That Subnet is the only one that receives a CUDN and
+  VM-capable overlay in Phase 1. Its CIDR must pass the shared IPv4
   containment/non-overlap rules and the CUDN/MetalLB allocation ranges must
   remain within that Subnet.
 - A second or later Subnet may be created only while the first Subnet has no
