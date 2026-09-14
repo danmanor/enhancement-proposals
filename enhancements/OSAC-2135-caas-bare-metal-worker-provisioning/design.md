@@ -656,7 +656,7 @@ defined by OSAC-1436) and enriches it into a per-BMI
 This enrichment is a read-only consumer of the ClusterOrder's singular
 `networkAttachment` field — the BM controller does not define or modify the
 field shape. The field uses the cluster-specific `ClusterNetworkAttachment`
-type, not ComputeInstance's `NetworkAttachment`. This design requires the
+type, not ComputeInstance's `ComputeNetworkAttachment`. This design requires the
 field to be present on the ClusterOrder CRD before the BM controller can read
 it.
 

@@ -1909,7 +1909,7 @@ of their own deletion state), the controller requeues with a short interval
 |---|---|
 | VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
 | NetworkClass | No VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, or NATGateway resources, workload network attachments, or manager integrations remain dependent on this deployment configuration |
-| Subnet | No ComputeInstance CRs with `spec.computeNetworkAttachments[].subnet`, no ClusterOrder CRs with `spec.networkAttachment.subnet`, and no BareMetalInstance CRs with `spec.networkAttachments[].subnet` referencing this Subnet (see the per-service designs) |
+| Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnet`, no ClusterOrder CRs with `spec.networkAttachment.subnet`, and no BareMetalInstance CRs with `spec.networkAttachments[].subnet` referencing this Subnet (see the per-service designs) |
 | SecurityGroup | No ComputeInstance, ClusterOrder, or BareMetalInstance network attachment references this SecurityGroup, and no stored Catalog policy has a governed reference to it |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
