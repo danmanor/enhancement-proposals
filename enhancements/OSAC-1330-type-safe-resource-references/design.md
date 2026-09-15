@@ -39,7 +39,7 @@ schema level from `SubnetSpec.ipv4_cidr` -- both are strings. This creates
 three classes of problems:
 
 1. **No compile-time safety.** Nothing prevents a developer from passing a
-   SecurityGroup ID where a VirtualNetwork ID is expected. The proto compiler,
+   Subnet ID where a VirtualNetwork ID is expected. The proto compiler,
    Go type system, and REST/JSON schema all treat these identically.
 
 2. **No cross-tenant addressability.** References carry only an identifier (or
@@ -69,7 +69,7 @@ and standardizes error reporting across all services. [Locked: D2]
 ### Goals
 
 - Provide compile-time type safety for all inter-resource references through
-  per-type protobuf messages, making it impossible to assign a SecurityGroup
+  per-type protobuf messages, making it impossible to assign a Subnet
   reference to a VirtualNetwork field.
 - Centralize reference existence validation in a single gRPC interceptor so
   that new resources automatically inherit validation without per-server code.
@@ -122,9 +122,10 @@ The design introduces three coordinated changes:
 
 #### Creating a compute instance with network attachments (Tenant User)
 
-Starting state: A Tenant User has a Subnet named `app-subnet` and a
-SecurityGroup named `app-sg`, both in READY state within their tenant and
-project.
+Starting state: A Tenant User has a Subnet named `app-subnet` in READY state
+within the tenant and project. The Subnet has its effective NetworkACL ready;
+the ACL is associated with the Subnet and is not referenced by the workload
+attachment.
 
 1. The user submits a CreateComputeInstance request. In the REST/JSON body,
    network attachments use nested reference objects:
@@ -135,8 +136,7 @@ project.
        "catalog_item": { "name": "standard-vm" },
        "network_attachments": [
          {
-           "subnet": { "name": "app-subnet" },
-           "security_groups": [{ "name": "app-sg" }]
+           "subnet": { "name": "app-subnet" }
          }
        ]
      }
@@ -147,7 +147,8 @@ project.
    `catalog_item` field is a `ComputeInstanceCatalogItemReference` (full
    reference, since catalog items may be cross-tenant). The `subnet` field is
    a `SubnetLocalReference` (local, since subnets are always same-tenant). The
-   `security_groups` field is a `repeated SecurityGroupLocalReference`.
+   The attachment contains only a `SubnetLocalReference`; its effective
+   NetworkACL is resolved from the referenced Subnet.
 
 3. The reference validation interceptor fires before the server handler. It
    walks the `CreateComputeInstanceRequest` message using protoreflect,
@@ -167,8 +168,8 @@ project.
 
 5. If all references are valid, the request proceeds to the
    ComputeInstancesServer handler, which performs business logic validation
-   (e.g., the security groups must belong to the same VirtualNetwork as the
-   subnet).
+   (e.g., the Subnet and its effective NetworkACL must be Ready and belong to
+   the same tenant and VirtualNetwork).
 
 6. On success, the created ComputeInstance is returned with the submitted
    names preserved and the resolved identifier/scope fields populated according
@@ -291,17 +292,17 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 
 | File | Change |
 |------|--------|
-| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, `SubnetLocalReference`, `SecurityGroupLocalReference`. Replace string fields in `ComputeInstanceSpec` and `ComputeNetworkAttachment`. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
+| `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, and `SubnetLocalReference`. Replace string fields in `ComputeInstanceSpec` and `ComputeNetworkAttachment`. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
 | `subnet_type.proto` | Add `VirtualNetworkLocalReference`. Replace `SubnetSpec.virtual_network`. |
 | `virtual_network_type.proto` | Remove the tenant-settable `NetworkClassReference`; retain provider/private `implementation_strategy` and validate `VirtualNetworkSpec.ipv4_cidr`. |
-| `security_group_type.proto` | Add `VirtualNetworkLocalReference` (reuse from subnet). Replace `SecurityGroupSpec.virtual_network`. |
+| `network_acl_type.proto` | Reuse `VirtualNetworkLocalReference` and add repeated `SubnetLocalReference` fields for `NetworkACLSpec.virtual_network` and `NetworkACLSpec.subnets`. NetworkACL rules contain no workload attachment references. |
 | `external_ip_attachment_type.proto` | Add `ExternalIPLocalReference`, `ComputeInstanceLocalReference`, `ClusterLocalReference`, `BareMetalInstanceLocalReference`. Replace string fields in `ExternalIPAttachmentSpec` oneof. |
 | `external_ip_type.proto` | Add `ExternalIPPoolReference`. Replace `ExternalIPSpec.pool`. |
 | `public_ip_attachment_type.proto` | Add `PublicIPLocalReference`, `ComputeInstanceLocalReference` (reuse). Replace string fields. |
 | `public_ip_type.proto` | Add `PublicIPPoolReference`. Replace `PublicIPSpec.pool`. |
 | `nat_gateway_type.proto` | Add references for VirtualNetwork and ExternalIP. Replace string fields. |
-| `cluster_type.proto` | Add `ClusterTemplateReference`, `ClusterCatalogItemReference`, `BareMetalInstanceTypeReference`, `SubnetLocalReference`, and `SecurityGroupLocalReference` usage in the canonical `ClusterNetworkAttachment`. Replace string fields in `ClusterSpec`, `ClusterNodeSet`, and the cluster attachment. |
-| `baremetal_instance_type.proto` | Add `BareMetalInstanceCatalogItemReference` and `BareMetalInstanceTypeReference` to `BareMetalInstanceSpec`, plus `SubnetLocalReference` and `SecurityGroupLocalReference` usage in the canonical `BareMetalNetworkAttachment`. Replace the corresponding string fields. |
+| `cluster_type.proto` | Add `ClusterTemplateReference`, `ClusterCatalogItemReference`, `BareMetalInstanceTypeReference`, and `SubnetLocalReference` usage in the canonical `ClusterNetworkAttachment`. Replace string fields in `ClusterSpec`, `ClusterNodeSet`, and the cluster attachment. The effective NetworkACL is resolved from the attachment's Subnet. |
+| `baremetal_instance_type.proto` | Add `BareMetalInstanceCatalogItemReference` and `BareMetalInstanceTypeReference` to `BareMetalInstanceSpec`, plus `SubnetLocalReference` usage in the canonical `BareMetalNetworkAttachment`. Replace the corresponding string fields. The effective NetworkACL is resolved from the attachment's Subnet. |
 | `role_binding_type.proto` | Add `RoleReference`, `UserReference`. Replace string fields. |
 | `project_membership_type.proto` | Add `ProjectReference`, `UserReference` (reuse). Replace string fields. |
 | `catalog_item_type.proto` (cluster, compute, baremetal) | Add template references. Replace string fields. |
@@ -325,9 +326,9 @@ attachments use the resource-specific messages defined by Unified Networking:
 
 | Resource | Canonical field | Canonical message | Typed reference fields |
 |---|---|---|---|
-| ComputeInstance | `spec.network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
-| Cluster | `spec.network_attachment` | `ClusterNetworkAttachment` (singular) | `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
-| BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `BareMetalInstanceSpec.catalog_item: BareMetalInstanceCatalogItemReference`; `BareMetalInstanceSpec.instance_type: BareMetalInstanceTypeReference`; attachment `subnet: SubnetLocalReference`, `security_groups: repeated SecurityGroupLocalReference` |
+| ComputeInstance | `spec.network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`; effective NetworkACL is inherited from the Subnet |
+| Cluster | `spec.network_attachment` | `ClusterNetworkAttachment` (singular) | `subnet: SubnetLocalReference`; effective NetworkACL is inherited from the Subnet |
+| BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `BareMetalInstanceSpec.catalog_item: BareMetalInstanceCatalogItemReference`; `BareMetalInstanceSpec.instance_type: BareMetalInstanceTypeReference`; attachment `subnet: SubnetLocalReference`; effective NetworkACL is inherited from the Subnet |
 
 The resource-specific messages retain the API shapes required by the service
 contracts, but all reference-bearing fields use the typed messages above. The
@@ -356,14 +357,14 @@ structure.
 |---|---|---|---|
 | `networking.ts` `CreateVirtualNetworkInput` | `spec: { network_class: networkClass, ipv4_cidr: cidr }` | `spec: { ipv4_cidr: cidr }` | NetworkClass is deployment-resolved; the tenant supplies only the CIDR |
 | `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Rename variable from `Id` to name-based |
-| `networking.ts` `CreateSecurityGroupInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Same pattern as Subnet |
+| `networking.ts` `CreateNetworkACLInput.virtualNetworkName` | `spec: { virtual_network: virtualNetworkName }` (string) | `spec: { virtual_network: { name: vnetName }, subnets: [{ name: subnetName }] }` | NetworkACL associations use typed local Subnet references; workload attachments do not reference NetworkACLs |
 | `networking.ts` `virtualNetworkFilterForSubnetList` | `this.spec.virtual_network == "${id}"` | `this.spec.virtual_network.name == "${name}"` | CEL filter path change |
 | `ip-management.ts` `useCreatePublicIP` body | `spec: { pool: string }` | `spec: { pool: { name: poolName } }` | |
 | `ip-management.ts` `useCreateExternalIP` body | `spec: { pool: string }` | `spec: { pool: { name: poolName } }` | |
 | `ip-management.ts` `useCreatePublicIPAttachment` body | `spec: { publicIp: string, target: { case, value } }` | `spec: { public_ip: { name: ipName }, compute_instance: { name: vmName } }` | Oneof becomes separate fields with reference messages |
 | `ip-management.ts` `useCreateExternalIPAttachment` body | `spec: { externalIp: string, target: { case, value } }` | `spec: { external_ip: { name: ipName }, compute_instance: { name: vmName } }` | Same oneof pattern |
 | `cluster.ts` `CreateClusterInput.spec.catalogItem` | `spec: { catalogItem: string }` | `spec: { catalog_item: { name: catalogName } }` | |
-| `compute-instance-wire.ts` `buildComputeInstanceCreateBody` | `spec: { template: "id", catalog_item: "id", subnet: "id", security_groups: ["id"] }` | `spec: { template: { name: "tpl" }, catalog_item: { name: "ci" }, network_attachments: [{ subnet: { name: "s" }, security_groups: [{ name: "sg" }] }] }` | Most complex change; wire builder must wrap strings |
+| `compute-instance-wire.ts` `buildComputeInstanceCreateBody` | `spec: { template: "id", catalog_item: "id", subnet: "id" }` | `spec: { template: { name: "tpl" }, catalog_item: { name: "ci" }, network_attachments: [{ subnet: { name: "s" } }] }` | Most complex change; wire builder must wrap strings; the effective NetworkACL is inherited from the Subnet |
 
 **Known deviation:** The `@temp-api` attachment types
 (`useCreatePublicIPAttachment`, `useCreateExternalIPAttachment`) use a
@@ -478,9 +479,9 @@ resource can be in a different tenant or project from the referencing resource:
 | Field | Reference Type | Rationale |
 |-------|---------------|-----------|
 | `SubnetSpec.virtual_network` | `VirtualNetworkLocalReference` | Subnet is always in the same tenant/project as its parent VirtualNetwork |
-| `SecurityGroupSpec.virtual_network` | `VirtualNetworkLocalReference` | Same reasoning as Subnet |
+| `NetworkACLSpec.virtual_network` | `VirtualNetworkLocalReference` | The NetworkACL belongs to the same VirtualNetwork as its associated Subnets |
 | `ComputeNetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project |
-| `ComputeNetworkAttachment.security_groups` | `repeated SecurityGroupLocalReference` | Same tenant/project |
+| `NetworkACLSpec.subnets` | `repeated SubnetLocalReference` | NetworkACL associations are explicit, same-scope Subnet references |
 | `NATGatewaySpec.virtual_network` | `VirtualNetworkLocalReference` | Same tenant/project |
 | `NATGatewaySpec.external_ip` | `ExternalIPLocalReference` | Same tenant/project |
 | `ExternalIPAttachmentSpec.external_ip` | `ExternalIPLocalReference` | Same tenant/project |
@@ -664,12 +665,13 @@ For local references (`LocalReference` messages), the same two resolution
 modes apply. The tenant is normally the owning resource's effective tenant.
 There is one trusted private exception for the current CaaS worker flow:
 CaaS creates the destination BareMetalInstance in the builtin `system`
-tenant, while its Subnet and SecurityGroup references belong to the tenant
-that owns the Cluster. The authenticated CaaS controller passes that source
+tenant, while its Subnet and effective NetworkACL belong to the tenant that
+owns the Cluster. The authenticated CaaS controller passes that source
 tenant/project as reference-resolution context, and BMaaS must resolve the
-references there rather than reject them because the destination BMI has
-different metadata. This exception is limited to the private CaaS worker
-create path; it does not change tenant-facing local-reference semantics.
+Subnet there and inherit its effective NetworkACL rather than reject the
+request because the destination BMI has different metadata. This exception
+is limited to the private CaaS worker create path; it does not change
+tenant-facing local-reference semantics.
 
 The lookup function uses the existing `List` + CEL filter pattern already
 established in the codebase (e.g., `lookupCatalogItem`, `lookupTemplate`) to
@@ -833,11 +835,11 @@ or BM API field is a repeated `network_attachments` field.
 ```bash
 # By name (common case):
 osac create computeinstance --name my-vm --template ocp_virt_vm \
-  --network-attachment subnet=app-subnet,security-groups=app-sg
+  --network-attachment subnet=app-subnet
 
 # The CLI internally constructs:
 # network_attachments[0].subnet: { name: "app-subnet" }
-# network_attachments[0].security_groups[0]: { name: "app-sg" }
+# the effective NetworkACL is inherited from "app-subnet"
 ```
 
 **For full references with project or shared scope:**
@@ -908,8 +910,8 @@ database triggers, CLI, UI), and leaves the system fully functional.
 
 | Chunk | Resources | Reference Fields | Rationale |
 |-------|-----------|-----------------|-----------|
-| 1 - Interceptor + Networking | VirtualNetwork, Subnet, SecurityGroup, NetworkClass | `virtual_network` (x3) | Foundation: build interceptor with the simplest local networking reference graph. NetworkClass is deployment-resolved and has no tenant reference field. |
-| 2 - Compute | ComputeInstance, ComputeInstanceTemplate, ComputeInstanceCatalogItem, InstanceType | `template`, `catalog_item`, `instance_type`, `subnet`, `security_groups`, `replacement` | Highest user-facing impact. Depends on networking references from Chunk 1. |
+| 1 - Interceptor + Networking | VirtualNetwork, Subnet, NetworkACL, NetworkClass | `virtual_network`, `subnets` | Foundation: build interceptor with the local networking reference graph. NetworkClass is deployment-resolved and has no tenant reference field. |
+| 2 - Compute | ComputeInstance, ComputeInstanceTemplate, ComputeInstanceCatalogItem, InstanceType | `template`, `catalog_item`, `instance_type`, `subnet`, `replacement` | Highest user-facing impact. Depends on networking references from Chunk 1; the effective NetworkACL is resolved from the Subnet. |
 | 3 - IP Management | ExternalIP, ExternalIPPool, ExternalIPAttachment, PublicIP, PublicIPPool, PublicIPAttachment, NATGateway | `pool` (x2), `external_ip` (x2), `public_ip`, `virtual_network`, `compute_instance`, `cluster`, `baremetal_instance` | IP resources have complex oneof targets. |
 | 4 - Clusters + Bare Metal | Cluster, ClusterTemplate, ClusterCatalogItem, BareMetalInstance, BareMetalInstanceCatalogItem, BareMetalInstanceTemplate, BareMetalInstanceType | `template` (x2), `catalog_item` (x2), `baremetal_instance_type` (x2) | CaaS and BMaaS services. |
 | 5 - IAM | RoleBinding, ProjectMembership, Role, User, Project | `role`, `users`, `project`, `user` | IAM references are self-contained. |
@@ -1086,7 +1088,7 @@ details on the URI/ARN trade-off.
 - Interceptor reference detection: verify that the interceptor discovers all
   reference-typed fields in each request message, including nested messages
   (`ComputeNetworkAttachment` inside `ComputeInstanceSpec`), repeated fields
-  (`security_groups`), and oneof fields (`ExternalIPAttachmentSpec.target`).
+  (`NetworkACLSpec.subnets`), and oneof fields (`ExternalIPAttachmentSpec.target`).
 - Interceptor validation logic: verify that the interceptor returns
   `InvalidArgument` with correct field paths for missing references, returns
   success for valid references, and aggregates multiple errors.
@@ -1151,8 +1153,9 @@ details on the URI/ARN trade-off.
 **E2E tests (osac-test-infra, pytest):**
 
 - Full provisioning workflow: Create NetworkClass, VirtualNetwork, Subnet,
-  SecurityGroup, and ComputeInstance with all references by name. Verify the
-  ComputeInstance reaches RUNNING state.
+  NetworkACL associated with the Subnet, and ComputeInstance with all
+  references by name. Verify the ComputeInstance reaches RUNNING state and
+  inherits the Subnet's effective NetworkACL.
 - Error scenario: Attempt to create a ComputeInstance with a nonexistent
   Subnet name. Verify the API returns a clear error message.
 
@@ -1178,7 +1181,8 @@ details on the URI/ARN trade-off.
   reference selectors are supplied, verify `shared=true` selects the shared
   tenant and `project` scopes the lookup within that tenant.
 - Run the same cases for typed references nested in VM/BM attachments and the
-  singular Cluster attachment, including repeated SecurityGroup references.
+  singular Cluster attachment, plus repeated typed Subnet references in a
+  NetworkACL.
 
 **CLI E2E tests:**
 

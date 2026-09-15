@@ -29,7 +29,7 @@ superseded-by:
 
 - **BareMetalInstance** provisioning (separate PRD)
 - **Template parameters**
-- **VM networking** — wizard submits one list-shaped `network_attachments` entry carrying a `ComputeNetworkAttachment` (one VN, one subnet, security groups); no add/remove NIC rows
+- **VM networking** — wizard submits one list-shaped `network_attachments` entry carrying a `ComputeNetworkAttachment` with one Subnet; the effective NetworkACL is inherited from that Subnet and there are no add/remove NIC rows
 - **Tenant-defined cluster hardware** — the wizard does not create, remove, or replace node sets or their `baremetal_instance_type`; the resolved ClusterTemplate owns that structure. The wizard may collect node-set sizes according to Catalog Item policy.
 - **`spec.additional_disks`** — wizard scope undecided ([§5](#5-open-decisions)); default: boot disk only
 
@@ -54,7 +54,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 | Configuration   | `spec.user_data`          | User data (cloud-init / Ignition)        | Text (multiline)                       | Optional |
 | Configuration   | `spec.boot_disk.size_gib` | Boot disk size (GiB)                     | Number                                 | ?        |
 | Configuration   | `spec.run_strategy`       | Run strategy                             | Select (`Always`, `Halted`)            | Required |
-| Networking      | `spec.network_attachments` | Virtual network, subnet, security groups | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
+| Networking      | `spec.network_attachments` | Subnet; effective NetworkACL inherited from the Subnet | Picker ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
 
 **Notes:**
 
@@ -95,7 +95,8 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
   tenant defaults are used when no higher-precedence value exists), and the
   normal omitted-value behavior for `auto_external_ip_attachment` (normally
   `false`). Tenants that need to select an explicit CaaS Subnet,
-  SecurityGroups, or automatic external access use the direct API/CLI.
+  manage NetworkACLs, or request automatic external access use the direct
+  API/CLI.
 
 **Create payload:** Only paths in [§2.1.1](#211-static-wizard-fields) plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`; VM sends `spec.instance_type` and `spec.is_windows` explicitly, not `spec.cores` or `spec.memory_gib`.
 
@@ -132,7 +133,7 @@ Non-editable fields (`editable: false`) are **read-only** on the wizard step (Co
 | `spec.run_strategy` | Pre-select `Always` when no catalog `default`                                                                            |
 | OS family (VM)      | Pre-select **Linux** (`is_windows: false`) when no catalog `default`                                                     |
 | Instance type (VM)  | **Auto-select** when `InstanceTypes.List` returns exactly one option |
-| Networking pickers  | **Auto-select** when a list returns exactly one option (VN → subnet → SGs) |
+| Networking pickers  | **Auto-select** when a list returns exactly one option (VN → subnet) |
 
 #### 2.1.3 Open required fields
 
@@ -146,11 +147,11 @@ The wizard loads picker options from the **public** fulfillment APIs (`osac.publ
 | ------ | ---- | ---- | ------- |
 | Virtual network | `VirtualNetworks.List` | `GET /api/fulfillment/v1/virtual_networks` | Tenant-visible virtual networks |
 | Subnet | `Subnets.List` | `GET /api/fulfillment/v1/subnets` | Subnets in the selected virtual network |
-| Security groups | `SecurityGroups.List` | `GET /api/fulfillment/v1/security_groups` | Security groups in the selected virtual network |
+| NetworkACL handling | No picker API | None | The effective NetworkACL is inherited from the selected Subnet; the wizard does not select or send an ACL reference |
 
 **List request parameters** (all three): optional query `filter` (CEL), `limit`, `offset`, `order`. Tenant scope is implicit from the authenticated session.
 
-**Subnet and security group filters** (after virtual network selection):
+**Subnet filter** (after virtual network selection):
 
 ```text
 this.spec.virtual_network.name == "<vn-name>"
@@ -160,25 +161,23 @@ this.spec.virtual_network.name == "<vn-name>"
 
 | Picker | Option label | Selected value |
 | ------ | ------------ | -------------- |
-| Virtual network | `metadata.name` | VirtualNetwork name — drives subnet/SG list filters only |
+| Virtual network | `metadata.name` | VirtualNetwork name — drives the Subnet list filter only |
 | Subnet | `metadata.name` | `SubnetLocalReference` containing `name` |
-| Security group | `metadata.name` | `SecurityGroupLocalReference` containing `name` (multi-select) |
 
 **Create payload assembly** — one `spec.network_attachments` element:
 
 ```json
 {
-  "subnet": { "name": "<subnet-name>" },
-  "security_groups": [{ "name": "<security-group-name>" }]
+  "subnet": { "name": "<subnet-name>" }
 }
 ```
 
 Per `ComputeNetworkAttachment` in `compute_instance_type.proto` and the
 typed-reference contract in OSAC-1330. The wizard does not send virtual
 network ID in `network_attachments`; placement is implied by the
-Subnet reference (SecurityGroups must belong to the same VirtualNetwork).
+Subnet reference; the selected Subnet determines the effective NetworkACL.
 
-**Load order:** virtual network list → on selection, load filtered subnet and security group lists → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
+**Load order:** virtual network list → on selection, load the filtered Subnet list → auto-select when a list returns exactly one item ([§2.1.2](#212-catalog-overlay-and-defaults)).
 
 ### 2.1.5 VM instance type picker API
 
@@ -287,7 +286,7 @@ flowchart LR
 
 - `ComputeInstanceCatalogItem`, `ClusterCatalogItem` (with `field_definitions`)
 - `ClusterTemplates.Get` (cluster Configuration step — authoritative node-set names, typed BareMetalInstanceType references, and template sizes)
-- `VirtualNetworks.List`, `Subnets.List`, `SecurityGroups.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups` ([§2.1.4](#214-vm-networking-picker-apis))
+- `VirtualNetworks.List`, `Subnets.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/virtual_networks`, `.../subnets` ([§2.1.4](#214-vm-networking-picker-apis))
 - `InstanceTypes.List` (gRPC `osac.public.v1`) / REST `GET /api/fulfillment/v1/instance_types` ([§2.1.5](#215-vm-instance-type-picker-api))
 - ComputeInstance and Cluster create APIs
 - `spec.instance_type` on ComputeInstance ([OSAC-1217](https://redhat.atlassian.net/browse/OSAC-1217), [fulfillment-service PR #735](https://github.com/osac-project/fulfillment-service/pull/735)) — required for VM instance type picker

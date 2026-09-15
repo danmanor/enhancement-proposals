@@ -19,8 +19,9 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 - A tenant can create a cluster with explicit network configuration, specifying which subnet to use; the subnet's effective NetworkACL controls cluster-node traffic
 - A cluster uses a single network attachment — one subnet for all node sets. The system automatically determines which physical interface to use for each node set from its BareMetalInstanceType network ports
 - Tenants can request automatic external IP attachment for cluster API server and ingress endpoints with `--external-ip-attachment`, without pre-creating external IP resources
-- When the network attachment is omitted or empty, the system applies both
-  tenant defaults; when only one field is missing, only that field is defaulted
+- When the network attachment is omitted or empty, the system applies the
+  tenant default Subnet; when an attachment is present without a Subnet, only
+  the missing Subnet field is defaulted
 - Cluster status exposes API server and ingress endpoint addresses after provisioning completes
 - The system provisions suitable bare-metal workers on demand through BMaaS; BMaaS completes the provisioning-network handoff before cluster installation proceeds
 - Auto-provisioned external IPs and external IP attachments are cleaned up when the cluster is deleted

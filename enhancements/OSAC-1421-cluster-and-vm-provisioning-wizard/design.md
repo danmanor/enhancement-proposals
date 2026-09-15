@@ -38,7 +38,7 @@ Rewrite under `osac-ui/apps/app-frontend/src/components/catalogProvision/`. `Cat
 
 Static field paths are hardcoded per resource type (PRD §2.1.1). Catalog `field_definitions` overlay matching static paths on **Configuration**, **Networking** non-picker fields, and **General basics** fields (`ssh_key`, `ssh_public_key`, `pull_secret`) for `display_name`, `editable`, and `validation_schema`. VM picker-backed paths (`spec.instance_type`, `spec.network_attachments` and nested paths) remain API-driven in v1. Cluster `spec.node_sets` is template-backed: the wizard loads the resolved ClusterTemplate and applies Catalog policy only to node-set sizes. Create payloads include only PRD §2.1.1 paths plus catalog item reference; VM hardcodes `spec.image.source_type` = `registry`.
 
-New hooks in `libs/ui-components/src/api/v1/`: instance types, virtual networks, subnets, security groups, cluster catalog items, ClusterTemplates.Get, and cluster create. VM picker fields depend on fulfillment-service `spec.instance_type` and `spec.is_windows` (PRs #735, #734). Cluster Configuration uses `ClusterTemplates.Get` for the authoritative node-set map and typed BareMetalInstanceType references; it does not offer a separate hardware picker.
+New hooks in `libs/ui-components/src/api/v1/`: instance types, virtual networks, subnets, cluster catalog items, ClusterTemplates.Get, and cluster create. VM picker fields depend on fulfillment-service `spec.instance_type` and `spec.is_windows` (PRs #735, #734). Cluster Configuration uses `ClusterTemplates.Get` for the authoritative node-set map and typed BareMetalInstanceType references; it does not offer a separate hardware picker.
 
 ### Workflow Description
 
@@ -94,13 +94,13 @@ Non-editable fields without a catalog `default` render blank and read-only (disa
 | `spec.run_strategy` | `Always` |
 | VM OS family (`spec.is_windows`) | Linux (`false`); wizard always sends an explicit value |
 | Instance type picker | Auto-select when `InstanceTypes.List` returns exactly one option |
-| Networking pickers | Auto-select when a list returns exactly one option (VN → subnet → SGs) |
+| Networking pickers | Auto-select when a list returns exactly one option (VN → subnet) |
 
 **VM Configuration specifics:** `spec.user_data` and `spec.boot_disk.size_gib` are optional — omit from payload when empty. `spec.is_windows` (OS family) uses `RadioButtonField` (Linux / Windows); wizard always sends an explicit value. `spec.instance_type` sends the type name only (not `cores`/`memory_gib`). Instance type labels show `metadata.name`, cores, memory, and **DEPRECATED** when applicable; OBSOLETE types excluded from the picker.
 
 **VM General specifics:** `spec.ssh_key` is optional — prefill catalog `default` on catalog selection when defined; merge catalog `ssh_key` `field_definition` for label, `editable`, and `validation_schema`. Omit from client payload only when blank (tenant cleared or no catalog default). When non-blank, send the parsed plain string (prefilled default or user edit).
 
-**VM Networking specifics:** Load VN list first; on selection, filter subnets and security groups with `this.spec.virtual_network.name == "<vn-name>"`. The picker stores resource names and assembles one `network_attachments` element using OSAC-1330 typed local references: `{ "subnet": { "name": "<subnet-name>" }, "security_groups": [{ "name": "<security-group-name>" }] }`. Virtual network name is not sent in the attachment payload. Although the direct VM API permits omission or an empty list and then applies tenant defaults, the v1 wizard requires an explicit picker selection and always sends one entry; “use defaults” is not a separate wizard option.
+**VM Networking specifics:** Load the VN list first; on selection, filter the Subnet list with `this.spec.virtual_network.name == "<vn-name>"`. The picker stores the selected Subnet name and assembles one `network_attachments` element using the OSAC-1330 typed local reference: `{ "subnet": { "name": "<subnet-name>" } }`. The effective NetworkACL is inherited from the selected Subnet; the wizard does not select or send an ACL reference. The virtual network name is not sent in the attachment payload. Although the direct VM API permits omission or an empty list and then applies tenant defaults, the v1 wizard requires an explicit picker selection and always sends one entry; “use defaults” is not a separate wizard option.
 
 **VM instance-type specifics:** The picker stores the selected instance-type
 name and the payload emits `spec.instance_type: { "name": "<type-name>" }`.
@@ -121,14 +121,15 @@ v1, so it sends neither field. The server applies the normal
 Catalog/Template/default resolution for the omitted attachment (using tenant
 defaults when no higher-precedence value exists) and the normal omitted-value
 behavior for automatic external access (normally `false`). Explicit CaaS
-Subnet/SecurityGroup selection or automatic external access remains available
-through the direct API/CLI.
+Subnet selection or automatic external access remains available through the
+direct API/CLI. NetworkACL association is managed by the NetworkACL resource
+and is inherited from the selected Subnet.
 
 **Step validation:** Next is always enabled. On click, run the step Yup schema, `setTouched` for all step fields, surface inline errors for untouched fields, and show an alert if invalid; do not advance until the step passes.
 
 ### API Extensions
 
-No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `ClusterTemplates.Get`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`, `.../security_groups`), and create APIs. Server-side catalog validation (`catalog_item_validation.go` / `applyFieldDefinitions`) still applies Catalog size policies on create. The wizard does not call `BareMetalInstanceTypes.List` for cluster node-set hardware.
+No API extensions to create payloads. The wizard consumes existing `ComputeInstanceCatalogItems`, `ClusterCatalogItems`, `ClusterTemplates.Get`, `InstanceTypes`, networking list APIs (`GET /api/fulfillment/v1/virtual_networks`, `.../subnets`), and create APIs. Server-side catalog validation (`catalog_item_validation.go` / `applyFieldDefinitions`) still applies Catalog size policies on create. The wizard does not call `BareMetalInstanceTypes.List` for cluster node-set hardware.
 
 ### Implementation Details/Notes/Constraints
 
@@ -323,7 +324,7 @@ apps/app-frontend/src/pages/
 #### Adapter-specific component tests
 
 - **VM Configuration:** OS family radio toggles `spec.is_windows`; obsolete instance types excluded from picker options.
-- **VM Networking:** Subnet/SG lists filter after VN selection; changing VN clears dependent picks unless auto-select applies.
+- **VM Networking:** The Subnet list filters after VN selection; changing VN clears the dependent Subnet unless auto-select applies. The effective NetworkACL is inherited from the selected Subnet and is not an attachment picker.
 - **Cluster Configuration:** `ClusterTemplates.Get` supplies the node-set map; node-set names and typed `baremetal_instance_type` references are read-only; Catalog policy controls only `size`; invalid/missing template node sets block progression; payload preserves template map keys and nested reference objects.
 - **Cluster Networking:** Optional CIDR fields — empty allowed; invalid format blocked on Next only when non-empty.
 
