@@ -45,7 +45,7 @@ requirements.
 ComputeInstance already participates in the networking API. The legacy flow
 being replaced by the shared dispatcher was:
 
-1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
+1. Tenant creates VirtualNetwork, Subnet, NetworkACL via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
 3. Tenant creates ComputeInstance with `network_attachments` (resource-specific message, single-interface only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
@@ -101,12 +101,14 @@ being replaced by the shared dispatcher was:
      - the configured manager creates the subnet backend; when both managers are configured, the Fabric Manager creates the VLAN/fabric segment and the K8s Manager creates the CUDN overlay and bridge
    - After both complete: subnet is Ready. The CUDN namespace is the deployment target for VMs.
 
-3. **Tenant creates SecurityGroup:**
+3. **Tenant creates NetworkACL:**
    ```bash
-   osac create security-group --virtual-network my-net --name my-sg \
+   osac create network-acl --virtual-network my-net --subnet my-subnet --name my-nacl \
      --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
    ```
-   - Dispatcher → the configured network manager's `create_security_group` operation
+   - The NetworkACL is associated with the Subnet. It is not attached to an
+     individual VM.
+   - Dispatcher → the configured network manager's `create_network_acl` operation
 
 #### VM Creation
 
@@ -114,7 +116,7 @@ being replaced by the shared dispatcher was:
    ```bash
    # Explicit networking:
    osac create computeinstance --template ocp_virt_vm \
-     --network-attachment subnet=my-subnet,security-groups=my-sg \
+     --network-attachment subnet=my-subnet \
      --name my-vm
 
    # Or with defaults + auto external access:
@@ -122,8 +124,8 @@ being replaced by the shared dispatcher was:
      --external-ip-attachment --name my-vm
    ```
    - fulfillment-service:
-     - If `network_attachments` is omitted or empty: populates both tenant defaults. For a supplied attachment, defaults only a missing subnet or empty SecurityGroup list (see Default Networking PRD)
-     - Validates: at most one attachment, all resolved Subnet and SecurityGroup references exist and are Ready, and the single-entry primary rule is satisfied
+   - If `network_attachments` is omitted or empty: populates the tenant default Subnet. For a supplied attachment, defaults only a missing subnet (see Default Networking PRD)
+     - Validates: at most one attachment, the resolved Subnet exists and is Ready, the Subnet has an effective NetworkACL, and the single-entry primary rule is satisfied
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `network_attachments`
 
@@ -143,7 +145,8 @@ being replaced by the shared dispatcher was:
      - Empty list: this is resolved to the tenant defaults before the CR is created
      - Single attachment: creates VM with one `l2bridge` interface in the subnet's CUDN namespace
      - Multiple entries are rejected by fulfillment-service and never reach the template
-   - Reads the resolved `security_groups` local references → adds their canonical names as pod labels
+   - Reads the effective NetworkACL from the selected Subnet; no ACL reference
+     is copied into the VM attachment or pod labels
    - Creates DataVolume + KubeVirt VirtualMachine
    - VM gets IP from each CUDN (via DHCP)
    - VM is on the fabric (overlay bridged at subnet creation)
@@ -178,7 +181,7 @@ being replaced by the shared dispatcher was:
 9. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-created: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created resources are NOT cleaned up** — if the tenant created an ExternalIP explicitly, it persists until the tenant deletes it. A manually created ExternalIPAttachment that targets the ComputeInstance remains a reverse reference and blocks ComputeInstance deletion until the tenant deletes the attachment; it is not detached or changed to Pending implicitly.
-   - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+   - **Default networking resources (VN, Subnet, NetworkACL, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
    - No `move_network_attachment` call — the VM lives on the CUDN overlay, not a fabric switch port, so it is never parked or port-moved (the port-move primitive and parking apply only to fabric-attached BM servers and CaaS agents)
@@ -196,7 +199,6 @@ The VM-specific mapping is:
 |---|---|---|
 | `spec.network_attachments` | One optional `--network-attachment` | Zero or one attachment; repeating the option is rejected |
 | `ComputeNetworkAttachment.subnet` | `subnet=<name>` inside the attachment value | Optional; omission receives only the tenant default Subnet |
-| `ComputeNetworkAttachment.security_groups` | One or more repeated `security-groups=<name>` keys inside the attachment value | Optional; omission receives only the tenant default SecurityGroup; supplied groups are all used |
 | `ComputeNetworkAttachment.primary` | Not emitted by the CLI | Omission is implicitly primary; `true` is accepted only through a structured client; `false` is rejected |
 | `auto_external_ip_attachment` | `--external-ip-attachment` | Presence means `true`; omission means `false`; create-time only |
 
@@ -204,17 +206,17 @@ The canonical explicit command is:
 
 ```bash
 osac create computeinstance --template ocp_virt_vm \
-  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --network-attachment subnet=my-subnet \
   --name my-vm
 ```
 
 The CLI must not expose `--network-attachments`, `interface=...`, or a
-multi-NIC mode for VMaaS. Omitting `--network-attachment` invokes both tenant
-defaults; supplying only one attachment key invokes field-level defaulting for
-the other key. The CLI constructs typed local references for the Subnet and
-SecurityGroups and sends the resource-specific `ComputeNetworkAttachment`
-message. VM network fields and `auto_external_ip_attachment` cannot be changed
-through update or patch commands; delete and recreate is required.
+multi-NIC mode for VMaaS. Omitting `--network-attachment` invokes the tenant
+default Subnet. The CLI constructs a typed local Subnet reference and sends
+the resource-specific `ComputeNetworkAttachment` message. NetworkACL
+association is managed through the NetworkACL resource. VM network fields and
+`auto_external_ip_attachment` cannot be changed through update or patch
+commands; delete and recreate is required.
 
 ### API Extensions
 
@@ -225,8 +227,7 @@ Replace the shared `NetworkAttachment` with `ComputeNetworkAttachment`:
 ```protobuf
 message ComputeNetworkAttachment {
   SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
-  repeated SecurityGroupLocalReference security_groups = 2; // empty -> tenant default SecurityGroup
-  optional bool primary = 3;            // one attachment is implicitly primary
+  optional bool primary = 2;            // one attachment is implicitly primary
 }
 
 message ComputeInstanceSpec {
@@ -303,29 +304,23 @@ Template-based, and Catalog-based ComputeInstance create path.
   accepted for the sole entry; explicit `false` is rejected. A defaulted entry
   is persisted with the canonical primary meaning, but an explicit `false`
   must never be rewritten to `true`.
-- Unknown attachment fields, a malformed subnet reference, a malformed
-  SecurityGroup reference, or a malformed Boolean presence encoding is
+- Unknown attachment fields, a malformed subnet reference, or a malformed
+  Boolean presence encoding is
   rejected by the API shape layer.
 
 **Attachment resolution and references:**
 
-- Missing or empty attachment input resolves to exactly
-  one attachment containing the tenant's default Subnet and default
-  SecurityGroup. If either default is absent or not Ready, return the shared
-  no-default or readiness error; do not create a VM with an unresolved
-  attachment.
-- A supplied single attachment defaults only its missing fields. An omitted
-  subnet receives only the default Subnet. A missing or empty
-  `security_groups` list receives only the default SecurityGroup. A supplied
-  subnet and non-empty SecurityGroup list are preserved exactly.
-- After resolution, the Subnet must exist, be `Ready`, be IPv4, and belong to
-  the effective tenant/project. Every SecurityGroup must exist, be `Ready`,
-  belong to the same tenant/project and the same VirtualNetwork as the
-  Subnet, and be unique in the list.
-- The resolved attachment must reference one VirtualNetwork. A Catalog or
-  Template value that resolves to a Subnet and SecurityGroup in different
-  VirtualNetworks is rejected; the defaulting layer must not silently replace
-  either supplied value to repair the mismatch.
+- Missing or empty attachment input resolves to exactly one attachment
+  containing the tenant's default Subnet. If the default Subnet is absent or
+  not Ready, return the shared no-default or readiness error; do not create a
+  VM with an unresolved attachment. The effective NetworkACL is inherited
+  from that Subnet.
+- A supplied single attachment defaults only a missing subnet. After
+  resolution, the Subnet must exist, be `Ready`, be IPv4, and belong to the
+  effective tenant/project. The Subnet must have an effective NetworkACL.
+- The resolved attachment references one VirtualNetwork. A Catalog or
+  Template value that resolves to an invalid Subnet is rejected; defaulting
+  must not silently replace an explicitly supplied Subnet.
 - The resolved Subnet must have the hosting namespace/CUDN placement required
   by the selected K8s manager. Missing placement status, a failed CUDN, or an
   unsupported manager capability is a provisioning precondition failure, not
@@ -349,8 +344,7 @@ Template-based, and Catalog-based ComputeInstance create path.
 
 - The ComputeInstance CRD repeats the maximum-cardinality and optional
   `primary` checks with CEL. It also makes the entire resolved attachment
-  list, every Subnet/SecurityGroup reference, and `primary` immutable after
-  creation.
+  list, every Subnet reference, and `primary` immutable after creation.
 - `PrimarySubnetRef()` returns the sole resolved attachment's Subnet and
   returns no value only before default resolution has populated the CR. It
   must never select an arbitrary first entry from an invalid multi-entry list.
@@ -366,7 +360,7 @@ Template-based, and Catalog-based ComputeInstance create path.
 
 - When `auto_external_ip_attachment` is true, the same request first passes
   normal VM attachment validation. Automatic external access cannot bypass
-  the required default Subnet or SecurityGroup checks.
+  the required default Subnet or its effective NetworkACL.
 - The selected pool must be Ready, IPv4, and have capacity. Pool selection is
   deterministic among equal-capacity pools. Capacity reservation, the parent
   ComputeInstance, ExternalIP, and Pending ExternalIPAttachment are persisted
@@ -384,7 +378,7 @@ Template-based, and Catalog-based ComputeInstance create path.
 **Update, delete, and status validation:**
 
 - Update, patch, replace, and field-mask requests that change either
-  attachment field, any nested Subnet/SecurityGroup/primary value, or
+  attachment field, any nested Subnet/primary value, or
   `auto_external_ip_attachment` are rejected. The supported change is delete
   and recreate.
 - A delete is blocked by the shared dependency guards while the VM has a
@@ -394,7 +388,8 @@ Template-based, and Catalog-based ComputeInstance create path.
   finalizer removal.
 - Status writes may update only controller-owned conditions, provisioning
   state, discovered IP, and finalizers. A status callback cannot mutate the
-  resolved network spec or make an unready Subnet/SecurityGroup usable.
+  resolved network spec or make an unready Subnet or its effective NetworkACL
+  usable.
 
 Any validation failure above is surfaced with a field path where possible,
 for example `spec.network_attachments[1]`,
@@ -411,9 +406,9 @@ default. The field is the only supported ComputeInstance networking input.
 Catalog resolution happens before tenant default networking. A locked list
 rejects conflicting tenant input. An editable list accepts tenant input,
 otherwise uses its Catalog default, then the Template default, and finally
-defaults only the missing fields from the tenant's default Subnet and
-SecurityGroup. An explicitly supplied subnet or non-empty SecurityGroup list
-is never replaced.
+defaults only a missing Subnet from the tenant's default Subnet. An
+explicitly supplied Subnet is never replaced; NetworkACL association is not a
+Catalog or workload field.
 
 The editable policy applies only while creating the ComputeInstance. After
 creation, the complete resolved attachment list and every network field are
@@ -423,10 +418,10 @@ changed here.
 
 The Catalog list must obey the same Compute rules as direct creation: it may
 contain zero or one attachment, and a supplied attachment is implicit primary
-when `primary` is omitted. Catalog policy can govern subnet, SecurityGroup,
-and the compatible `primary` value; CUDN/NAD placement and hosting-cluster
-selection remain system concerns. A shared Catalog Item cannot lock or
-default tenant-local Subnet or SecurityGroup references.
+when `primary` is omitted. Catalog policy can govern the Subnet and the
+compatible `primary` value; NetworkACL association, CUDN/NAD placement, and
+hosting-cluster selection remain system concerns. A shared Catalog Item cannot
+lock or default a tenant-local Subnet reference.
 
 #### Template Changes (osac-aap)
 
@@ -443,9 +438,9 @@ default tenant-local Subnet or SecurityGroup references.
 | fulfillment-service | Validate `network_attachments`, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
 | osac-operator ComputeInstance controller | Resolve subnet → namespace, trigger AAP, clean up auto-provisioned resources |
 | osac-operator ComputeInstance feedback controller | Watch the sole KubeVirt VMI interface status, discover the attachment IP, Signal fulfillment-service |
-| osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
+| osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, NetworkACL, ExternalIP) |
 | AAP template (ocp_virt_vm) | Create single-interface KubeVirt VM in the correct namespace |
-| configured network manager(s) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call after subnet setup |
+| configured network manager(s) | VN/Subnet/NetworkACL/ExternalIP provisioning; no per-VM call after subnet setup |
 | k8s_manager (Ansible role, when configured) | Create/bridge the CUDN overlay at subnet creation; no per-VM call |
 
 #### Single Attachment Resolution
@@ -475,8 +470,8 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup enforcement follows the [Unified Networking SecurityGroup rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics) for explicit and default SecurityGroups.
-- The VM's single network interface uses the same SecurityGroup enforcement as the shared networking contract.
+- NetworkACL enforcement follows the [Unified Networking NetworkACL rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#networkacl-rule-semantics) for explicit and default NetworkACLs.
+- The VM's single network interface uses the same NetworkACL enforcement as the shared networking contract.
 
 ### Failure Handling and Recovery
 

@@ -24,7 +24,7 @@ patterns rather than inventing a separate harness.
 | Unit | Ginkgo v2/Gomega; fulfillment-service in-memory DAO and fake manager state | `fulfillment-service/internal/servers/default_networking_provisioner_test.go`, `fulfillment-service/internal/servers/external_ip_pool_selector_test.go`, `fulfillment-service/internal/servers/cidr_validation_test.go`, `fulfillment-service/internal/servers/private_virtual_networks_server_test.go` |
 | Integration | Ginkgo v2/Gomega; fulfillment-service integration harness with private gRPC clients, ephemeral database, and Kubernetes test clients | `fulfillment-service/it/it_default_networking_test.go`, `fulfillment-service/it/it_tenant_onboarding_test.go`, `fulfillment-service/it/it_validation_test.go`, `fulfillment-service/it/it_external_ip_test.go` |
 | Operator integration | Ginkgo v2/Gomega with Kind and Kubernetes CR clients | `osac-operator/test/integration/networking_test.go` |
-| E2E | pytest; connected single-hub deployment, `GRPCClient`, `K8sClient`, bounded polling helpers | `tests/e2e/vmaas/conftest.py`, `tests/e2e/core/grpc_client.py`, `tests/e2e/core/k8s_client.py`, `tests/e2e/core/helpers.py`, `tests/e2e/vmaas/sanity/test_virtual_network_lifecycle.py`, `tests/e2e/vmaas/sanity/test_subnet_lifecycle.py`, `tests/e2e/vmaas/sanity/test_security_group_lifecycle.py`, `tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_capacity.py`, `tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_lifecycle.py` |
+| E2E | pytest; connected single-hub deployment, `GRPCClient`, `K8sClient`, bounded polling helpers | `tests/e2e/vmaas/conftest.py`, `tests/e2e/core/grpc_client.py`, `tests/e2e/core/k8s_client.py`, `tests/e2e/core/helpers.py`, `tests/e2e/vmaas/sanity/test_virtual_network_lifecycle.py`, `tests/e2e/vmaas/sanity/test_subnet_lifecycle.py`, `tests/e2e/vmaas/sanity/test_network_acl_lifecycle.py`, `tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_capacity.py`, `tests/e2e/vmaas/regression/external_ip/test_external_ip_pool_lifecycle.py` |
 
 ### Shared test data and assertion contract
 
@@ -43,10 +43,12 @@ Unless a case overrides the value, use these concrete objects:
 | MetalLB prefix | `32` |
 | Default label | `osac.openshift.io/default: "true"` |
 | Auto-created label | `osac.openshift.io/auto-created: "true"` |
+| Default ACL policy | Explicit deny-all ingress and allow-all egress rules on each tenant's default NetworkACL |
+| Deployment baseline | Provider-owned least-specific fallback, hard-coded to permit all traffic and unavailable to tenant configuration |
 
 Use private gRPC methods such as `NetworkClasses/Create`, `Tenants/Create`,
 `Tenants/Get`, `VirtualNetworks/List`, `VirtualNetworks/Get`,
-`Subnets/List`, `SecurityGroups/List`, and `ExternalIPs/Create`. For rejected
+`Subnets/List`, `NetworkACLs/List`, and `ExternalIPs/Create`. For rejected
 requests assert the gRPC status described by the shared design:
 
 - `InvalidArgument` for malformed, missing, contradictory, or unsupported
@@ -60,7 +62,7 @@ requests assert the gRPC status described by the shared design:
 Assert the exact condition reason and message where the Default Networking
 design defines one, including `ResourcesPending`, `AllResourcesReady`,
 `NoDefaultNetworking`, `VirtualNetworkProvisioningFailed`,
-`SubnetProvisioningFailed`, `SecurityGroupProvisioningFailed`,
+`SubnetProvisioningFailed`, `NetworkACLProvisioningFailed`,
 `NATGatewayProvisioningFailed`, and:
 
 `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
@@ -97,14 +99,14 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 - The test database has no active `test-default-nc`.
 - The caller uses the provider/private client authorized to create a
   deployment NetworkClass.
-- The provider has registered the current `netris` Fabric Manager, the
-  deployment is connected and single-hub, and the CaaS/MetalLB VIP path is
+- The provider has registered the configured Fabric Manager, the deployment
+  is connected and single-hub, and the CaaS/MetalLB VIP path is
   enabled for this validation case.
 
 ##### Steps
 
-1. Call `NetworkClasses/Create` with `metadata.name: test-default-nc`,
-   `fabric_manager: netris`, and:
+1. Call `NetworkClasses/Create` with `metadata.name: test-default-nc`, a
+   configured `fabric_manager`, and:
 
    ```yaml
    spec:
@@ -188,7 +190,7 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 1. Call `Tenants/Create` with `metadata.name: test-defnet-001`.
 2. Poll `Tenants/Get` with `wait_for_tenant_condition` until the condition
    type is `DEFAULT_NETWORKING_READY`.
-3. List `VirtualNetworks`, `Subnets`, and `SecurityGroups` with the tenant and
+3. List `VirtualNetworks`, `Subnets`, and `NetworkACLs` with the tenant and
    default-label filter:
 
    ```text
@@ -204,12 +206,11 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 ##### Expected results
 
 - `Tenants/Create` returns `OK` and one tenant ID.
-- Exactly one default VirtualNetwork, one IPv4 Subnet, and one fallback
-  SecurityGroup exist for `test-defnet-001`.
+- Exactly one default VirtualNetwork, one IPv4 Subnet, and one default
+  NetworkACL exist for `test-defnet-001`.
+- The default NetworkACL is explicitly associated with the default Subnet and
+  contains deny-all ingress and allow-all egress rules.
 - Each default resource has tenant ownership and the default label.
-- The deployment baseline is separate from the fallback SecurityGroup and its
-  hard-coded `permit` action remains effective even if the onboarding-created
-  fallback group has no rules.
 - NATGateway exists only when NAT capability is enabled, carries the default
   label, and references a Ready/Allocated unconsumed ExternalIP.
 - `DefaultNetworkingReady` transitions from `ResourcesPending` to
@@ -251,7 +252,8 @@ design defines one, including `ResourcesPending`, `AllResourcesReady`,
 
 ##### Expected results
 
-- VN, Subnet, and fallback SecurityGroup reach Ready.
+- VN, Subnet, and the default NetworkACL associated with the default Subnet
+  reach Ready.
 - No `NATGateways/Create` call is dispatched to any manager.
 - NATGateway is excluded from the readiness set; it is not left Pending or
   Failed.
@@ -282,7 +284,7 @@ and reconciliation patterns.
 1. Submit two concurrent `Tenants/Create`/onboarding requests for
    `test-idempotent-001`.
 2. Interrupt reconciliation after VN creation, after Subnet creation, and
-   after SecurityGroup creation, then invoke the tenant signal/reconciliation
+   after NetworkACL creation, then invoke the tenant signal/reconciliation
    path.
 3. Repeat onboarding after the graph is complete.
 4. Onboard `test-tenant-delete-001`, wait for its default graph to be Ready,
@@ -293,7 +295,7 @@ and reconciliation patterns.
 ##### Expected results
 
 - The matching graph is adopted idempotently.
-- Exactly one default VN, Subnet, and SecurityGroup exist after every retry.
+- Exactly one default VN, Subnet, and NetworkACL exist after every retry.
 - No duplicate jobs, ExternalIP capacity reservations, or default resources
   are created.
 - Deleting `test-tenant-delete-001` removes its default resources through
@@ -332,7 +334,7 @@ and reconciliation patterns.
 | VN Pending | `DefaultNetworkingReady=False`, reason `ResourcesPending`; workload create is rejected with `FailedPrecondition`. |
 | VN Failed | `DefaultNetworkingReady=False`, reason `VirtualNetworkProvisioningFailed`; the event includes `DefaultNetworkingFailed`. |
 | Subnet Failed | `DefaultNetworkingReady=False`, reason `SubnetProvisioningFailed`; no workload receives a default Subnet. |
-| SecurityGroup Failed | `DefaultNetworkingReady=False`, reason `SecurityGroupProvisioningFailed`; no workload receives a default SecurityGroup. |
+| NetworkACL Failed | `DefaultNetworkingReady=False`, reason `NetworkACLProvisioningFailed`; no workload relying on the default Subnet is created while its effective ACL is unavailable. |
 | Supported NATGateway Failed | `DefaultNetworkingReady=False`, reason `NATGatewayProvisioningFailed`. |
 | Feedback for another tenant/VN | Ignore the feedback; the target tenant condition and resource state do not change. |
 | All required resources Ready | `DefaultNetworkingReady=True`, reason `AllResourcesReady`; all returned references are Ready, and the `DefaultNetworkingReady` event is present. |
@@ -356,7 +358,7 @@ helpers.
 
 1. Fail VN provisioning and read `Tenants/Get` plus the Kubernetes Tenant CR.
 2. Restore the manager and signal reconciliation.
-3. Repeat steps 1–2 for Subnet, SecurityGroup, and supported NATGateway.
+3. Repeat steps 1–2 for Subnet, NetworkACL, and supported NATGateway.
 4. For a terminal graph error, delete the tenant as specified by the design,
    recreate it, and poll until recovery completes.
 
@@ -385,13 +387,13 @@ service-specific VM/CaaS/BMaaS networking test plans.
 
 ##### Preconditions
 
-- Tenant `test-defaulting-001` has Ready default Subnet
-  `default-ipv4` (`10.200.0.0/20`) and default SecurityGroup `default-sg`.
+- Tenant `test-defaulting-001` has a Ready default Subnet
+  `default-ipv4` (`10.200.0.0/20`) with the Ready system-created default
+  NetworkACL associated to it.
 - Create an explicit Ready alternate Subnet `explicit-subnet`
-  (`10.200.1.0/24`) in the same VN and an explicit Ready SecurityGroup
-  `explicit-sg`.
-- Use typed local references: `{name: "explicit-subnet"}` and
-  `{name: "explicit-sg"}`.
+  (`10.200.1.0/24`) in the same VN and associate a Ready NetworkACL
+  `explicit-acl` with it. Its effective ACL is `explicit-acl`.
+- Use the typed local reference `{name: "explicit-subnet"}`.
 
 ##### Steps
 
@@ -405,15 +407,14 @@ service-specific VM/CaaS/BMaaS networking test plans.
 
 | Request | Expected result and assertion |
 |---|---|
-| VM `network_attachments` omitted | One resolved attachment: Subnet `default-ipv4`, SecurityGroup `default-sg`, `primary=true`. |
+| VM `network_attachments` omitted | One resolved attachment: Subnet `default-ipv4`, `primary=true`; the effective ACL is obtained from the Subnet. |
 | VM attachment list empty | Same result as omitted; no second attachment is created. |
-| Cluster `network_attachment` omitted | One cluster attachment containing both defaults. |
+| Cluster `network_attachment` omitted | One cluster attachment containing the default Subnet; the effective ACL is obtained from the Subnet. |
 | Cluster attachment message empty | Same result as omitted; no arbitrary Subnet is selected. |
-| BM `network_attachments` omitted or empty | Exactly one resolved attachment with default Subnet, default SecurityGroup, and the first eligible fabric interface. |
-| Only Subnet supplied as `{name: "explicit-subnet"}` | Preserve `explicit-subnet`; fill only `default-sg`. |
-| Only SecurityGroup supplied as `[{name: "explicit-sg"}]` | Preserve `explicit-sg`; fill only `default-ipv4`. |
-| Complete Subnet and SecurityGroup input supplied | Preserve both references and do not replace them with defaults. |
-| Non-Ready explicit Subnet or SecurityGroup | `FailedPrecondition`; no fallback substitution occurs. |
+| BM `network_attachments` omitted or empty | Exactly one resolved attachment with default Subnet and the first eligible fabric interface; the effective ACL is obtained from the Subnet. |
+| Only Subnet supplied as `{name: "explicit-subnet"}` | Preserve `explicit-subnet`; its effective ACL is obtained from the Subnet. |
+| NetworkACL supplied inside a workload attachment | `InvalidArgument`; ACL membership is managed only through NetworkACL-to-Subnet association. |
+| Non-Ready explicit Subnet | `FailedPrecondition`; no default substitution occurs. |
 | VM/BM list has two attachments | `InvalidArgument`; no workload is persisted or dispatched. |
 | VM attachment has `primary=false` | `InvalidArgument`; the supported single attachment is always primary. |
 
@@ -424,19 +425,19 @@ service-specific VM/CaaS/BMaaS networking test plans.
 | Unit, integration, E2E rejection | critical | automated |
 
 **Implementation references:** `private_virtual_networks_server_test.go`,
-`private_subnets_server_test.go`, `security_groups_server_test.go`,
+`private_subnets_server_test.go`, `network_acls_server_test.go`,
 `it_validation_test.go`, and `tests/e2e/vmaas/regression/test_name_immutability.py`.
 
 ##### Preconditions
 
-- Create Ready default VN `default`, Subnet `default-ipv4`, and fallback
-  SecurityGroup `default-sg` for `test-defaulting-001`.
+- Create Ready default VN `default`, Subnet `default-ipv4`, and the default
+  NetworkACL associated with that Subnet for `test-defaulting-001`.
 - Create a VM referencing `default-ipv4` so deletion has a dependency.
 
 ##### Steps
 
 1. Call `VirtualNetworks/Update`, `Subnets/Update`, and
-   `SecurityGroups/Update` with a network-owned field mask.
+   `NetworkACLs/Update` with a network-owned field mask.
 2. Repeat with `PATCH` and full replacement payloads.
 3. Call `Subnets/Delete` while the VM exists.
 4. Delete the VM, then call `Subnets/Delete` and recreate the desired Subnet.
@@ -458,7 +459,7 @@ service-specific VM/CaaS/BMaaS networking test plans.
 | Unit, integration, E2E rejection | critical | automated where user-visible |
 
 **Implementation references:** `default_networking_provisioner_test.go`,
-`security_groups_server_test.go`, `it_validation_test.go`, and
+`network_acls_server_test.go`, `it_validation_test.go`, and
 `tests/e2e/core/grpc_client.py` request/error helpers.
 
 ##### Cases
@@ -466,9 +467,11 @@ service-specific VM/CaaS/BMaaS networking test plans.
 - Tenant Admin creates a replacement default in the same effective tenant
   scope after deleting the old default and removing its dependencies.
 - Repeat the authorized replacement flow for the default VirtualNetwork,
-  default Subnet, fallback SecurityGroup, and supported default NATGateway.
-- Replacement fallback SecurityGroup has an empty rule list.
-- Non-default tenant-created SecurityGroup has an empty rule list.
+  default Subnet, default NetworkACL, and supported default NATGateway.
+- Replacement default NetworkACL contains deny-all ingress and allow-all
+  egress and is associated with the default Subnet.
+- Non-default tenant-created NetworkACL has no Subnet association or has an
+  empty rule list.
 - A second active default of the same kind is created.
 - A caller supplies the default label for another tenant, wrong VN, wrong
   address family, non-canonical CIDR, or an unauthorized caller tries to set
@@ -483,8 +486,9 @@ service-specific VM/CaaS/BMaaS networking test plans.
 - Each supported default resource kind allows at most one active default, and
   replacement uses the ordinary IPv4, same-VN, readiness, manager-capability,
   and immutable-field validation for that kind.
-- The single validated replacement fallback may have zero rules. Every other
-  tenant-created SecurityGroup requires at least one valid rule.
+- The replacement default must retain the explicit default ACL policy. Every
+  other user-created NetworkACL requires at least one valid rule and one or
+  more explicit Subnet associations.
 - Competing defaults, wrong ownership/scope, invalid parent/family/CIDR,
   unauthorized labels, and premature replacement are rejected before
   persistence.
@@ -650,12 +654,12 @@ and `tests/e2e/core/helpers.py` `assert_grpc_rejected`/polling helpers.
 | Unsupported request | Expected result |
 |---|---|
 | Tenant supplies custom default CIDRs or provider defaults | `PermissionDenied`/`InvalidArgument`; provider defaults remain unchanged. |
+| Tenant supplies a deployment-baseline action or override | `InvalidArgument`/`PermissionDenied`; the provider-owned baseline remains hard-coded to permit all traffic. |
 | Tenant requests an automatic second VN or Subnet | `InvalidArgument`; no second resource or manager job is created. |
 | Existing tenant is retroactively assigned defaults | No mutation; request is rejected or excluded by the API contract. |
 | UI-only simplified creation through the API/CLI | No hidden UI behavior is exposed; normal API validation applies. |
-| Ordinary tenant-created empty SecurityGroup used as fallback | `InvalidArgument`; only the single validated onboarding or authorized replacement fallback may be empty because the deployment baseline is hard-coded `permit`. |
-| Authorized replacement fallback SecurityGroup with empty rules | Accepted only after the old default and its dependencies are removed, with correct scope, ownership, label, parent, family, and readiness validation. |
-| Configurable deployment baseline action or tenant baseline override | Rejected; the deployment baseline remains the provider-owned hard-coded `permit` policy. |
+| Ordinary tenant-created empty NetworkACL or NetworkACL without Subnet associations | `InvalidArgument`; user-created ACLs require at least one rule and one or more explicit Subnet associations. |
+| Authorized replacement default NetworkACL without the default ACL policy or default Subnet association | `InvalidArgument`; the replacement must install deny-all ingress and allow-all egress and be associated with the default Subnet. |
 | Workload omits networking while defaults are missing | `FailedPrecondition` with `No default networking resources available. Please contact your administrator.`; no workload or attachment is persisted. |
 | Workload references Pending or Failed defaults | `FailedPrecondition`; no workload or attachment is persisted and no fallback substitution occurs. |
 | Delete a default resource with active dependents | `FailedPrecondition`; parent and dependent resources remain. |
@@ -683,8 +687,8 @@ it must not introduce a second defaulting path.
 
 **Unit:** Parse `osac create computeinstance`, `osac create
 baremetalinstance`, and `osac create cluster` with no
-`--network-attachment`, with only `subnet=...`, with only
-`security-groups=...`, and with all supported fields. Verify that the parser
+`--network-attachment`, with only `subnet=...`, and with all supported fields.
+Verify that the parser
 preserves omitted fields for server-side defaulting, maps the resource-specific
 typed attachment message, and rejects empty compound values, unknown keys,
 empty keys/values, IPv6 CIDRs, multiple attachment options, `primary=false`,
@@ -695,11 +699,9 @@ create-time boolean and has no update/patch form.
 **Integration:** Submit each parsed request through the public and private
 validation paths and compare it with the equivalent direct API request:
 
-- omitted CLI attachment resolves both fields from the tenant defaults, while
+- omitted CLI attachment resolves the Subnet from the tenant default, while
   the equivalent empty attachment message follows the API-level R4 case;
-- an attachment containing only Subnet or only SecurityGroups fills only the
-  missing field from the default;
-- a complete attachment preserves the explicit references;
+- an attachment containing only Subnet preserves the explicit reference;
 - an invalid explicit reference fails instead of silently falling back; and
 - a pending or failed default returns the documented readiness error.
 
@@ -716,7 +718,7 @@ Cluster for each of these two states:
 2. The flag omitted: verify the switch is `false`, no automatic ExternalIP or
    attachment is created, and no pool capacity is consumed.
 
-For both states, exercise omitted, partial, and complete CLI networking
+For both states, exercise omitted and explicit CLI Subnet networking
 attachments. Attempt an empty compound value, a conflicting explicit
 reference, a second attachment, and a network-owned update/patch; verify the
 expected validation error, no fallback over an invalid explicit value, and no
@@ -731,7 +733,7 @@ the R4 matrix.
 - Every onboarding and defaulting rule maps to a unit or integration test.
 - Combined-manager and K8s-only supported workflows have E2E coverage.
 - All three workload services have omitted/empty/partial/complete coverage.
-- Authorized default replacement, fallback empty-rule handling, and ordinary
-  empty SecurityGroup rejection are covered.
+- Authorized default replacement, default ACL policy validation, and ordinary
+  empty/unassociated NetworkACL rejection are covered.
 - Failure, retry, idempotency, capacity exhaustion, cleanup, and immutability
   tests assert exact condition reasons, gRPC statuses, or resource fields.

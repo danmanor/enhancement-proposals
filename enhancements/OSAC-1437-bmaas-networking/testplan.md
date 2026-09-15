@@ -37,17 +37,17 @@
 
 | Input | Expected result |
 |---|---|
-| List omitted/empty | One default Subnet, SecurityGroup, first fabric interface |
-| Only Subnet | Preserve Subnet; fill only SecurityGroups/interface |
-| Only SecurityGroups | Preserve SecurityGroups; fill only Subnet/interface |
-| Only interface | Preserve interface; fill only Subnet/SecurityGroups |
+| List omitted/empty | One default Subnet, effective NetworkACL from that Subnet, first fabric interface |
+| Only Subnet | Preserve Subnet; fill only interface; inherit the effective NetworkACL |
+| Only interface | Preserve interface; fill only Subnet; inherit the effective NetworkACL |
 | Complete entry | Preserve every supplied field |
 | Invalid explicit value | Reject; never replace with default |
 
 ##### Expected results
 
 - Persisted BM resource contains exactly one attachment after resolution.
-- All references are Ready, same scope, same VN, IPv4, and unique.
+- The Subnet and its effective NetworkACL are Ready, in the same scope and
+  VirtualNetwork, and IPv4.
 - Omitted/true primary is accepted; sole entry is implicitly primary.
 
 #### TC-R1-02: Any multi-entry list and any explicit false-primary input are rejected
@@ -61,8 +61,9 @@
 - More than one `network_attachments` entry is rejected before interface
   discovery, persistence, capacity reservation, or dispatch.
 - Explicit `primary: false` is rejected.
-- Unknown nested attachment fields, malformed typed Subnet/SecurityGroup
-  references, and malformed `primary` presence/encoding are rejected before
+- Unknown nested attachment fields, a NetworkACL supplied inside the
+  attachment, malformed typed Subnet references, and malformed `primary`
+  presence/encoding are rejected before
   interface discovery or persistence.
 - Direct API, Catalog, private CaaS, CRD, and controller paths agree.
 
@@ -167,8 +168,9 @@
 - Tenant cannot reach the host before the port move and readiness.
 - Port move uses provisioning-network → tenant-network direction and selected
   logical interface only.
-- The CRD contains the same resolved typed Subnet, SecurityGroups, interface,
-  and primary value that passed API validation.
+- The CRD contains the same resolved typed Subnet, interface, and primary
+  value that passed API validation. The worker uses the effective NetworkACL
+  inherited from the Subnet; no ACL reference is copied into the attachment.
 - Host does not retain the provisioning network after handoff.
 - Deployment-owned provisioning network is consumed, not created, by BMaaS.
 
@@ -311,10 +313,11 @@
 
 ##### Expected results
 
-- Private request contains exactly one attachment with Cluster Subnet,
-  SecurityGroups, and immutable node-set fabric interface.
-- BMaaS revalidates port role, type, readiness, and same-VN. For the trusted
-  private CaaS path, network references are resolved in the source Cluster's
+- Private request contains exactly one attachment with Cluster Subnet and
+  immutable node-set fabric interface; the effective NetworkACL is inherited
+  from the Subnet.
+- BMaaS revalidates port role, type, readiness, and the Subnet's effective
+  NetworkACL. For the trusted private CaaS path, network references are resolved in the source Cluster's
   tenant/project and are not rejected merely because the destination BMI is
   owned by the `system` tenant.
 - Private caller cannot inject a second attachment or lifecycle port.
@@ -342,7 +345,8 @@
 
 ##### Cases
 
-- attachment list, Subnet, SecurityGroups, interface, primary;
+- attachment list, Subnet, interface, primary;
+- an attempt to supply a NetworkACL inside the attachment;
 - auto-external switch;
 - status attempt to mutate spec;
 - update, patch, replace, and nested field mask;
@@ -379,7 +383,7 @@
 
 **Unit:** Verify one optional `--network-attachment` maps to repeated
 `spec.network_attachments` containing `BareMetalNetworkAttachment`. Verify
-the compound `interface=<port-name>` key, repeated SecurityGroup keys,
+the compound `interface=<port-name>` key, rejection of a NetworkACL key,
 omitted interface selection, invalid/lifecycle interfaces, repeated
 attachments, the deprecated plural `--network-attachments` option, and
 explicit `primary=false` behavior.

@@ -9,7 +9,7 @@
 ## 1. Problem Statement
 
 Creating a reachable resource in OSAC requires 6+ sequential API calls:
-VirtualNetwork, Subnet, SecurityGroup, the resource itself, ExternalIP,
+VirtualNetwork, Subnet, NetworkACL, the resource itself, ExternalIP,
 and ExternalIPAttachment. Every tenant must understand the full networking
 resource model before provisioning their first VM, cluster, or bare-metal
 server. This friction slows onboarding, increases the chance of
@@ -37,7 +37,7 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
 ### 2.2 Non-Goals
 
 - Custom default configurations per tenant (all tenants in a deployment
-  receive the same default CIDR and deployment-wide baseline policy)
+  receive the same default CIDR and default ACL policy)
 - Auto-provisioning of VirtualNetworks or Subnets beyond the initial
   default (tenants create additional VNs manually)
 - UI support for simplified creation (deferred — API and CLI only for now)
@@ -88,7 +88,8 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork, IPv4 Subnet, and SecurityGroup for the tenant, and provisions
+  VirtualNetwork, IPv4 Subnet, and a system-created NetworkACL associated with
+  the default Subnet for the tenant, and provisions
   a default NATGateway only when the NetworkClass advertises NATGateway
   support. The tenant transitions to READY only after all supported default
   networking resources are also READY. If default networking
@@ -100,9 +101,10 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
   parameters (IPv4 VN and Subnet CIDRs) when creating the single deployment
   NetworkClass. A NetworkClass without `defaults` is rejected at creation
   time, and the NetworkClass network configuration is immutable thereafter.
-  The deployment-wide baseline policy is always present, uses the hard-coded
-  `permit` action defined by Unified Networking, and is separate from the tenant fallback
-  SecurityGroup. [User]
+  The default NetworkACL contains the explicit default ACL policy: deny all
+  ingress and allow all egress. The provider-owned deployment baseline is
+  separate, hard-coded to `permit` all traffic, and is not tenant-configurable.
+  [User]
 - **FR-3:** All tenants receive the same default IPv4 CIDR ranges as configured
   on the NetworkClass. Tenants are isolated at the
   network level — the unified networking API provides VirtualNetworks
@@ -119,14 +121,14 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
 
 - **FR-6:** The network attachment configuration on ComputeInstance,
   Cluster, and BaremetalInstance is optional. When omitted or empty, the
-  system populates both the tenant's default Subnet and default SecurityGroup.
-  The resolved attachments are stored with the resource so the resource is
-  self-describing after creation. For VMaaS, ComputeInstance retains its
-  list-shaped field but accepts at most one attachment. For BMaaS, resolution
-  produces exactly one tenant network attachment. [User]
-- **FR-7:** When an attachment supplies only some network fields, the system
-  defaults only the missing fields. A supplied Subnet or non-empty
-  SecurityGroup list is preserved unchanged. [User]
+  system populates the tenant's default Subnet only. The effective NetworkACL
+  is inherited from the Subnet and is not copied into the workload attachment.
+  For VMaaS, ComputeInstance retains its list-shaped field but accepts at most
+  one attachment. For BMaaS, resolution produces exactly one tenant network
+  attachment. [User]
+- **FR-7:** When an attachment supplies a Subnet, that Subnet is preserved
+  unchanged. NetworkACL associations are managed only through the NetworkACL
+  resource, never through a workload attachment. [User]
 
 #### Auto ExternalIP
 
@@ -180,8 +182,9 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
   ExternalIP
 - [ ] A BaremetalInstance created without explicit network attachments has
   exactly one resolved default network attachment
-- [ ] Default VirtualNetwork, IPv4 Subnet, and SecurityGroup exist and are
-  READY before the tenant's first resource creation; NATGateway is also READY
+- [ ] Default VirtualNetwork, IPv4 Subnet, and the default NetworkACL associated
+  with that Subnet exist and are READY before the tenant's first resource
+  creation; NATGateway is also READY
   when the deployment advertises that capability
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
@@ -207,7 +210,7 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
 ## 6. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking
-  resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP,
+  resource model (VirtualNetwork, Subnet, NetworkACL, ExternalIP,
   ExternalIPAttachment, NATGateway) defined in the
   [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto ExternalIP pool
@@ -226,16 +229,16 @@ and [Unified Networking design](/enhancements/OSAC-1433-unified-networking/desig
 - **Mitigation:** Pool capacity visible in status; clear error directs
   tenant to explicit allocation from another pool
 
-### 7.2 Default SecurityGroup too permissive
+### 7.2 Default NetworkACL policy is incorrect
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** The deployment baseline policy is provider-owned and is
-  always evaluated, with the hard-coded `permit` action applying when no
-  more-specific rule matches. The tenant default
-  SecurityGroup is a separate tenant-scoped fallback used only when an
-  attachment omits an explicit SecurityGroup. It is immutable after creation;
-  tenants must create or select another SecurityGroup rather than tightening
-  its rules in place.
+- **Mitigation:** The default NetworkACL has an explicit, visible policy:
+  deny-all ingress and allow-all egress. It is associated with the default
+  Subnet, and changing it requires replacing the default NetworkACL after
+  dependencies are removed. Overlapping rules use specificity; contradictory
+  equal-specificity rules are rejected. If no tenant rule matches, the
+  provider-owned deployment baseline applies and currently permits all traffic;
+  tenants cannot override that baseline.
 
 ### 7.3 Auto ExternalIP orphans on partial failure
 

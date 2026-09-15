@@ -26,9 +26,8 @@ VirtualNetwork management (shipped under
 [OSAC-1898](https://redhat.atlassian.net/browse/OSAC-1898), per the
 [OSAC-1425](https://redhat.atlassian.net/browse/OSAC-1425) PRD) is summarized below for
 context, since the NAT Gateway field extends its list and detail pages — it is otherwise
-unchanged by this design. Subnet and SecurityGroup management
-([OSAC-1899](https://redhat.atlassian.net/browse/OSAC-1899)) are unchanged and not
-covered here.
+unchanged by this design. This addendum also defines the NetworkACL experience
+because ACLs are associated with Subnets rather than workload attachments.
 
 ## Proposal
 
@@ -67,9 +66,37 @@ Pure consumer of the existing private `ExternalIPPools` service
   IPv6 and dual-stack networking are not supported. NetworkClass is assigned
   automatically, not exposed to tenants. Via `useCreateVirtualNetwork()`.
 - **Detail page** (`VirtualNetworkDetailPage`) at `/networking/virtual-networks/:id`,
-  with tabs for **Subnets**, **Security Groups**, **Details**.
+  with tabs for **Subnets**, **Network ACLs**, **Details**. The Subnets tab
+  shows the effective ACL for each Subnet; the Network ACLs tab shows each ACL
+  and its associated Subnets.
 - **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has subnets
-  or security groups.
+  or network ACLs.
+
+#### Network ACL Management
+
+- **List page** (`NetworkAclsPage`) at `/networking/network-acls`. Columns:
+  **Name**, **Virtual Network**, **Associated Subnets**, **Rule count**, and
+  **Status**. The default ACL is marked with the default label and shows its
+  explicit policy summary: **deny all ingress / allow all egress**.
+- **Create form** (`NetworkAclCreatePage`) requires **Name**, **Virtual
+  Network**, one or more **Subnets**, and at least one rule. A rule editor
+  contains **Direction** (Ingress/Egress), **Action** (Allow/Deny),
+  **Protocol**, **Source CIDR** for ingress or **Destination CIDR** for
+  egress, and an optional port for TCP/UDP (omitted means all ports; ICMP and
+  `any` omit the port). The form explains that rules are stateless and that
+  return traffic is evaluated independently; a separate opposite-direction
+  rule is required when the tenant needs to control the return path with
+  tenant policy.
+- **Detail page** (`NetworkAclDetailPage`) shows the immutable VirtualNetwork
+  and Subnet associations, the complete ingress/egress rule set, the effective
+  specificity ordering (CIDR, protocol, then port), and the provider-owned
+  permit-all deployment baseline used when no tenant rule matches.
+- **Subnet association:** a single ACL may be associated with multiple
+  Subnets. The UI prevents selecting a Subnet that already has a custom ACL
+  and displays the current effective ACL on the Subnet detail view.
+- **No workload ACL selector:** ComputeInstance, Cluster, and BaremetalInstance
+  network-attachment forms expose the Subnet and resource-specific interface
+  fields only. They do not expose a NetworkACL selector.
 
 #### NAT Gateway Field in Virtual Network
 
@@ -133,6 +160,10 @@ in-place edit.
 | Pool update: concurrent write | Server's `FAILED_PRECONDITION`/`ABORTED` shown; admin re-fetches and retries. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
+| NetworkACL has no Subnet association | Create form blocks submission and identifies the required Subnet field. |
+| Subnet already has a custom NetworkACL | Subnet is disabled in the association picker with an explanation. |
+| Invalid overlapping rule | Form identifies the equal-specificity conflict and explains the specificity order. |
+| Stateless return rule missing | Form guidance explains that the reverse flow is evaluated independently; an opposite-direction tenant rule is needed to impose tenant-specific control, otherwise the deployment baseline applies. |
 
 ## Required UI Tests
 
@@ -146,6 +177,21 @@ in-place edit.
   `spec.virtual_network.name` local-reference path.
 - Verify that changing the NAT Gateway ExternalIP is represented as delete plus
   create, never as an Update of the immutable network binding.
+- Render NetworkACLs under the VirtualNetwork detail page and in the dedicated
+  Network ACL list/detail views.
+- Verify the default ACL displays explicit deny-all ingress and allow-all
+  egress rules.
+- Verify the NetworkACL detail view explains the provider-owned permit-all
+  deployment baseline fallback and exposes no control to modify it.
+- Verify the NetworkACL detail view renders specificity in the documented order:
+  longest matching remote CIDR prefix, exact protocol over `any`, then exact
+  port over an omitted port.
+- Verify Subnet association supports one ACL-to-many-Subnets, rejects a
+  Subnet with an existing custom ACL, and shows the effective ACL on the
+  Subnet view.
+- Verify workload attachment forms contain no NetworkACL selector.
+- Verify the rule editor enforces direction-specific CIDR fields and renders
+  the stateless return-traffic and deployment-baseline guidance.
 
 ## Implementation details
 
@@ -166,7 +212,7 @@ in-place edit.
   `'v1/private/external_ip_pools'` to `ApiRoute`.
 - **Status labels:** `NatGatewayStatusLabel`, `ExternalIpStatusLabel`,
   `ExternalIpPoolStatusLabel` — thin wrappers around `ResourceStatusLabel`/`StatusKind`,
-  matching `SecurityGroupStatusLabel`'s shape.
+  matching `NetworkACLStatusLabel`'s shape.
 - **Test fixtures:** add `NATGateways`, `ExternalIPs`, and private `ExternalIPPools` to
   `createMockConnectTransport.ts`.
 

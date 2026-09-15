@@ -76,7 +76,11 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic.
+- The effective NetworkACL is inherited from the selected Subnet and applies
+  to fabric-bridged VM traffic. NetworkACL evaluation remains stateless and
+  follows the shared specificity and deployment-baseline semantics; an
+  opposite-direction tenant rule is required for tenant-specific return-path
+  control, otherwise the provider-owned baseline applies.
 
 - When the resolved NetworkClass includes a NAT-capable fabric manager, its
   fabric-level NATGateway (SNAT via softgate) applies to fabric-bridged VM

@@ -24,7 +24,7 @@ creation flows while VMs require explicit networking details on every create.
 
 - A tenant can create a VM with zero or one list-shaped network attachment; a single attachment is implicitly primary
 - A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
-- A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and security group
+- A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and network ACL
 - The platform prevents VM creation in deployments that do not support virtualization
 
 ### 2.2 Non-Goals
@@ -39,13 +39,13 @@ creation flows while VMs require explicit networking details on every create.
 - As a Tenant User, I want to create a VM with one network attachment using a list-shaped field, so that the API can retain a stable list shape while supporting only one interface today
 - As a Tenant User, I want the single network interface to be implicitly primary, so that it provides the VM's default gateway and DNS configuration
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
-- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
+- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and its effective default ACL policy and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
 
 ### Tenant Admin Stories
 
-- As a Tenant Admin, I want to inspect the default networking resources (subnet, security group) used when VMs are created without explicit network configuration
-- As a Tenant Admin, I want to see which subnet and security groups each VM is attached to, and the IP address allocated to its network attachment, so I can audit my organization's network topology
+- As a Tenant Admin, I want to inspect the default Subnet and its effective NetworkACL when VMs are created without explicit network configuration
+- As a Tenant Admin, I want to see which Subnet each VM is attached to and the effective NetworkACL inherited from that Subnet, so I can audit my organization's network topology
 
 ### Cloud Infrastructure Admin Stories
 
@@ -67,11 +67,10 @@ creation flows while VMs require explicit networking details on every create.
 #### Optional Network Configuration with Defaults
 
 - **FR-3:** Network configuration is optional when creating a VM. When the
-  attachment list is omitted or empty, the system uses both tenant defaults.
-  When an attachment omits only its subnet or SecurityGroup list, only that
-  field is defaulted; supplied fields are preserved. The resolved
-  configuration is stored with the VM so the VM is self-describing after
-  creation. [User]
+  attachment list is omitted or empty, the system uses the tenant default
+  Subnet. NetworkACL membership is inherited from the Subnet and is not a
+  workload attachment field. When an attachment omits its subnet, only that
+  field is defaulted; supplied fields are preserved. [User]
 
 #### Auto External IP
 
@@ -81,8 +80,8 @@ creation flows while VMs require explicit networking details on every create.
   ExternalIPAttachment for the VM's single network attachment. Fabric
   allocation, VM IP discovery, DNAT programming, and activation are
   asynchronous; the ExternalIP and attachment are cleaned up when the VM is
-  deleted. Default networking resources (virtual networks, subnets, security
-  groups, NATGateway) are not cleaned up as they are tenant-scoped and shared
+  deleted. Default networking resources (virtual networks, subnets, NetworkACL,
+  NATGateway) are not cleaned up as they are tenant-scoped and shared
   across resources. [User]
 
 #### IP Address Discovery
@@ -98,7 +97,7 @@ creation flows while VMs require explicit networking details on every create.
 - **FR-7:** Before release, the VM networking field changes from the shared `NetworkAttachment` message to the resource-specific `ComputeNetworkAttachment` message. Only `network_attachments` is accepted; no old/new dual-field compatibility or conversion period is provided because there are no users or persisted resources yet. [User]
 
 - **FR-8:** The complete resolved network attachment list on a ComputeInstance,
-  including every Subnet, SecurityGroup, and `primary` value, is immutable
+  including every Subnet and `primary` value, is immutable
   after creation. Update and patch requests for these fields are rejected;
   changing network configuration requires deleting and recreating the VM.
   Standard metadata and non-network VM fields remain governed by their own
@@ -134,13 +133,13 @@ creation flows while VMs require explicit networking details on every create.
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created by the platform (see Default Networking PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
+- The tenant has default networking resources (virtual network, subnet, network ACL) pre-created by the platform (see Default Networking PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
 - The target deployment supports virtualization. Bare-metal-only deployments do not support VMs.
 
 ## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, network ACLs, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
+- **Default Networking PRD** — default subnet and network ACL selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the IPv4 pool with the most available capacity
 - **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
 - **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)

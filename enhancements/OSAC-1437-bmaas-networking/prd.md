@@ -10,7 +10,7 @@
 
 ## 1. Problem Statement
 
-Provisioning bare-metal servers requires manual switch configuration outside the OSAC API. Tenants cannot attach bare-metal servers to subnets, apply security groups, or configure external access through the API. The system does not expose which physical network interfaces are available on a bare-metal server, forcing tenants to discover interface names through out-of-band documentation. Creating a reachable bare-metal server with both inbound and outbound connectivity requires sequential API calls to create networking resources and manual coordination with infrastructure administrators for switch port configuration.
+Provisioning bare-metal servers requires manual switch configuration outside the OSAC API. Tenants cannot attach bare-metal servers to subnets, apply network ACLs, or configure external access through the API. The system does not expose which physical network interfaces are available on a bare-metal server, forcing tenants to discover interface names through out-of-band documentation. Creating a reachable bare-metal server with both inbound and outbound connectivity requires sequential API calls to create networking resources and manual coordination with infrastructure administrators for switch port configuration.
 
 ## 2. Goals and Non-Goals
 
@@ -19,8 +19,8 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - A tenant can provision a bare-metal server with one explicit network attachment specifying which physical interface connects to which subnet
 - A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP for inbound access automatically
 - Network attachments are optional — when omitted or empty, the system
-  attaches the server to the tenant's default subnet and security group; when
-  one field is missing, only that field is defaulted
+  attaches the server to the tenant's default subnet; the effective
+  NetworkACL is inherited from that subnet
 - BareMetalInstanceTypes expose available physical network ports through the API (name, role, type, speed) for bare-metal servers
 - BMaaS provisions the host on a provisioning network and establishes the tenant attachment after OS provisioning, before the server becomes Ready
 - External IP attachments support bare-metal servers as a target type
@@ -68,7 +68,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Specification
 
-- **FR-1:** Tenants can specify the repeated `network_attachments` field, carrying `BareMetalNetworkAttachment` values, when creating a bare-metal server, but validation accepts at most one entry. The entry identifies a subnet, security groups, and which physical interface to use (optional). The complete list and every entry field are immutable after creation; the single entry is implicitly the default gateway. [User]
+- **FR-1:** Tenants can specify the repeated `network_attachments` field, carrying `BareMetalNetworkAttachment` values, when creating a bare-metal server, but validation accepts at most one entry. The entry identifies a subnet and which physical interface to use (optional); its effective NetworkACL is inherited from the subnet. The complete list and every entry field are immutable after creation; the single entry is implicitly the default gateway. [User]
 
 #### BareMetalInstanceType Network Port Discovery
 
@@ -86,12 +86,12 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 - **FR-5:** Network attachments are optional when creating a bare-metal server.
   When omitted or empty, the system attaches the server to the tenant's
-  default subnet and default security group, using the BareMetalInstanceType's
-  first `fabric` port. When one field is missing from a supplied attachment,
-  only that field is defaulted. If the profile has no fabric port, creating a
-  server without an explicit interface fails with a clear error. The resolved
-  attachment is stored with the server so it is self-describing after
-  creation. [User]
+  default subnet and uses the BareMetalInstanceType's first `fabric` port.
+  The effective NetworkACL is inherited from the selected subnet. When a
+  subnet or interface is missing from a supplied attachment, only that field
+  is defaulted. If the profile has no fabric port, creating a server without
+  an explicit interface fails with a clear error. The resolved attachment is
+  stored with the server so it is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -120,7 +120,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto-Cleanup on Deletion
 
-- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled with `osac.openshift.io/auto-created: "true"`), the system deletes the external IP attachment first, then the external IP. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, security group, NATGateway) are NOT cleaned up. [User]
+- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled with `osac.openshift.io/auto-created: "true"`), the system deletes the external IP attachment first, then the external IP. Manually created resources are NOT cleaned up. Default networking resources (virtual network, subnet, network ACL, NATGateway) are NOT cleaned up. [User]
 
 #### Network Attachment Deletion
 
@@ -155,7 +155,10 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created at onboarding (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
+- The tenant has default networking resources (virtual network, subnet, and
+  default NetworkACL) pre-created at onboarding (see Default Networking PRD).
+  If defaults are not configured, creating a server without explicit network
+  attachments fails with a clear error.
 - The deployment has a Fabric Manager configured that supports BMaaS switch-port
   movement and DHCP operations; the implementation strategy is resolved by the
   provider. A K8s-only manager is not sufficient for the current BMaaS flow.
@@ -164,16 +167,16 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default Subnet and SecurityGroup selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, NetworkACL, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
+- **Default Networking PRD** — default Subnet and NetworkACL selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 - **Networking manager dispatch** — the system must be able to route networking operations to the correct fabric manager (in progress)
 - **NAT gateway support** — outbound NAT is available only when the configured
   manager supports it; K8s-only OVN deployments reject NATGateway
 - **External access for BM targets** — the external IP attachment system must support bare-metal servers as targets
 - **CLI support** — the CLI must support specifying network attachments when creating bare-metal servers
-- **CLI contract** — one optional `--network-attachment` value maps to the repeated `network_attachments` field and carries `subnet`, repeated `security-groups`, and optional `interface` keys; a second value, lifecycle interface, `primary: false`, or any update/patch is rejected
+- **CLI contract** — one optional `--network-attachment` value maps to the repeated `network_attachments` field and carries `subnet` and optional `interface` keys; a second value, `network-acls`, lifecycle interface, `primary: false`, or any update/patch is rejected
 - **Auto ExternalIP CLI contract** — `--external-ip-attachment` maps to `auto_external_ip_attachment: true`; omission maps to false and the field is immutable after creation
-- **Fabric manager BM networking role** — at least one fabric manager (e.g., Netris) must implement the switch port configuration role for bare-metal servers
+- **Fabric manager BM networking role** — the configured networking provider must implement the switch port configuration role for bare-metal servers
 
 ## 8. Risks
 

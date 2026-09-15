@@ -64,7 +64,7 @@
   reservation, persistence, or template dispatch.
 - Error identifies `spec.network_attachments` or the precise primary
   field.
-- Unknown nested attachment fields, malformed typed Subnet/SecurityGroup
+- Unknown nested attachment fields, malformed typed Subnet
   references, and malformed `primary` presence/encoding are rejected by the
   request-shape layer with no normalization or persistence.
 
@@ -80,17 +80,17 @@
 
 | Input | Expected result |
 |---|---|
-| Missing/empty list | Default Subnet and default SecurityGroup |
-| Only Subnet | Preserve Subnet; fill only SecurityGroups |
-| Only SecurityGroups | Preserve SecurityGroups; fill only Subnet |
-| Complete entry | Preserve Subnet and SecurityGroups exactly |
+| Missing/empty list | Default Subnet; effective ACL is inherited from the Subnet |
+| Only Subnet | Preserve Subnet; effective ACL is inherited from the Subnet |
+| NetworkACL inside attachment | Reject; ACL association belongs to the NetworkACL resource |
+| Complete entry | Preserve the supported Subnet and primary fields |
 | Invalid explicit reference | Reject; do not repair with defaults |
 
 ##### Expected results
 
 - Catalog/Template resolution occurs before tenant defaults.
-- Subnet and every SecurityGroup are Ready, same scope, same VN, IPv4, and
-  unique before ComputeInstance persistence.
+- Subnet is Ready, same scope, same VN, and IPv4 before ComputeInstance
+  persistence; its effective NetworkACL must also be Ready.
 - A missing/Pending/Failed default blocks creation.
 
 #### TC-R2-02: K8s-manager capability gates VM creation
@@ -129,8 +129,8 @@
 ##### Expected results
 
 - One `l2bridge` interface is created in the selected CUDN namespace.
-- The CRD/template receives exactly the resolved typed Subnet and
-  SecurityGroup references from the API-to-CRD conversion.
+- The CRD/template receives exactly the resolved typed Subnet reference from
+  the API-to-CRD conversion and obtains the effective ACL from the Subnet.
 - No `move_network_attachment` operation is invoked.
 - A malformed CR with multiple entries fails closed rather than using the
   first entry.
@@ -259,7 +259,7 @@
 
 - attachment list/cardinality/order;
 - Subnet;
-- SecurityGroups;
+- the effective NetworkACL inherited from the Subnet;
 - primary;
 - auto-external switch;
 - nested field-mask and direct CR mutations.
@@ -280,7 +280,7 @@
 
 - Auto-created attachment is deleted before auto-created ExternalIP.
 - Manually created ExternalIP resources remain tenant-managed.
-- Shared default VN/Subnet/SecurityGroup are not deleted with the VM.
+- Shared default VN/Subnet/NetworkACL are not deleted with the VM.
 - Restart or transient cleanup failure does not leak duplicate children.
 
 ### R6: Unsupported VM networking
@@ -332,8 +332,8 @@
 repeated attachment options, the deprecated plural `--network-attachments`
 option, `interface=...`, explicit `primary=false`, unknown keys, invalid
 CIDRs, and malformed typed references are rejected.
-Verify omitted/partial Subnet and SecurityGroup keys preserve the shared
-defaulting matrix.
+Verify omitted and explicit Subnet values preserve the shared defaulting
+matrix, and that a NetworkACL key inside the attachment is rejected.
 
 **Integration:** Run CLI-created VM requests through the same public and
 private validation paths as direct API requests. Verify typed local-reference

@@ -154,7 +154,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - Tenant attempts to read or list another tenant's pool or use it through a
   typed reference outside the provider-visible scope.
 - Tenant attempts to get or list another tenant's VirtualNetwork, Subnet,
-  SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway, or workload
+  NetworkACL, ExternalIP, ExternalIPAttachment, NATGateway, or workload
   network attachment/status, including through a name filter, label/filter,
   status field, Catalog policy, or typed reference.
 - Tenant references a provider-created pool that is explicitly visible to the
@@ -184,12 +184,12 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 1. Create a Ready VirtualNetwork with canonical IPv4 CIDR.
 2. Create a contained non-overlapping Subnet.
-3. Create a SecurityGroup with a valid rule.
+3. Create a NetworkACL with a valid rule and associate it with the Subnet.
 4. Create a Ready IPv4 ExternalIPPool with one CIDR.
 5. Allocate separate, valid ExternalIPs and create an ExternalIPAttachment
    and NATGateway reference where supported.
 6. Get and list every created resource, including the VirtualNetwork, Subnet,
-   SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
+   NetworkACL, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
    NATGateway where supported.
 
 ##### Expected results
@@ -279,7 +279,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
   disjoint allocation ownership; accepted pools cannot allocate the same
   address.
 
-### R3: SecurityGroup rules and deployment baseline
+### R3: NetworkACL rules, association, and stateless policy
 
 #### TC-R3-01: Rule fields and rule-set semantics are enforced
 
@@ -290,41 +290,92 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 ##### Cases
 
 - valid allow/deny, ingress/egress, tcp/udp/icmp/any rule;
-- required ports for TCP/UDP and omitted ports for ICMP/any;
+- optional ports for TCP/UDP, where omission matches all ports, and omitted
+  ports for ICMP/any;
 - valid direction-specific canonical IPv4 CIDR;
 - invalid action, direction, protocol, port range, or source/destination;
 - duplicate normalized rule;
 - conflicting equal-specificity rule;
 - tenant-created empty rule list;
-- onboarding-created fallback SecurityGroup with an empty list;
-- authorized Tenant Admin replacement fallback SecurityGroup with an empty
-  list after the old default is fully removed;
-- ordinary tenant-created empty SecurityGroup;
-- attempted configurable baseline action or tenant baseline override.
+- NetworkACL with no Subnet association;
+- NetworkACL associated with a Subnet from another VirtualNetwork;
+- second custom NetworkACL associated with the same Subnet;
+- tenant default NetworkACL containing explicit deny-all ingress and allow-all egress;
+- attempted hidden/default policy or implicit connection-tracking behavior.
 
 ##### Expected results
 
-- Ordinary tenant-created groups require at least one valid rule.
-- The onboarding-created or authorized replacement fallback group is accepted
-  empty only when it is the single validated tenant default; an ordinary
-  tenant-created empty group is rejected.
-- No tenant or resource field can change the deployment baseline from its
-  hard-coded `permit` action.
+- User-created NetworkACLs require at least one valid rule and one or more
+  explicit Subnet associations.
+- Each tenant's default NetworkACL is associated with its default Subnet and
+  contains explicit deny-all ingress and allow-all egress rules.
+- Traffic with no matching tenant rule falls through to the provider-owned
+  deployment baseline and is permitted; the baseline is not tenant data.
+- NetworkACL membership is managed by Subnet association, not by a workload
+  attachment field.
 - Invalid, duplicate, and conflicting rules are rejected before persistence.
 
-#### TC-R3-02: Most-specific rule behavior is verified
+#### TC-R3-02: Stateless and most-specific rule behavior is verified
 
 | Test type | Priority | Automation |
 |---|---|---|
 | Unit, E2E | critical | automated |
 
+##### Cases
+
+- Use a custom NetworkACL associated with a non-default Subnet so the tenant
+  default ACL's explicit egress allow rule does not participate in the test.
+- Allow ingress TCP/443 from `0.0.0.0/0` without a matching egress rule and
+  verify that the request is allowed and the return packet is independently
+  permitted by the deployment baseline, not by connection tracking.
+- Add a matching egress deny rule for the return destination port and verify
+  that the tenant rule overrides the baseline and blocks the return path.
+  Remove the deny rule and verify that the return path is permitted by the
+  baseline again.
+- Create overlapping rules where a narrower CIDR, exact protocol, or exact
+  port conflicts with a broader match and verify the narrower match wins.
+- Submit contradictory rules with identical CIDR, protocol, and port
+  specificity and verify that creation is rejected.
+
 ##### Expected results
 
-- Deployment-wide least-specific permit remains active.
-- The most-specific matching tenant rule wins.
-- Exact protocol outranks `any`; exact port outranks omitted port.
-- The tenant fallback SecurityGroup is not confused with the deployment
-  baseline rule.
+- Every packet is evaluated independently; the ACL does not track connections
+  or permit response packets because of connection state. A response may still
+  be permitted by an independent tenant egress rule or by the deployment
+  baseline.
+- Tenant rules override the deployment baseline whenever they match. A
+  tenant-specific opposite-direction rule is required to impose tenant policy
+  on return traffic; otherwise the provider-owned baseline currently permits
+  it.
+- The provider-owned deployment baseline is the least-specific fallback and
+  currently permits all traffic; it cannot be changed by tenant input.
+- The most-specific matching rule wins: longest matching remote CIDR prefix,
+  exact protocol over `any`, then exact port over an omitted port.
+- Contradictory equal-specificity rules are rejected before persistence.
+
+#### TC-R3-03: One ACL can protect multiple Subnets
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Integration, E2E | critical | automated |
+
+##### Steps
+
+1. Create two Ready Subnets in one VirtualNetwork.
+2. Create one NetworkACL with explicit ingress and egress rules and associate
+   it with both Subnets.
+3. Verify both Subnets report the same effective NetworkACL.
+4. Remove one association by replacing the ACL resource according to the
+   create/delete-only contract, then verify the old generated policy is gone
+   from the disassociated Subnet.
+
+##### Expected results
+
+- The ACL is applied to both associated Subnets with no duplicate effective
+  rules.
+- A Subnet cannot be associated with a second custom NetworkACL.
+- Workload attachments on either Subnet contain only the Subnet reference;
+  the effective ACL is resolved from the Subnet.
 
 ### R4: Attachment defaulting and cardinality
 
@@ -340,9 +391,9 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 |---|---|
 | Missing attachment field | All applicable defaults are resolved |
 | Explicit empty list/message | Same default behavior as documented for the resource |
-| Only Subnet supplied | Preserve Subnet; fill only SecurityGroups |
-| Only SecurityGroups supplied | Preserve SecurityGroups; fill only Subnet |
-| Complete attachment supplied | Preserve every supplied value |
+| Only Subnet supplied | Preserve Subnet; resolve the effective ACL from the Subnet |
+| NetworkACL supplied inside an attachment | Reject; ACL association belongs to the NetworkACL resource |
+| Complete attachment supplied | Preserve every supported supplied value |
 | Explicit invalid supplied value | Reject; never repair with a default |
 
 ##### Expected results
@@ -362,13 +413,11 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 - `subnet` supplied as `{ "name": "subnet-a" }`;
 - `subnet` supplied as `{ "id": "subnet-123" }` without `name`;
-- `security_groups` supplied as `[{ "name": "web" }]`;
-- `security_groups` supplied as `[{ "name": "web", "id": "sg-123" }]`;
-- `security_groups` supplied as `[{ "id": "sg-123" }]` without `name`;
-- both `id` and `name` supplied and resolving to the same resource;
-- raw string values such as `"subnet-a"` or `["sg-123"]`;
+- a NetworkACL reference supplied inside a workload attachment;
+- a NetworkACL association supplied without a Subnet;
 - `id` and `name` supplied but resolving to different resources;
-- typed Subnet/SecurityGroup references from a different tenant/project.
+- typed Subnet references from a different tenant/project;
+- typed NetworkACL Subnet associations from a different VirtualNetwork.
 
 ##### Expected results
 
@@ -394,7 +443,8 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - BM list with more than one entry;
 - Compute or BM sole entry with explicit `primary: false`;
 - Cluster repeated/multi-attachment representation;
-- duplicate SecurityGroup references;
+- duplicate Subnet associations in a NetworkACL;
+- a second NetworkACL association for the same Subnet;
 - direct CR containing values rejected by the public API.
 
 ##### Expected results
@@ -493,9 +543,9 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 ##### Cases
 
 - API update, patch, replace, and field-mask mutation on every tenant-facing
-  network resource: VirtualNetwork, Subnet, SecurityGroup, ExternalIP,
+  network resource: VirtualNetwork, Subnet, NetworkACL, ExternalIP,
   ExternalIPAttachment, and NATGateway;
-- nested Subnet, SecurityGroup, CIDR, rule, pool/allocation identity,
+- nested Subnet, NetworkACL, CIDR, rule, pool/allocation identity,
   interface, primary, endpoint, target, list-length/order, and
   auto-external mutations on ComputeInstance, Cluster, and
   BaremetalInstance;
@@ -529,9 +579,9 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - ExternalIPPool deletion is blocked while any ExternalIP still references it.
 - ExternalIP deletion/release is rejected while an attachment or NATGateway
   consumes it; no manager release operation is dispatched.
-- Subnets, SecurityGroups, and NATGateway are gone before VN deletion.
-- SecurityGroup deletion is blocked by workload attachment references and
-  governed Catalog policy references.
+- Subnets, NetworkACLs, and NATGateway are gone before VN deletion.
+- NetworkACL deletion is blocked by Subnet association references and governed
+  Catalog policy references.
 - NetworkClass deletion is blocked while any dependent networking resource,
   workload attachment, or manager integration remains.
 - VN is deleted before any provider VPC/backend parent.
@@ -552,7 +602,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - Direct CRs with invalid cardinality, IPv6, bad references, unsupported
   operations, or false Ready status are rejected or fail closed.
 - Every persisted networking resource, including VirtualNetwork, Subnet,
-  SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
+  NetworkACL, ExternalIPPool, ExternalIP, ExternalIPAttachment, and
   NATGateway, carries `status.hub` equal to the single active deployment hub.
 - A missing or mismatched `status.hub` cannot be used to report a resource
   Ready or dispatch a backend operation.
@@ -581,7 +631,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - VMaaS uses one virtual interface.
 - CaaS uses one cluster attachment and BM worker enrichment.
 - BMaaS uses one physical tenant attachment.
-- All services preserve shared IPv4, same-VN, readiness, SecurityGroup, and
+- All services preserve shared IPv4, same-VN, readiness, NetworkACL, and
   create/read/delete-only rules.
 - Multiple hosting clusters receive the required overlay for a shared Subnet
   when the K8s manager advertises that capability.
@@ -605,7 +655,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 - tenant-selected provider implementation or arbitrary IP;
 - unsupported NATGateway capability;
 - unsafe parent deletion;
-- a configurable deployment baseline action or tenant baseline override.
+- a configurable default ACL policy override.
 
 ##### Expected results
 
@@ -617,7 +667,7 @@ of an invalid parent, child, allocation, backend operation, or orphan.
 
 #### TC-R10-01: Shared resource CLI parsing and typed references
 
-**Unit:** Parse VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
+**Unit:** Parse VirtualNetwork, Subnet, NetworkACL, ExternalIPPool,
 ExternalIP, ExternalIPAttachment, and NATGateway commands. Verify canonical
 IPv4 CIDR parsing, `--cidrs` exactly-one behavior, enum values, repeated
 `--rule` parsing, typed local/full reference construction, and rejection of
@@ -637,8 +687,8 @@ resource command forms and required arguments:
 
 - `virtualnetwork`: required `--name` and canonical `--cidr`;
 - `subnet`: required `--name`, `--virtual-network`, and contained `--cidr`;
-- `security-group`: required `--name`, `--virtual-network`, and at least one
-  `--rule` for an ordinary tenant group;
+- `network-acl`: required `--name`, `--virtual-network`, one or more
+  `--subnet` references, and at least one `--rule`;
 - `externalippool`: required `--name`, exactly one `--cidrs`, and
   `--ip-family ipv4`;
 - `externalip`: required `--name` and provider-visible `--pool`;
@@ -657,18 +707,18 @@ dual-stack CIDR, using host bits, or passing `--ip-family` other than the
 required `ipv4` fails before persistence. Verify separate pools are used for
 separate CIDRs rather than encoding multiple CIDRs in one pool.
 
-For SecurityGroup, enumerate the complete rule grammar: `allow`/`deny`,
+For NetworkACL, enumerate the complete rule grammar: `allow`/`deny`,
 `ingress`/`egress`, and `tcp`/`udp`/`icmp`/`any` are the only enum values;
-TCP/UDP require one port from 1 through 65535, ICMP/any must omit ports, and
-ingress requires exactly `source-cidr` while egress requires exactly
-`destination-cidr`. Test missing action, direction, protocol, required port,
+TCP/UDP may omit the port or specify one from 1 through 65535, ICMP/any must
+omit ports, and ingress requires exactly `source-cidr` while egress requires exactly
+`destination-cidr`. Test missing action, direction, protocol, invalid port,
 and required direction-specific CIDR, as well as both source and destination
 being supplied. Verify canonical IPv4 CIDRs only, no host bits, duplicate
 normalized rules and conflicting equal-specificity rules are rejected, an
-ordinary empty group is rejected, and only the documented onboarding or
-authorized replacement fallback may be empty. Explicitly test the named
+ordinary empty or unassociated NetworkACL is rejected, and the tenant default
+NetworkACL contains explicit deny-all ingress and allow-all egress rules. Explicitly test the named
 unsupported `--ipv6`, `--dual-stack`, `--hub`, `--air-gapped`, any deployment
-baseline-policy flag, and any implementation-strategy flag.
+default-policy override flag, and any implementation-strategy flag.
 
 **Integration:** Submit parsed CLI requests through public REST/gRPC and
 private handlers. Verify field paths and `InvalidArgument`,
@@ -683,13 +733,13 @@ validation, readiness, scope, and dependency error without persistence.
 **E2E:** In a connected single-hub deployment, execute the supported CLI
 resource workflow as a provider admin and tenant user: create/read/list a
 NetworkClass and ExternalIPPool as the provider, then create/read/list/delete
-a VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment,
+a VirtualNetwork, Subnet, NetworkACL, ExternalIP, ExternalIPAttachment,
 and—when the resolved manager supports it—a NATGateway as the tenant. Use a
 Ready dependency at every step and verify the CLI output contains the
 resolved typed-reference names.
 Exercise ExternalIPAttachment once for each target type, with Cluster API and
 ingress endpoints, and verify the wrong endpoint/target combinations fail.
-Verify deletion guards for a referenced Subnet, SecurityGroup, ExternalIP,
+Verify deletion guards for a referenced Subnet, NetworkACL, ExternalIP,
 ExternalIPPool, VirtualNetwork, and NetworkClass. After all dependents are
 deleted, verify provider read/list/delete succeeds for the provider-owned
 resources. Verify tenant attempts to create/update/patch/delete NetworkClass
@@ -703,14 +753,16 @@ other supported IPv4 resource workflows remain available.
 `network_attachments` or Cluster singular `network_attachment`; repeated
 attachment options, the deprecated plural `--network-attachments` option,
 unsupported keys, `interface` on VM/Cluster, and `primary` on any workload
-are rejected by the CLI (the API-compatibility
-`primary` field is implicit and the CLI does not emit it). Verify repeated
-`security-groups=<name>` keys remain one attachment with multiple groups.
+are rejected by the CLI (the API-compatibility `primary` field is implicit
+and the CLI does not emit it). Verify that `network-acls=<name>` is rejected
+inside a workload attachment and that ACL association is performed through
+the NetworkACL resource's Subnet references.
 
-**Integration:** Verify omitted, partial, and complete CLI attachments receive
+**Integration:** Verify omitted and explicit-Subnet CLI attachments receive
 the same defaulting and readiness validation as direct API requests. Verify
 VM/BM use their resource-specific message types and Cluster uses
-`ClusterNetworkAttachment`.
+`ClusterNetworkAttachment`; verify the effective ACL is obtained from the
+selected Subnet.
 
 **E2E:** Create one VM, one BM, and one Cluster using explicit and defaulted
 CLI attachments, inspect the resolved fields, and verify delete succeeds.

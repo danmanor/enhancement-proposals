@@ -43,7 +43,7 @@ This design builds on and interacts with several networking designs:
 - **OSAC-1435 VMaaS Networking** — VMs provisioned via the list-shaped `ComputeNetworkAttachment` field consume the cudn_evpn namespaces created by this design. The field accepts zero or one entry only; VMaaS placement logic must resolve the namespace name (same as subnet name) when placing a VM in an EVPN-bridged Subnet and validate that the target Subnet has a CUDN (first subnet only) before allowing VM placement.
 - **OSAC-1436 CaaS Networking** — CaaS clusters may run on EVPN-bridged subnets. Port-move primitive compatibility with EVPN transport (VXLAN encap vs VLAN trunking) is TBD (out of scope for Phase 1).
 - **OSAC-1437 BMaaS Networking** — Bare-metal servers provisioned via `BareMetalNetworkAttachment` are L2/L3 peers of EVPN-bridged VMs. This design validates same-subnet (L2) and cross-subnet (L3 via fabric ipVRF) connectivity in test cases.
-- **OSAC-1433 Default Networking** — Auto-provisioning of VN/Subnet/SG/NAT at tenant onboarding uses a default NetworkClass. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., k8s-only or none).
+- **OSAC-1433 Default Networking** — Auto-provisioning of VN/Subnet/NetworkACL/NAT at tenant onboarding uses a default NetworkClass. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., k8s-only or none).
 - **OSAC-2135 CaaS BM Worker Provisioning** — System-tenant bare-metal instances reference tenant Subnets. If those Subnets use `cudn_evpn`, the BMI provisioning flow interacts with the EVPN namespace/CUDN. Interaction is TBD (out of scope for Phase 1).
 - **OSAC-1382 Multi-Fabric East-West** — Phase 1 east-west isolation domains will need to work across EVPN-bridged and non-EVPN subnets. Inter-domain routing with EVPN transport is TBD (out of scope for Phase 1).
 
@@ -446,7 +446,7 @@ These additional rules are mandatory whenever the resolved NetworkClass uses
   available. A tenant cannot select the manager through a VirtualNetwork or
   bypass the NetworkClass capability check.
 - The `cudn_evpn` K8s manager advertises IPv4-only,
-  create/read/delete support for VirtualNetwork, Subnet, SecurityGroup,
+  create/read/delete support for VirtualNetwork, Subnet, NetworkACL,
   ExternalIPPool, ExternalIP, and ExternalIPAttachment. NATGateway is not a
   `cudn_evpn` operation because Phase 1 does not provide OVN NAT capability.
   In the combined NetworkClass used by this design, NATGateway is dispatched
@@ -494,9 +494,11 @@ These additional rules are mandatory whenever the resolved NetworkClass uses
 - A VM attachment that references a fabric-only Subnet, a Subnet without a
   Ready CUDN, or a VirtualNetwork with multiple Subnets is rejected. The
   validation must not fall back to the first Subnet or silently move the VM.
-- The resolved VM Subnet and SecurityGroups still obey the shared same-VN,
-  Ready, IPv4, and immutable attachment rules. EVPN placement adds topology
-  restrictions; it does not change shared field formats or defaulting.
+- The resolved VM Subnet and its effective NetworkACL still obey the shared
+  same-VN, Ready, IPv4, and immutable attachment rules. The ACL is inherited
+  from the Subnet rather than referenced by the VM attachment. EVPN placement
+  adds topology restrictions; it does not change shared field formats or
+  defaulting.
 - The AAP template receives exactly one CUDN NAD reference and must fail
   closed if that reference is absent, points at another namespace, or would
   produce more than one VM interface.
@@ -717,7 +719,7 @@ func getDeploymentNetworkClass(ctx context.Context, subnet *osacv1.Subnet) (*osa
 
 #### osac-aap: netris Fabric Manager Role
 
-This design **extends the existing netris role** (`collections/ansible_collections/osac/templates/roles/netris/`) by adding VirtualNetwork and Subnet provisioning tasks. The existing role already handles SecurityGroup, ExternalIP, and NATGateway provisioning — those task files remain unchanged.
+This design **extends the existing netris role** (`collections/ansible_collections/osac/templates/roles/netris/`) by adding VirtualNetwork and Subnet provisioning tasks. The existing role already handles NetworkACL, ExternalIP, and NATGateway provisioning — those task files remain unchanged.
 
 **New Task Files:**
 
@@ -1199,7 +1201,7 @@ data:
   name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
   description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
   capabilities: "addressFamily:ipv4"
-  supportedResources: "virtualNetwork,subnet,securityGroup,externalIPPool,externalIP,externalIPAttachment"
+  supportedResources: "virtualNetwork,subnet,networkAcl,externalIPPool,externalIP,externalIPAttachment"
   # template_role field removed - not in OSAC-1433 spec, dispatcher resolves role name from k8s_manager field
 ```
 

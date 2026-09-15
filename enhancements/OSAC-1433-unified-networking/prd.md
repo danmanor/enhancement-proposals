@@ -31,7 +31,7 @@ This section defines key terms used throughout this document.
 
 - **Tenant**: An organization or user consuming OSAC services. Tenants create
   and manage their own networking resources (VirtualNetworks, Subnets,
-  SecurityGroups, ExternalIPs) and place workloads on them.
+  NetworkACLs, ExternalIPs) and place workloads on them.
 
 - **Provider**: The cloud administrator who deploys and configures OSAC
   infrastructure. Providers install networking managers, configure
@@ -53,10 +53,14 @@ This section defines key terms used throughout this document.
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space. Resources
   are attached to subnets to receive IP addresses and network connectivity.
 
-- **SecurityGroup**: A stateful firewall controlling inbound and outbound
-  traffic for resources. Tenant rules specify an action (`allow` or `deny`),
-  protocol, optional single port, direction, and IPv4 source/destination
-  CIDR.
+- **NetworkACL**: A stateless, subnet-associated policy controlling inbound
+  and outbound traffic. One NetworkACL belongs to a VirtualNetwork and may be
+  associated with multiple Subnets; each Subnet has at most one effective ACL.
+  Tenant rules specify an action (`allow` or `deny`), protocol, optional
+  single port, direction, and IPv4 source/destination CIDR. Return traffic is
+  evaluated independently; an opposite-direction tenant rule is required for
+  tenant-specific control, otherwise the provider-owned deployment baseline
+  applies.
 
 - **ExternalIPPool**: A provider-defined pool of IP addresses that are
   routable outside the VirtualNetwork. "External" means external to the VN —
@@ -78,9 +82,9 @@ This section defines key terms used throughout this document.
   deployment. There is exactly one NetworkClass per deployment; tenants do not
   select it per VirtualNetwork.
 
-- **Fabric Manager**: An optional single product (e.g., Netris, Neutron) that
-  manages physical networking: tenant isolation, ACLs, IP allocation, DNAT,
-  and SNAT.
+- **Fabric Manager**: An optional single provider-configured implementation
+  that manages physical networking: tenant isolation, ACLs, IP allocation,
+  DNAT, and SNAT.
 
 - **K8s Manager**: A provider-registered networking manager. It may bridge a
   K8s overlay to a fabric when paired with a Fabric Manager, or provide the
@@ -154,7 +158,7 @@ tenant-facing abstraction.
 
 The Networking API only supports ComputeInstance (VMaaS). The Cluster resource
 has no network configuration — there is no way for a tenant to specify
-which VirtualNetwork, Subnet, or SecurityGroup a cluster's nodes should use.
+which VirtualNetwork, Subnet, or NetworkACL a cluster's nodes should use.
 A tenant cannot place two clusters in the same VirtualNetwork to share an
 address space, or isolate clusters in separate VirtualNetworks — the networking
 is entirely opaque and managed ad-hoc by the CaaS template role.
@@ -163,7 +167,7 @@ The same applies to BMaaS. BaremetalInstance (defined in
 the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api))
 explicitly defers networking integration. A tenant cannot specify
 which Subnet a bare-metal server should be placed on, cannot apply
-SecurityGroups, and cannot share a VirtualNetwork between bare-metal servers
+NetworkACLs, and cannot share a VirtualNetwork between bare-metal servers
 and other resources. Both service types build ad-hoc networking outside the
 API.
 
@@ -235,7 +239,7 @@ the cluster's VIPs are discovered (see
 ### 2.1 Goals
 
 - Provide a unified networking API across VMaaS, CaaS, and BMaaS with a single, consistent resource model
-- Enable tenants to manage networking resources (VirtualNetworks, Subnets, SecurityGroups, ExternalIPs) without choosing implementation backends
+- Enable tenants to manage networking resources (VirtualNetworks, Subnets, NetworkACLs, ExternalIPs) without choosing implementation backends
 - Support pluggable networking backends that can be added without API changes
 - Enable VMs, clusters, and bare-metal servers to coexist in the same
   VirtualNetwork where the selected manager and service-specific placement
@@ -268,7 +272,7 @@ the cluster's VIPs are discovered (see
 
 - As a tenant, I want to create isolated VirtualNetworks and Subnets for my
   workloads without choosing a networking backend
-- As a tenant, I want to define SecurityGroups to control traffic to and
+- As a tenant, I want to define NetworkACLs to control traffic to and
   from my resources
 - As a tenant, I want to allocate ExternalIPs and attach them to my VMs,
   clusters, or bare-metal servers for inbound access
@@ -324,7 +328,7 @@ infrastructure share the same subnet.
 #### FR-3: Uniform networking across all service types (R3)
 
 All three service types (VMaaS, CaaS, BMaaS) must consume the networking API
-using the same resource model: VirtualNetwork, Subnet, SecurityGroup,
+using the same resource model: VirtualNetwork, Subnet, NetworkACL,
 ExternalIPPool, ExternalIP, ExternalIPAttachment, NATGateway.
 
 #### FR-4: ExternalIP is external to the VirtualNetwork (R4)
@@ -344,18 +348,32 @@ Tenants never choose networking backends — the system selects them based
 on the provider's configuration.
 
 At least one of Fabric Manager or K8s Manager must be configured. A K8s-only
-deployment supports VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
+deployment supports VirtualNetwork, Subnet, NetworkACL, ExternalIPPool,
 ExternalIP, and ExternalIPAttachment for workloads eligible for that manager
 mode; NATGateway creation is rejected because of the current OVN limitation.
 
-#### FR-6a: Deployment baseline and tenant SecurityGroups
+#### FR-6a: Stateless NetworkACL policy
 
-The deployment has one provider-owned baseline policy with a hard-coded
-`permit` default action. It is always evaluated and is not
-represented as a tenant SecurityGroup rule. A tenant
-default SecurityGroup is used only as the fallback attachment when a workload
-does not provide SecurityGroups. Tenant-created SecurityGroups require at
-least one explicit allow/deny rule. The most-specific matching rule wins.
+NetworkACLs are associated with Subnets rather than workload resources. A
+NetworkACL may be associated with multiple Subnets, but a Subnet has at most
+one effective ACL. Each packet is evaluated independently; the ACL does not
+track connections and does not automatically permit response traffic.
+
+Each rule has an explicit `allow` or `deny` action. When rules overlap, the
+most-specific matching rule wins. Specificity is ordered by the longest
+matching remote CIDR prefix, exact protocol over `any`, and exact port over an
+omitted port. Conflicting rules with equal specificity are rejected. If no
+tenant rule matches, evaluation falls through to the provider-owned deployment
+default ACL policy (the deployment baseline), which is currently hard-coded to
+`permit` all traffic. The baseline is the least-specific policy and is not
+stored in or configurable through a tenant NetworkACL.
+
+Each tenant receives a tenant default NetworkACL associated with its default
+Subnet. It contains the default ACL policy: deny all ingress and allow all
+egress.
+This is an ordinary, visible NetworkACL policy and can be replaced only through
+the documented default-resource workflow. It is distinct from the
+provider-owned deployment baseline, which remains the least-specific fallback.
 
 #### FR-7: Single network attachment for bare metal (R7)
 
@@ -374,21 +392,26 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 
 ### Core Networking
 
-- [ ] VirtualNetworks, Subnets, ExternalIPs, and SecurityGroup rules accept and
+- [ ] VirtualNetworks, Subnets, ExternalIPs, and NetworkACL rules accept and
   provision IPv4 CIDRs only; IPv6 and dual-stack requests are rejected
 - [ ] Resources in different VirtualNetworks cannot communicate (full isolation)
 - [ ] Resources in the same Subnet are in the same L2 broadcast domain
 - [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
-- [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced uniformly for all resource types
-- [ ] The provider-owned deployment baseline policy, with its hard-coded `permit` action, remains active with both default and explicitly selected tenant SecurityGroups
-- [ ] Tenant-created SecurityGroups contain at least one explicit rule with a supported action, direction, protocol, and IPv4 CIDR
+- [ ] NetworkACLs control which traffic is permitted within these boundaries — enforced uniformly for all resource types
+- [ ] A NetworkACL can be associated with multiple Subnets, while each Subnet has at most one effective ACL
+- [ ] NetworkACL rules are stateless: response traffic is evaluated independently; a tenant-specific opposite-direction rule is required for a tenant-specific decision, otherwise the deployment baseline applies
+- [ ] The default ACL policy is explicit deny-all ingress and allow-all egress on each tenant's default NetworkACL
+- [ ] The provider-owned deployment baseline is the least-specific fallback and is hard-coded to permit all traffic; it is not tenant-configurable or serialized in tenant NetworkACLs
+- [ ] Tenant-created NetworkACLs contain at least one explicit rule with a supported action, direction, protocol, and IPv4 CIDR
+- [ ] Overlapping rules resolve by documented specificity, and equal-specificity contradictory rules are rejected
 - [ ] Bare-metal servers in the same Subnet are in the same broadcast domain regardless of their physical location (rack, switch)
 - [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
 - [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
 - [ ] The system provisions all necessary networking infrastructure for each subnet automatically
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet for which the selected manager and service-specific placement contract report support; unsupported placement is rejected before persistence
-- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
-- [ ] SecurityGroup enforcement is uniform across all resource types
+- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — NetworkACL and ExternalIP operations work identically regardless of resource type
+- [ ] NetworkACL enforcement is uniform across all resource types
+- [ ] Workload network attachments contain Subnet and resource-specific interface fields only; NetworkACL membership is resolved from the Subnet
 - [ ] Each resource type has its own network attachment configuration appropriate to the resource (e.g., BMaaS uses one physical attachment, clusters use one shared subnet and one tenant-facing physical interface per node)
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
@@ -398,7 +421,7 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 ### Network Operations and Immutability
 
 - [ ] Network resources expose create, read/list, and delete operations only; user/API update, patch, and replace requests for network-owned `spec` fields are rejected or not exposed
-- [ ] All network-owned `spec` fields on NetworkClass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway are immutable after creation
+- [ ] All network-owned `spec` fields on NetworkClass, VirtualNetwork, Subnet, NetworkACL, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway are immutable after creation
 - [ ] `ComputeInstance.network_attachments` is immutable as a complete list, including every attachment field
 - [ ] `ComputeInstance.network_attachments` retains a list-shaped API but accepts zero or one entry only; requests with more than one entry are rejected
 - [ ] `Cluster.network_attachment` and `BaremetalInstance.network_attachments` are immutable, including every attachment field
@@ -407,7 +430,7 @@ supplies the server's tenant IP, default route, and ExternalIP DNAT target.
 - [ ] Unsupported, unknown, or otherwise undefined network field values are rejected rather than inferred by clients or agents
 - [ ] The CLI exposes create, read/list, and delete for network-owned resources only; network-owned update, patch, and replace operations are not exposed or are rejected
 - [ ] The CLI maps one optional `--network-attachment` to VM and BM list-shaped `network_attachments` fields and to the singular CaaS `network_attachment` field
-- [ ] The CLI accepts only canonical IPv4 CIDRs, typed reference values, supported enums, and the documented SecurityGroup rule grammar
+- [ ] The CLI accepts only canonical IPv4 CIDRs, typed reference values, supported enums, and the documented NetworkACL rule grammar
 - [ ] The CLI rejects repeated workload attachment options, unsupported `interface`/`primary` fields, IPv6 or multi-CIDR values, invalid target combinations, and non-Ready dependencies
 - [ ] `--external-ip-attachment` maps to the create-time `auto_external_ip_attachment` field for VM, BM, and Cluster and cannot be changed later
 - [ ] Changing any network-owned field requires deleting and recreating the affected resource or workload

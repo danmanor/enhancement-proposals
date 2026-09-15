@@ -108,7 +108,10 @@ BMaaS involves three planes; this design owns only the data-plane ones. Do not c
 
 "OOB" refers only to the BMC plane. The provisioning network is **in-band** (the OS/IPA uses it) — never call it OOB.
 
-**Note on terminology:** In the current code and configuration, the provisioning network is identified as `netris_bm_parking_vnet`. This identifier is retained for deployment stability; the docs-only rename to "provisioning network" clarifies its purpose without requiring immediate config changes.
+**Note on terminology:** The deployment-specific provisioning-network
+identifier is retained for deployment stability; the docs use
+"provisioning network" to clarify its purpose without requiring a config
+rename.
 
 #### Connectivity Paths
 
@@ -217,12 +220,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
    Dispatcher → the configured manager(s) create the subnet backend(s). BMaaS does not use a K8s overlay, but a combined deployment may create one for VMs sharing the subnet.
 
-3. **Create SecurityGroup:**
+3. **Create NetworkACL:**
    ```bash
-   osac create security-group --virtual-network my-net --name my-sg \
+   osac create network-acl --virtual-network my-net --name my-nacl \
+     --subnet my-subnet \
      --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
    ```
-   Dispatcher → the configured network manager's `create_security_group` operation
+   Dispatcher → the configured network manager's `create_network_acl` operation
 
 #### Phase 2: Tenant Creates BM Server
 
@@ -231,7 +235,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    Single interface (simple case):
    ```bash
    osac create baremetalinstance --template bcm_h100 \
-     --network-attachment interface=data-0,subnet=my-subnet,security-groups=my-sg \
+     --network-attachment interface=data-0,subnet=my-subnet \
      --name my-server
    ```
    The CLI's singular `--network-attachment` option populates the repeated
@@ -250,13 +254,15 @@ Same as VMaaS/CaaS — the networking API is uniform.
    ```
 
 5. **fulfillment-service:**
-   - If `network_attachments` is omitted or empty: populates both tenant defaults (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). For a supplied single entry, defaults only missing subnet, SecurityGroup list, or interface. The system selects the first interface with role `fabric` from the BareMetalInstanceType as the default interface.
+   - If `network_attachments` is omitted or empty: populates the tenant
+     default Subnet and selects the first interface with role `fabric` from
+     the BareMetalInstanceType. For a supplied single entry, defaults only a
+     missing Subnet or interface (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)).
      The effective interface source is the BareMetalInstanceType's
      `network_ports` list.
    - Validates:
-     - Each subnet exists, is Ready
-     - All subnets belong to the same VirtualNetwork
-     - Each SecurityGroup exists, is Ready, belongs to the same VN
+     - The Subnet exists, is Ready, and has a Ready effective NetworkACL
+     - The Subnet and effective NetworkACL belong to the same VirtualNetwork
      - At most one network attachment is accepted for each BaremetalInstance
      - If an attachment is provided, its `interface` references a valid interface name from the BareMetalInstanceType's network ports list
      - If an attachment's `interface` is omitted, it defaults to the first port with `role=fabric` from the BareMetalInstanceType
@@ -330,7 +336,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
       ExternalIPAttachment targeting the BaremetalInstance remains a reverse
       reference and blocks BaremetalInstance deletion until the tenant deletes
       the attachment; it is not detached or changed to Pending implicitly.
-    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
+    - **Default networking resources (VN, Subnet, NetworkACL, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
       - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
       - `reconcileNetworking` (delete): dispatches the same `osac-move-network-attachment` job — because the CR now carries a `deletionTimestamp`, the playbook moves the selected port **tenant network → provisioning network** (`from_vnet_name` = tenant network segment, `to_vnet_name` = provisioning network), returning the fabric NIC to the provisioning network so the freed server keeps internet for its next inspection. The host is off at this point, so nothing runs on the provisioning network. A missing tenant Subnet CR is tolerated (detach skipped, port still returned to provisioning network).
@@ -340,7 +346,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
 
 11. **Tenant deletes networking resources** (independently):
-    - Delete ExternalIPAttachments, ExternalIPs, SecurityGroup, Subnet, VirtualNetwork — each via its own dispatcher-triggered delete job
+    - Delete ExternalIPAttachments, ExternalIPs, NetworkACL, Subnet, VirtualNetwork — each via its own dispatcher-triggered delete job
 
 **BMaaS-specific deletion dependency guard:**
 
@@ -377,7 +383,7 @@ The BM-specific mapping is:
 |---|---|---|
 | `spec.network_attachments` | One optional `--network-attachment` | Zero or one attachment; repeating the option is rejected |
 | `BareMetalNetworkAttachment.subnet` | `subnet=<name>` inside the attachment value | Optional; omission receives only the tenant default Subnet |
-| `BareMetalNetworkAttachment.security_groups` | One or more repeated `security-groups=<name>` keys inside the attachment value | Optional; omission receives only the tenant default SecurityGroup; supplied groups are all used |
+| `BareMetalNetworkAttachment.network_acls` | Not accepted in the attachment value | NetworkACLs are associated with Subnets; the effective ACL is inherited by the attachment |
 | `BareMetalNetworkAttachment.interface` | Optional `interface=<port-name>` inside the attachment value | Must name a valid non-lifecycle port; omission selects the first valid `fabric` port |
 | `BareMetalNetworkAttachment.primary` | Not emitted by the CLI | Omission is implicitly primary; `true` is accepted only through a structured client; `false` is rejected |
 | `auto_external_ip_attachment` | `--external-ip-attachment` | Presence means `true`; omission means `false`; create-time only |
@@ -386,18 +392,19 @@ The canonical explicit command is:
 
 ```bash
 osac create baremetalinstance --template bcm_h100 \
-  --network-attachment interface=data-0,subnet=my-subnet,security-groups=my-sg \
+  --network-attachment interface=data-0,subnet=my-subnet \
   --name my-server
 ```
 
 The CLI must not expose `--network-attachments`, a second attachment, a
 lifecycle interface, or a multi-NIC mode. The `interface` key is part of the
 single compound `--network-attachment` value; a separate `--interface` flag
-is not a second syntax. Omitting the option invokes both tenant defaults and
-selects the default fabric interface. Omitting only one attachment key
-invokes field-level defaulting for that key. The CLI constructs typed local
-Subnet and SecurityGroup references and sends the resource-specific
-`BareMetalNetworkAttachment` message. Network fields and
+is not a second syntax. Omitting the option invokes the tenant default Subnet
+and selects the default fabric interface. Omitting only one attachment key
+invokes field-level defaulting for that key. The CLI constructs a typed local
+Subnet reference and sends the resource-specific `BareMetalNetworkAttachment`
+message. The effective NetworkACL is resolved from that Subnet association.
+Network fields and
 `auto_external_ip_attachment` cannot be changed through update or patch
 commands; delete and recreate is required.
 
@@ -408,9 +415,8 @@ commands; delete and recreate is required.
 ```protobuf
 message BareMetalNetworkAttachment {
   SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
-  repeated SecurityGroupLocalReference security_groups = 2; // empty -> tenant default SecurityGroup
-  string interface = 3;                 // omitted -> first fabric interface
-  optional bool primary = 4;            // the single attachment is implicitly primary
+  string interface = 2;                            // omitted -> first fabric interface
+  optional bool primary = 3;                       // the single attachment is implicitly primary
 }
 
 message BareMetalInstanceSpec {
@@ -455,10 +461,9 @@ type BareMetalInstanceSpec struct {
 }
 
 type BareMetalNetworkAttachment struct {
-    Subnet         *SubnetLocalReference         `json:"subnet,omitempty"` // resolved before provisioning
-    SecurityGroups []SecurityGroupLocalReference `json:"securityGroups,omitempty"`
-    Interface      string                        `json:"interface,omitempty"`
-    Primary        *bool                         `json:"primary,omitempty"` // omitted or true for the single attachment
+    Subnet         *SubnetLocalReference `json:"subnet,omitempty"` // resolved before provisioning
+    Interface      string                `json:"interface,omitempty"`
+    Primary        *bool                 `json:"primary,omitempty"` // omitted or true for the single attachment
 }
 
 type BareMetalInstanceStatus struct {
@@ -475,7 +480,7 @@ type BareMetalNetworkAttachmentStatus struct {
 ```
 
 CEL immutability: `network_attachments` list and every network-owned field are
-immutable after creation, including subnet, SecurityGroup membership, interface,
+immutable after creation, including subnet, NetworkACL membership, interface,
 and primary designation. `auto_external_ip_attachment` is also create-time only.
 BMaaS accepts at most one network attachment, and that attachment is
 implicitly primary.
@@ -533,21 +538,21 @@ used by CaaS worker provisioning.
 
 **Attachment and dependency resolution:**
 
-- A missing or empty list resolves the tenant default Subnet, default
-  SecurityGroup, and first eligible `fabric` interface from the effective
-  BareMetalInstanceType.
-- A supplied attachment defaults only missing fields. A supplied Subnet,
-  non-empty SecurityGroup list, or interface is preserved and validated; no
-  default may overwrite it.
+- A missing or empty list resolves the tenant default Subnet and the first
+  eligible `fabric` interface from the effective BareMetalInstanceType. The
+  effective NetworkACL is inherited from the selected Subnet.
+- A supplied attachment defaults only missing Subnet or interface fields. A
+  NetworkACL supplied inside the attachment is rejected; ACL association is a
+  Subnet property.
 - For standalone, Catalog-based, and tenant-facing creates, the resolved
-  Subnet and every SecurityGroup must exist, be Ready, be in the caller's
-  effective tenant/project, and belong to the same VirtualNetwork. Duplicate
-  SecurityGroup references are rejected.
+  Subnet and its effective NetworkACL must exist, be Ready, be in the
+  caller's effective tenant/project, and belong to the same VirtualNetwork.
 - For the trusted private CaaS worker create path, the resolved Subnet and
-  SecurityGroups are resolved in the source Cluster's effective tenant/project
-  and must be Ready and belong to the same VirtualNetwork. The destination
-  BMI's `system` tenant is not required to match that networking-resource
-  scope; this exception does not apply to public or Catalog-based BMI creates.
+  its effective NetworkACL are resolved in the source Cluster's effective
+  tenant/project and must be Ready and belong to the same VirtualNetwork. The
+  destination BMI's `system` tenant is not required to match that
+  networking-resource scope; this exception does not apply to public or
+  Catalog-based BMI creates.
 - The effective BareMetalInstanceType must exist, be Ready/usable for
   allocation, and expose at least one valid network port with role `fabric`.
   A missing, Pending, or Failed instance type is a create precondition
@@ -599,7 +604,7 @@ used by CaaS worker provisioning.
 **Automatic ExternalIP validation:**
 
 - Auto ExternalIP allocation is available only after the normal one-entry,
-  interface, Subnet, SecurityGroup, and instance-type validations pass.
+  interface, Subnet, effective NetworkACL, and instance-type validations pass.
 - The selected pool must be Ready, IPv4, and have capacity. Parent BM,
   ExternalIP, and Pending ExternalIPAttachment records are created in one
   transaction; capacity or validation failure leaves no parent or child
@@ -611,14 +616,15 @@ used by CaaS worker provisioning.
 **Update, delete, and private CaaS handoff:**
 
 - Update, patch, replace, or field-mask changes to the attachment list,
-  Subnet, SecurityGroups, interface, primary value, or
+  Subnet, interface, primary value, or
   `auto_external_ip_attachment` are rejected after create. Changing the
   network requires delete and recreate.
 - The CaaS private create path must send exactly one enriched attachment:
-  the Subnet and SecurityGroups from the Cluster attachment plus the
-  immutable node-set `fabric_interface`. BMaaS re-validates that attachment
-  against the selected BareMetalInstanceType; private callers do not bypass
-  the physical-port and lifecycle-port checks.
+  the Subnet from the Cluster attachment plus the immutable node-set
+  `fabric_interface`. The effective NetworkACL is inherited from the Subnet.
+  BMaaS re-validates that attachment against the selected
+  BareMetalInstanceType; private callers do not bypass the physical-port and
+  lifecycle-port checks.
 - The BM delete path returns the selected port to the provisioning network
   only after dependent ExternalIPAttachment cleanup is handled. Deletion is
   blocked by shared dependency guards when another resource still references
@@ -632,17 +638,18 @@ example `spec.network_attachments[1]`,
 #### Catalog Item interaction
 
 Catalog Item v2 may govern the complete `network_attachments` list. It may
-lock the single attachment or make it editable with an optional default. The
-same Bare Metal rules apply after Catalog resolution: at most one attachment,
-one implicit primary, a valid interface from the effective
-BareMetalInstanceType, no lifecycle interface, and a Subnet and SecurityGroup
-set in the same VirtualNetwork.
+  lock the single attachment or make it editable with an optional default. The
+  same Bare Metal rules apply after Catalog resolution: at most one attachment,
+  one implicit primary, a valid interface from the effective
+  BareMetalInstanceType, no lifecycle interface, and a Subnet with its
+  effective NetworkACL in the same VirtualNetwork.
 
 Resolution occurs before the tenant default network is applied. A locked list
 rejects conflicting tenant input; an editable list accepts tenant input,
 otherwise uses its Catalog default and Template defaults, then defaults only
-missing fields from the tenant's default Subnet, SecurityGroup, and fabric
-interface. Supplied fields are preserved. A shared Catalog Item cannot lock or
+missing fields from the tenant's default Subnet and fabric interface. The
+effective NetworkACL is inherited from the selected Subnet. Supplied fields
+are preserved. A shared Catalog Item cannot lock or
 default tenant-local network references.
 
 The editable policy applies only during BaremetalInstance creation. After
@@ -670,9 +677,9 @@ segment** (DHCP + default gateway + SNAT for outbound internet) holds every
 server's **fabric NIC** while the server is idle and during provisioning, so an
 unassigned server always has internet via its fabric NIC. The provisioning
 network exists **only in the fabric manager** — it has no OSAC Subnet CR — and
-its name is a fabric-manager configuration value (`netris_bm_provisioning_vnet`,
-sourced from the `NETRIS_BM_PROVISIONING_VNET` environment variable, with
-backward-compatible fallback to `NETRIS_BM_PARKING_VNET`), not operator state.
+its name is a fabric-manager configuration value sourced from deployment
+configuration, not operator state. Any compatibility fallback for that
+configuration is deployment-owned.
 
 **Provision and deprovision are the same primitive: move a fabric port from one
 network segment to another.** The port lifecycle is:
@@ -856,7 +863,13 @@ Deletion (power-off-first — tenant workloads never touch provisioning network)
 4. reconcileInventory (delete) → unassign host
 ```
 
-The server sits on the **provisioning network** (config identifier `netris_bm_provisioning_vnet`, with DHCP + gateway + egress) from bootstrap through the entire metal3 deploy and first boot. First-boot cloud-init runs there **with egress**, so first-boot pulls succeed. Only after `ProvisionTemplateComplete` does the operator move the fabric port to the tenant network (waiting for the network segment to reach active state) and perform the handoff reboots so the OS re-DHCPs on the tenant network (see DHCP lease handoff below).
+The server sits on the **provisioning network** (with DHCP, gateway, and
+egress) from bootstrap through the entire metal3 deploy and first boot.
+First-boot cloud-init runs there **with egress**, so first-boot pulls succeed.
+Only after `ProvisionTemplateComplete` does the operator move the fabric port
+to the tenant network (waiting for the network segment to reach active state)
+and perform the handoff reboots so the OS re-DHCPs on the tenant network (see
+DHCP lease handoff below).
 
 **DHCP lease handoff — deterministic second reboot.** Moving the fabric port from the provisioning network to the tenant network moves the host's NIC to the tenant V-Net, so the host must obtain a fresh DHCP lease there. This does not complete on the first post-switch reboot; a second reboot is deterministically required before the host holds a tenant-V-Net lease. This is expected, deterministic behavior — not a timing or race condition. The operator performs the second reboot as a standard step of the handoff, after which `reconcileIPDiscovery` reads the tenant-V-Net lease. (Fabric managers that scope DHCP strictly per segment may not require the second reboot.)
 
@@ -866,8 +879,8 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
-- SecurityGroup enforcement follows the [Unified Networking SecurityGroup rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-rule-semantics) for explicit and default SecurityGroups.
-- The single BMaaS tenant attachment uses the SecurityGroup rules for its Subnet.
+- NetworkACL enforcement follows the [Unified Networking NetworkACL rule semantics](/enhancements/OSAC-1433-unified-networking/design.md#networkacl-rule-semantics) for explicit and default NetworkACLs.
+- The single BMaaS tenant attachment uses the NetworkACL rules for its Subnet.
 
 ### Failure Handling and Recovery
 
@@ -916,7 +929,9 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Impact:** The fabric manager `move_network_attachment` role and a provisioned provisioning network segment are prerequisites for BMaaS networking. Without them, switch port configuration cannot function.
 
-**Mitigation:** Prioritize Netris BM roles (OSAC-2081). Accept that BMaaS remains unavailable until a fabric_manager exists. Document as a hard dependency.
+**Mitigation:** Prioritize the BM networking roles (OSAC-2081). Accept that
+BMaaS remains unavailable until a fabric_manager exists. Document as a hard
+dependency.
 
 **Reviewed by:** Engineering / Product
 
@@ -1023,7 +1038,7 @@ Tech Preview criteria:
 - [ ] Documentation: API reference, user guide for simplified BM creation
 
 GA criteria:
-- [ ] fabric_manager implementation (Netris BM roles, OSAC-2081) delivered and production-tested
+- [ ] fabric_manager implementation (BM networking roles, OSAC-2081) delivered and production-tested
 - [ ] Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460) implemented and stable
 - [ ] NATGateway full stack (OSAC-1443) implemented and stable
 - [ ] Production deployment verified (MOC or other OSAC deployment)
@@ -1138,7 +1153,10 @@ Consequences:
 ## Infrastructure Needed
 
 - AAP execution environment with the fabric manager `move_network_attachment` role
-- A provisioned provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (deployment infrastructure)
+- A provisioned provisioning network segment (DHCP + gateway + SNAT) and the
+  initial per-server attach, plus the BareMetalHost
+  `osac.openshift.io/interface-macs` annotation — deployment prerequisites
+  (deployment infrastructure)
 - Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460)
 - Integration test environment with fabric manager and Ironic/Metal3 backend
 
@@ -1156,8 +1174,8 @@ Consequences:
 | BM provisioning flow — reconcileNetworking dispatcher logic (dispatches move_network_attachment after provisioning, provisioning network → tenant). Note: the upstream producers that populate `network_attachments` on the K8s CR — BareMetalInstance CRD field and mutateBMI copy — are tracked separately below as open GAPs | OSAC-2047 | Closed |
 | BM reboot flow (reconcileReboot issues BMH annotation-based reboot after port move) | Not tracked | **GAP** |
 | Integration test | OSAC-1510 | New |
-| Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | Closed |
-| Provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) + initial per-server attach in setup-bmaas | osac-deployment infrastructure | New |
+| Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (BM networking role) | Closed |
+| Provisioning network segment (DHCP + gateway + SNAT) + initial per-server attach in setup-bmaas | osac-deployment infrastructure | New |
 | BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-deployment infrastructure | New |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |

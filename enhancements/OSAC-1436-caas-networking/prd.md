@@ -16,7 +16,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ### 2.1 Goals
 
-- A tenant can create a cluster with explicit network configuration, specifying which subnet and security groups to use for cluster nodes
+- A tenant can create a cluster with explicit network configuration, specifying which subnet to use; the subnet's effective NetworkACL controls cluster-node traffic
 - A cluster uses a single network attachment — one subnet for all node sets. The system automatically determines which physical interface to use for each node set from its BareMetalInstanceType network ports
 - Tenants can request automatic external IP attachment for cluster API server and ingress endpoints with `--external-ip-attachment`, without pre-creating external IP resources
 - When the network attachment is omitted or empty, the system applies both
@@ -37,10 +37,10 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ### Tenant User Stories
 
-- As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet with specific security group rules
+- As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet whose effective NetworkACL controls traffic
 - As a Tenant User, I want my cluster's node sets to automatically use the correct physical interface from their BareMetalInstanceType so that network connectivity is configured without manual interface specification
 - As a Tenant User, I want to create a cluster with `--external-ip-attachment` so that the system provisions external IPs for both the API server and ingress and the cluster is externally reachable in a single API call
-- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default subnet with my default security groups
+- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default subnet with its effective default ACL policy
 - As a Tenant User, I want to see my cluster's API server and ingress endpoint addresses in the cluster status so that I can access the cluster
 - As a Tenant User, I want auto-provisioned networking resources to be automatically cleaned up when I delete my cluster so that I do not accumulate orphaned resources
 
@@ -63,16 +63,16 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 #### Network Configuration
 
-- **FR-1:** Cluster creation supports the singular `network_attachment` field carrying one `ClusterNetworkAttachment` with a subnet and security groups. The attachment applies to the entire cluster — all node sets share the same subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType's `network_ports`. The complete attachment and every field, including security groups, are immutable after creation; changing them requires deleting and recreating the Cluster. [User]
-- **FR-1a:** The CLI accepts at most one `--network-attachment` value for a Cluster and maps it to the singular `network_attachment` field. The value may contain only `subnet` and `security-groups`; `interface`, `primary`, repeated attachments, and per-node-set network values are rejected. [User]
+- **FR-1:** Cluster creation supports the singular `network_attachment` field carrying one `ClusterNetworkAttachment` with a subnet. The attachment applies to the entire cluster — all node sets share the same subnet, and the effective NetworkACL is inherited from that Subnet. The system determines which physical network interface to use for each node set from its BareMetalInstanceType's `network_ports`. The complete attachment and every field are immutable after creation; changing them requires deleting and recreating the Cluster. [User]
+- **FR-1a:** The CLI accepts at most one `--network-attachment` value for a Cluster and maps it to the singular `network_attachment` field. The value may contain only `subnet`; `network-acls`, `interface`, `primary`, repeated attachments, and per-node-set network values are rejected. [User]
 - **FR-1b:** The CLI maps `--external-ip-attachment` to `auto_external_ip_attachment: true`; omission maps to false, and the field cannot be updated after Cluster creation. [User]
 
 #### Optional Network Configuration with Defaults
 
 - **FR-2:** The network configuration on cluster creation is optional. When
-  omitted or empty, the system applies both tenant defaults. When only one
-  attachment field is missing, only that field is defaulted. The resolved
-  configuration is stored so the cluster is self-describing after creation. [User]
+  omitted or empty, the system applies the tenant default Subnet. The
+  effective NetworkACL is inherited from that Subnet and is not copied into
+  the workload attachment. [User]
 
 #### Auto External IP
 
@@ -113,7 +113,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 #### Auto-Provisioned Resource Cleanup
 
-- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled with `osac.openshift.io/auto-created: "true"`. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up; a manually created ExternalIPAttachment targeting the cluster blocks cluster deletion until the tenant deletes that attachment. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled with `osac.openshift.io/auto-created: "true"`. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up; a manually created ExternalIPAttachment targeting the cluster blocks cluster deletion until the tenant deletes that attachment. Default networking resources (virtual networks, subnets, network ACLs, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -128,7 +128,7 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a cluster with network configuration specifying a subnet and security groups, and the cluster nodes are provisioned on the specified subnet
+- [ ] A Tenant User can create a cluster with network configuration specifying a subnet, and the cluster nodes are provisioned on the specified subnet with its effective NetworkACL
 - [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with the appropriate physical interface automatically selected from each node set's BareMetalInstanceType
 - [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress
 - [ ] Cluster status exposes API server and ingress endpoint addresses after provisioning completes
@@ -142,10 +142,10 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, security group) pre-created. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
+- The tenant has default networking resources (virtual network, subnet, and default NetworkACL) pre-created. If defaults are not configured, creating a cluster without explicit network configuration fails with a clear error.
 - The current CaaS BM-worker flow is supported only in BM-only or
   combined-manager deployments. The selected NetworkClass must configure at
-  least one manager that supports VirtualNetworks, Subnets, SecurityGroups,
+  least one manager that supports VirtualNetworks, Subnets, NetworkACLs,
   ExternalIPs, and ExternalIPAttachments, plus the shared CaaS/MetalLB
   endpoint-VIP and worker-reachability prerequisites required by the selected topology. A
   Ready NATGateway is required when the tenant and management networks have
@@ -156,8 +156,8 @@ Cluster provisioning has no networking configuration. Tenants cannot choose whic
 
 ## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, external IP attachments, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, network ACLs, external IPs, external IP attachments, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
+- **Default Networking PRD** — default subnet and network ACL selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 
 ## 8. Risks
 

@@ -38,10 +38,9 @@
 
 | Input | Expected result |
 |---|---|
-| Field omitted | Tenant default Subnet and SecurityGroup |
-| Empty message | Tenant default Subnet and SecurityGroup |
-| Only Subnet | Preserve Subnet; fill only SecurityGroups |
-| Only SecurityGroups | Preserve SecurityGroups; fill only Subnet |
+| Field omitted | Tenant default Subnet and its effective NetworkACL |
+| Empty message | Tenant default Subnet and its effective NetworkACL |
+| Only Subnet | Preserve Subnet; inherit its effective NetworkACL |
 | Complete message | Preserve all supplied fields |
 | Invalid explicit value | Reject; never repair with default |
 
@@ -49,7 +48,8 @@
 
 - Catalog/Template resolution precedes tenant defaults.
 - Exactly one resolved Cluster attachment is stored.
-- Subnet and SecurityGroups are Ready, same-scope, same-VN, IPv4, and unique.
+- The selected Subnet and its effective NetworkACL are Ready, same-scope,
+  same-VirtualNetwork, and IPv4.
 
 #### TC-R1-02: Unsupported Cluster attachment shapes are rejected
 
@@ -61,7 +61,7 @@
 
 - repeated/multi-attachment representation;
 - `fabric_interface` or physical-port field in public Cluster input;
-- per-node Subnet/SecurityGroup/tenant-interface override;
+- per-node Subnet/NetworkACL/tenant-interface override;
 - wrong-scope, cross-VN, Pending, Failed, IPv6, or duplicate reference.
 
 ##### Expected results
@@ -93,7 +93,7 @@
 
 - Each node set stores the first ordered `fabric` port for its type.
 - Node sets may have different physical interfaces while sharing one tenant
-  Subnet and SecurityGroups.
+  Subnet and inheriting its effective NetworkACL.
 - The stored interface is immutable after Cluster creation.
 - The existing Cluster and later worker requests retain the originally stored
   interfaces; the BareMetalInstanceType edit does not trigger re-resolution.
@@ -139,9 +139,10 @@
 
 - Each worker request contains one BM attachment.
 - `ClusterOrder.spec.networkAttachment` is the singular private-CR field.
-- Subnet and SecurityGroups come from the Cluster attachment as typed local
-  references; no `networkAttachments[0]`, `subnetRef`, or `securityGroupRefs`
-  representation is accepted.
+- The Subnet comes from the Cluster attachment as a typed local reference; the
+  effective NetworkACL is inherited through the Subnet association. No
+  `networkAttachments[0]`, `subnetRef`, or NetworkACL reference in the
+  attachment is accepted.
 - Physical interface comes from immutable node-set resolution.
 - Primary is implicit/true.
 - BMaaS resolves the local network references in the Cluster tenant/project,
@@ -343,7 +344,7 @@
 ##### Expected results
 
 - Update, patch, replace, and field-mask changes to the network-owned
-  attachment, Subnet, SecurityGroups, stored interfaces, endpoint enum, and
+  attachment, Subnet, stored interfaces, endpoint enum, and
   auto-external switch are rejected.
 - Controller-owned endpoint status, conditions, and finalizers can only be
   written through the validated feedback/reconciliation path; direct tenant
