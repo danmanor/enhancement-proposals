@@ -69,7 +69,7 @@ Each wizard step is a separate per-kind component with static, hardcoded fields 
 3. CSP Admin clicks the "Create" button on the active tab, which navigates to the kind-specific create wizard (e.g., `/admin/catalog/cluster/create`). The resource type is determined by the tab.
 4. **Step 1 — General:** Admin enters name, description (Markdown), selects scope, and selects a template from a dropdown populated by the corresponding template list endpoint (e.g., `GET /v1/cluster_templates`). Selecting a template pre-populates field definitions with defaults from the template. **Scope:** CSP Admin selects between **General** (visible to all tenants) or **Organization** (scoped to a specific tenant, selected from a tenant dropdown).
 5. **Step 2 — Configuration:** A per-kind step component with static fields for the resource spec (excluding access and networking fields). Each field uses a shared field definition primitive (`StringFieldDefinition`, `NumberFieldDefinition`, `ResourceSelectorFieldDefinition`, `BooleanFieldDefinition`) that renders an editable toggle, a type-appropriate default value input, and type-specific validation options. Default values are pre-populated from the selected template. By default, fields are non-editable; non-editable fields require a default value. For Cluster, includes `NodeSetsFieldEditor` for setting a default `size` per node set defined in the selected template (`baremetal_instance_type` is read-only, inherited from the template) and size constraints. For resource reference fields (`ResourceSelectorFieldDefinition`), the admin selects a default from a dropdown of existing resources — no validation constraints are configured.
-6. **Step 3 — Networking:** The per-kind networking step exposes only the fields governed by Catalog Items v2. Cluster exposes `pod_cidr`, `service_cidr`, `network_attachment` (`ClusterNetworkAttachment`), and `auto_external_ip_attachment`; VM exposes `network_attachments` (`ComputeNetworkAttachment` values) and `auto_external_ip_attachment`; Bare Metal exposes `network_attachments` (`BareMetalNetworkAttachment` values) and `auto_external_ip_attachment`. The VM and Bare Metal attachment controls remain list-shaped but reject more than one entry and explicit `primary: false`. Cluster exposes one structured attachment, not a repeated list. Shared Catalog Items may not provide tenant-local network defaults; they can expose those references as editable tenant inputs. Tenant-owned items may use same-scope typed Subnet and SecurityGroup references, subject to the authoritative networking validation.
+6. **Step 3 — Networking:** The per-kind networking step exposes only the fields governed by Catalog Items v2. Cluster exposes `pod_cidr`, `service_cidr`, `network_attachment` (`ClusterNetworkAttachment`), and `auto_external_ip_attachment`; VM exposes `network_attachments` (`ComputeNetworkAttachment` values) and `auto_external_ip_attachment`; Bare Metal exposes `network_attachments` (`BareMetalNetworkAttachment` values) and `auto_external_ip_attachment`. The VM and Bare Metal attachment controls remain list-shaped but reject more than one entry and explicit `primary: false`. Each attachment may carry typed SecurityGroup references; NetworkACL is never an attachment field. Cluster exposes one structured attachment, not a repeated list. Shared Catalog Items may not provide tenant-local network defaults; they can expose those references as editable tenant inputs. Tenant-owned items may use same-scope typed Subnet and SecurityGroup references, and the selected Subnet and SecurityGroup must belong to the same VirtualNetwork. If a tenant selects a non-default VirtualNetwork/Subnet and leaves SecurityGroup empty, the UI must not silently apply the tenant default group; it must request a compatible group or render the server's `InvalidArgument` detail. The effective NetworkACL is inherited from the selected Subnet and must be Ready before workload placement. All cases remain subject to the authoritative networking validation.
 7. **Step 4 — Access:** Per-kind access step component with `ssh_public_key`/`ssh_key` and `pull_secret` (clusters) as `StringFieldDefinition` fields. Both default to editable.
 8. Admin clicks "Create". The UI sends a POST to the appropriate catalog item endpoint with `published: false` (default).
 8. The admin is redirected to the detail page for the newly created catalog item.
@@ -362,11 +362,20 @@ Each resource type has its own configuration step component with static, hardcod
 and `auto_external_ip_attachment`. `BMNetworkingStep` contains
 `network_attachments`, a list of `BareMetalNetworkAttachment` values, and
 `auto_external_ip_attachment`. The two list-shaped attachment fields accept
-zero or one entry only. Each entry uses typed local Subnet and SecurityGroup
-references; the UI never exposes a physical interface selector. Shared items
-cannot store tenant-local attachment defaults, while tenant-owned items must
-use references in their own scope. All fields are still validated by the
-Catalog Items v2 and resource-specific networking contracts on the server.
+zero or one entry only. Each entry uses typed local Subnet and optional
+SecurityGroup selectors/references; NetworkACL is never an attachment field.
+An empty SecurityGroup selection means the tenant default only when the selected
+Subnet belongs to the tenant default VirtualNetwork and the default is
+available. The effective ACL is inherited from the selected Subnet. The UI never
+exposes a physical interface selector. Shared
+items cannot store tenant-local attachment defaults, while tenant-owned items
+must use Subnet and SecurityGroup references in their own scope and the same
+VirtualNetwork. An empty SecurityGroup selection is valid only when the
+selected Subnet is in the tenant default VirtualNetwork; it does not silently
+apply the default group to a Subnet in another VirtualNetwork. The selected
+Subnet must have a Ready effective ACL before placement. All fields are still
+validated by the Catalog Items v2 and
+resource-specific networking contracts on the server.
 
 **Step 4: Access** (per-kind step component)
 
@@ -537,9 +546,10 @@ resource-specific field/type pairs: `network_attachments` carrying
 `network_attachment` carrying `ClusterNetworkAttachment` for Cluster, and
 `network_attachments` carrying `BareMetalNetworkAttachment` values for
 BareMetalInstance. The VM and Bare Metal fields retain their list-shaped API
-forms but accept zero or one entry only. Each entry is built from typed local
-references (`subnet.name` and `security_groups[].name`); IDs alone are not
-accepted. The UI does not expose `primary: false`, physical interface names,
+forms but accept zero or one entry only. Each entry is built from a typed local
+Subnet reference (`subnet.name`); IDs alone are not accepted. NetworkACL
+association is resolved from the selected Subnet and is not sent in the
+attachment. The UI does not expose `primary: false`, physical interface names,
 or per-node-set selectors. `auto_external_ip_attachment` is a separate
 create-time boolean policy for all three resource kinds. Catalog scope and
 readiness checks remain authoritative on the server.

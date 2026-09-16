@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -14,6 +14,7 @@ see-also:
   - CaaS Networking: /enhancements/OSAC-1436-caas-networking
   - BMaaS Networking: /enhancements/OSAC-1437-bmaas-networking
   - Default Networking: /enhancements/OSAC-1433-default-networking
+  - K8s-only Networking Manager: /enhancements/OSAC-1433-k8s-only-k8s-manager
 replaces:
   - OSAC-356 Networking API proposal (retired)
 superseded-by:
@@ -31,29 +32,39 @@ see the companion [Requirements Document (PRD)](prd.md).
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
 OVN overlay that is not directly visible on the physical fabric. The core
-premise of this design is that **VMs are part of the fabric**. Through a
-[K8s manager](#how-vms-join-the-fabric) that bridges the OVN overlay to the
-physical network, VMs become first-class participants in the fabric alongside
-bare-metal servers and cluster nodes. When a Fabric Manager is configured, all
-resource types are treated uniformly on the fabric — that manager handles
-isolation, security, IP allocation, DNAT, and SNAT. For workloads eligible for
-K8s-only mode, the K8s Manager provides the supported equivalent for every
-shared resource except NATGateway; the service-specific designs still define
-which workload flows are eligible for that mode.
+premise of this design is that **VMs are part of the fabric** when a deployment
+includes a K8s manager. Every registered manager is a complete implementation
+target for the full OSAC networking API and all three workload scopes: VMaaS,
+BMaaS, and CaaS. A manager registration therefore declares only the manager
+identity/type and the deployment-wide IPv4 contract; it does not advertise a
+subset of resources, policy types, or services. A manager may temporarily use
+a successful no-op AAP role for a resource or workflow still under development,
+but that is an implementation stub and never a tenant-visible unsupported
+capability or alternate API path. Native Kubernetes NetworkPolicy alone is not
+a substitute for the OSAC policy contracts. The concrete manager profiles
+define their backend mappings while inheriting this complete contract.
 
 The design introduces:
 
 - **NetworkClass** with optional `fabricManager` and `k8sManager` fields; at
-  least one is required, and the manager combination resolves the private
-  `implementation_strategy`
+  least one is required, and every selected manager receives the complete
+  networking resource and workload contract
 - **Infrastructure-agnostic subnets** where the same subnet can host VMs,
-  BM servers, and cluster nodes when the selected manager and
-  service-specific placement contract support those workloads
+  BM servers, and cluster nodes, subject to the shared workload placement
+  contract
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
   external to the VirtualNetwork, not necessarily internet-routable
 - **Uniform API** where the same networking resources (VirtualNetwork,
-  Subnet, NetworkACL, ExternalIP, ExternalIPAttachment, NATGateway)
-  serve VMaaS, CaaS, and BMaaS identically
+  Subnet, SecurityGroup, NetworkACL, ExternalIP, ExternalIPAttachment,
+  NATGateway) serve VMaaS, CaaS, and BMaaS identically
+
+SecurityGroup and NetworkACL are complementary policy layers. A SecurityGroup
+is a stateful, VirtualNetwork-scoped policy selected by a workload's network
+attachment. A NetworkACL is a stateless, Subnet-associated policy inherited by
+every workload on that Subnet. A packet must be permitted by both applicable
+layers. SecurityGroup rules are allow-only and unmatched traffic is denied;
+NetworkACL rules explicitly allow or deny traffic and are evaluated
+independently in each direction.
 
 NetworkACL is a subnet policy, not a workload attachment. It belongs to one
 VirtualNetwork, can be associated with multiple explicit Subnets, and is the
@@ -111,17 +122,18 @@ its own design, which may support update and resize operations.
 
 | Network-owned object or field | Allowed user/API operations | Immutability boundary |
 |---|---|---|
-| `NetworkClass` | Provider create, read, delete; tenant no access to create/update/delete | All provider-selected manager and capability configuration in `spec` is fixed after creation. The provider may delete it only after the deployment has no networking resources or workload network attachments that depend on its manager resolution. |
-| `VirtualNetwork` | Create, read, delete | Provider-resolved implementation strategy, CIDR/address-family, and all other network `spec` fields are fixed after creation. |
+| `NetworkClass` | Provider create, read, delete; tenant no access to create/update/delete | All provider-selected manager configuration in `spec` is fixed after creation. The provider may delete it only after the deployment has no networking resources or workload network attachments that depend on its manager resolution. |
+| `VirtualNetwork` | Create, read, delete | CIDR/address-family and all other network `spec` fields are fixed after creation. Controller-owned dispatch annotations are not tenant fields and are not accepted as input. |
 | `Subnet` | Create, read, delete | VirtualNetwork reference, CIDR/address-family, and all other network `spec` fields are fixed after creation. |
-| `NetworkACL` | Create, read, delete | VirtualNetwork reference, explicit Subnet associations, and the complete rule set are fixed after creation. A NetworkACL may be associated with multiple Subnets; a Subnet may have only one effective ACL. |
-| `ExternalIPPool` | Provider create, read, delete; tenant read/reference only | Address-family, CIDR ranges, and all other pool `spec` fields are fixed after creation. Tenants cannot create, update, patch, replace, or delete deployment-scoped pools. |
+| `SecurityGroup` | Create, read, delete | VirtualNetwork reference and the complete allow-only rule set are fixed after creation. Tenant-created groups require at least one rule; the system-created tenant default group may have an empty rule set, which means default deny. |
+| `NetworkACL` | Create, read, delete | VirtualNetwork reference, explicit Subnet associations, and the complete allow/deny rule set are fixed after creation. A NetworkACL may be associated with multiple Subnets; a Subnet may have only one effective ACL, including the system-created default ACL. |
+| `ExternalIPPool` | Provider create, read, delete, and metadata-only update; tenant read/reference only | Address-family, CIDR ranges, and all other pool `spec` fields are fixed after creation. A provider may update only standard mutable metadata; no update may change the pool's network spec. Tenants cannot create, update, patch, replace, or delete deployment-scoped pools. |
 | `ExternalIP` | Create, read, delete | Pool reference, address/allocation identity, and all other network `spec` fields are fixed after creation. |
 | `ExternalIPAttachment` | Create, read, delete | ExternalIP, target, endpoint, and all other binding `spec` fields are fixed after creation; retargeting requires delete and create. |
 | `NATGateway` | Create, read, delete | VirtualNetwork, ExternalIP, and all other gateway `spec` fields are fixed after creation; changing the ExternalIP requires delete and create. |
-| `ComputeInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The list-shaped field accepts zero or one entry only. The complete list and every entry field, including Subnet and `primary`, are fixed after parent creation. The effective NetworkACL is resolved from the Subnet. |
-| `Cluster.network_attachment` | Set on parent create, read with the parent, delete with the parent | The complete attachment and every entry field, including Subnet, are fixed after parent creation. The effective NetworkACL is resolved from the Subnet. |
-| `BaremetalInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The complete list and every entry field, including Subnet, interface, and primary designation, are fixed after parent creation; at most one entry is supported. The effective NetworkACL is resolved from the Subnet. |
+| `ComputeInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The list-shaped field accepts zero or one entry only. The complete list and every entry field, including Subnet, SecurityGroups, and `primary`, are fixed after parent creation. The effective NetworkACL is resolved from the Subnet. |
+| `Cluster.network_attachment` | Set on parent create, read with the parent, delete with the parent | The complete attachment and every entry field, including Subnet and SecurityGroups, are fixed after parent creation. The effective NetworkACL is resolved from the Subnet. |
+| `BaremetalInstance.network_attachments` | Set on parent create, read with the parent, delete with the parent | The complete list and every entry field, including Subnet, SecurityGroups, interface, and primary designation, are fixed after parent creation; at most one entry is supported. The effective NetworkACL is resolved from the Subnet. |
 | `auto_external_ip_attachment` on ComputeInstance, Cluster, and BaremetalInstance | Set on parent create, read with the parent, delete with the parent | This network-owned create-time switch is fixed after parent creation; changing automatic external access requires delete and recreate. |
 
 Controllers may update `status`, conditions, readiness and IP-discovery
@@ -147,10 +159,28 @@ cardinality or placement constraints.
 | IPv4 CIDR | String in canonical dotted-decimal CIDR notation, `a.b.c.d/prefix`, with prefix `0..32` and host bits zero. IPv6 and dual-stack values are rejected. A Subnet CIDR must be contained by its parent VirtualNetwork CIDR and Subnet CIDRs must not overlap within that VirtualNetwork. |
 | IPv4 address | String in dotted-decimal IPv4 notation without a CIDR suffix. Address fields are system/provider results, not alternate encodings of CIDRs. |
 | Resource reference | A reference to an existing resource in the scope defined below; arbitrary strings are invalid. Use the typed local/full reference forms defined by [OSAC-1330](</enhancements/OSAC-1330-type-safe-resource-references/design.md>) for every reference-bearing network field, while preserving the documented resource scope. |
-| Enum | Only the values listed in the relevant table are accepted. Unknown, future, and unspecified values are rejected for user-set fields unless explicitly marked as a status value. |
+| Enum | Only the values listed in the relevant table are accepted. Unknown, future, and unspecified values are rejected for user-set fields unless explicitly marked as a status value. Protobuf enum symbols in the examples are uppercase identifiers; the public JSON and CLI representations are defined separately below and are not case-folded. |
 | Repeated field | Cardinality, uniqueness, and ordering are part of the field contract. Duplicate references are rejected; ordering is meaningful only where explicitly stated. |
 | Timestamp | If exposed in an API status or audit field, use `google.protobuf.Timestamp` / RFC 3339 semantics in UTC. Timestamps are controller/system fields and are not tenant network configuration. |
 | Metadata name | Standard resource metadata rules apply; metadata is outside the network-owned field contract and is not changed by this design. |
+
+### Enum wire and client representations
+
+The protobuf snippets use conventional uppercase enum symbols, but clients must
+use the following canonical representations:
+
+| Field family | Protobuf symbols | REST/JSON value | CLI value | UI behavior |
+|---|---|---|---|---|
+| SecurityGroup and NetworkACL `direction` | `INGRESS`, `EGRESS` | `ingress`, `egress` | `ingress`, `egress` | Display `Ingress`/`Egress`; submit the lowercase JSON value |
+| SecurityGroup and NetworkACL `protocol` | `TCP`, `UDP`, `ICMP`, `ANY` | `tcp`, `udp`, `icmp`, `any` | `tcp`, `udp`, `icmp`, `any` | Display labels may be title case; submit the lowercase JSON value |
+| NetworkACL `action` | `ALLOW`, `DENY` | `allow`, `deny` | `allow`, `deny` | Display `Allow`/`Deny`; submit the lowercase JSON value |
+| `ExternalIPPool.spec.ip_family` | `IPV4` | `IPV4` | `ipv4` | Display `IPv4`; submit `IPV4` |
+| `ExternalIPAttachmentSpec.target_endpoint` | `UNSPECIFIED`, `API`, `INGRESS` | `UNSPECIFIED`, `API`, `INGRESS` | `api`, `ingress` for Cluster; omitted for VM/BM | Display `API`/`Ingress`; the CLI maps its lowercase values to the JSON enum |
+
+The REST gateway performs only the documented protobuf-to-JSON mapping. It
+does not accept alternative casing, aliases, or UI display labels. The server
+and CLI reject a value that is not in the canonical representation for that
+surface.
 
 ### Network resource fields
 
@@ -177,33 +207,36 @@ values must still use the corresponding resource-specific message type.
 
 | Resource and field | Wire type / presence | Allowed values and validation |
 |---|---|---|
-| `NetworkClass.spec.fabric_manager` | String reference, optional | If present, must name a provider-registered fabric manager. It may be omitted when a K8s manager provides the complete supported networking surface. |
-| `NetworkClass.spec.k8s_manager` | String reference, optional | If present, must name a provider-registered K8s manager. At least one of `fabric_manager` or `k8s_manager` must be present. |
+| `NetworkClass.spec.fabric_manager` | String reference, optional | If present, must name a provider-registered fabric manager. The referenced manager is a complete implementation target for the networking API and all three workload services. |
+| `NetworkClass.spec.k8s_manager` | String reference, optional | If present, must name a provider-registered K8s manager. The referenced manager is a complete implementation target for the networking API and all three workload services. At least one of `fabric_manager` or `k8s_manager` must be present. |
 | `NetworkClass.spec.defaults` | `NetworkDefaults` message, required | There is no enable/disable knob. `virtual_network_cidr` and `ipv4_subnet_cidr` are both required canonical IPv4 CIDRs; the subnet must be contained by the VN. |
-| `NetworkClass.spec.metallb_vip_prefix_length` | `int32`, conditionally required | Required for a deployment that exposes CaaS/MetalLB VIP allocation; no universal default exists. A valid value is the provider's deployment-level declaration that this path is available; it must be a valid IPv4 prefix more specific than each participating Subnet prefix, and the reserved range must remain inside the Subnet. It is omitted only when the deployment does not provide CaaS VIP allocation. |
-| `VirtualNetwork.spec.implementation_strategy` | Provider-resolved string, required in persisted state | The caller does not set this field. The operator derives it from the managers in the single deployment NetworkClass and stores it as an immutable provider/private value. There is no tenant-selectable NetworkClass reference. |
+| `NetworkClass.spec.metallb_vip_prefix_length` | `int32`, required for the CaaS/MetalLB deployment path | No universal default exists. It must be a valid IPv4 prefix more specific than each participating Subnet prefix, and the reserved range must remain inside the Subnet. It is a deployment setting, not a manager capability advertisement. |
+| Controller dispatch metadata | Operator-owned annotations, not tenant API fields | The operator derives the target manager names from the deployment NetworkClass and stores only the routing metadata required to reconcile and delete the selected targets. There is no tenant-selectable implementation strategy and no combined strategy value. |
 | `VirtualNetwork.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR. Cross-tenant CIDR overlap is allowed only because fabric isolation is explicitly relied upon; Subnet overlap within the VN is rejected. |
 | `Subnet.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
 | `Subnet.spec.ipv4_cidr` | IPv4 CIDR string, required | Must be a canonical IPv4 network CIDR contained by the parent VirtualNetwork and non-overlapping with sibling Subnets in that VN. |
+| `SecurityGroup.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
+| `SecurityGroup.spec.rules` | Repeated `SecurityGroupRule`, required for tenant-created groups | Tenant-created SecurityGroups must contain at least one rule. The tenant default SecurityGroup may have an empty list, which produces implicit default deny. Rules are create-time-only and duplicate rules are rejected. |
 | `NetworkACL.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project. |
-| `NetworkACL.spec.subnets` | Repeated local Subnet references, required | Must contain one or more unique Ready Subnets from the parent VirtualNetwork. A Subnet may not be associated with another custom NetworkACL. |
+| `NetworkACL.spec.subnets` | Repeated local Subnet references, required | Must contain one or more unique Ready Subnets from the parent VirtualNetwork. A Subnet may have at most one effective NetworkACL association; the system-created default ACL counts as that association, so an ordinary custom ACL cannot be associated with a Subnet that already has any effective ACL. |
 | `NetworkACL.spec.rules` | Repeated `NetworkACLRule`, required for a user-created NetworkACL | Every user-created NetworkACL must contain at least one rule. Each tenant default ACL contains the explicit default ACL policy. Rules are create-time-only, duplicates are rejected, and conflicting equal-specificity rules are rejected. |
 | `ExternalIPPool.spec.ip_family` | Enum, required | `IPV4` only. IPv6 and dual-stack values are rejected. |
 | `ExternalIPPool.spec.cidrs` | Repeated IPv4 CIDR strings, required, exactly one supported | The list must contain exactly one canonical IPv4 CIDR. Multi-CIDR pools are not part of the supported contract; create separate pools instead. |
-| `ExternalIP.spec.pool` | Provider/deployment-scoped ExternalIPPool reference, required | The pool must exist, be Ready, and have capacity. The allocated address is selected by the provider/fabric manager; tenants do not supply an arbitrary address. |
+| `ExternalIP.spec.pool` | Provider/deployment-scoped ExternalIPPool reference, required | The pool must exist, be Ready, and have capacity. The allocated address is selected by the provider and all selected manager implementations; tenants do not supply an arbitrary address. |
 | `ExternalIPAttachmentSpec.external_ip` | Local ExternalIP reference, required | The ExternalIP must exist, be `Allocated`, and cannot already be consumed by another ExternalIPAttachment or NATGateway. |
 | `ExternalIPAttachmentSpec.target` | Required `oneof` | Exactly one of `compute_instance`, `cluster`, or `baremetal_instance` must be set. The target must be in the permitted tenant/project scope and `Ready`; the endpoint address must be populated before DNAT is dispatched. |
 | `ExternalIPAttachmentSpec.target_endpoint` | `ExternalIPAttachmentEndpoint` enum | `API` or `INGRESS` is required for a Cluster target. `UNSPECIFIED` is required for ComputeInstance and BaremetalInstance targets. |
-| `NATGateway.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project; only one NATGateway is allowed per VN. Creation is rejected when no configured manager advertises NATGateway support. |
+| `NATGateway.spec.virtual_network` | Local VirtualNetwork reference, required | Must reference a `Ready` VirtualNetwork in the same tenant/project; only one NATGateway is allowed per VN. |
 | `NATGateway.spec.external_ip` | Local ExternalIP reference, required | Must reference an `Allocated`, unconsumed ExternalIP in the same tenant/project. |
 
 For every reference above, create-time validation first checks existence, type,
 scope, and uniqueness. A caller-created dependent resource is rejected with a
 precondition error when the referenced resource is not yet in the required
 state; the API does not silently create a Pending dependency. The only
-exception is an internal default/auto-provisioning transaction, where the
-system may create dependent resources together in Pending state and controllers
-must requeue until each prerequisite reaches the required state.
+exception is the allowlisted OSAC-owned automatic ExternalIP flow described
+below. A resource may be Pending because its own selected manager is still
+provisioning it, but it may not be admitted merely to wait for a referenced
+resource to become ready.
 
 There is one intentional scope exception for the current CaaS worker flow.
 CaaS-managed BaremetalInstances are created in the builtin `system` tenant,
@@ -214,6 +247,132 @@ it must not require the destination BMI tenant to match the networking
 resource tenant. This exception is limited to the authenticated CaaS worker
 path. Standalone, Catalog-based, and tenant-facing BaremetalInstance creates
 continue to require same-scope networking references.
+
+### Strict dependency-ready creation
+
+Creation admission is strict and ordered. The API resolves all explicit,
+Catalog-provided, Template-provided, and defaulted references before it
+persists the requested object. Every referenced object must already be in the
+state required by the operation. If a dependency is `Pending`, `Failed`,
+`Deleting`, or otherwise not usable, the request is rejected immediately; the
+service does not create the dependent object and wait for the dependency to
+recover. This rule applies equally to public tenant APIs, provider/default
+onboarding APIs, private service-to-service APIs, and direct hub-CR admission.
+
+The following readiness matrix is the minimum admission contract. A resource
+can still be `Pending` after admission while its own selected manager performs
+the resource's backend operation; that is different from creating it with a
+non-Ready dependency.
+
+| Create operation | Dependencies that must already be usable | Required state before persistence |
+|---|---|---|
+| `VirtualNetwork` | The deployment `NetworkClass` and every selected manager registration | NetworkClass and registrations are present, enabled, and usable; every selected manager implements the complete networking contract |
+| `Subnet` | `VirtualNetwork` | `VirtualNetwork=Ready` |
+| `SecurityGroup` | `VirtualNetwork` | `VirtualNetwork=Ready` |
+| `NetworkACL` | `VirtualNetwork` and every referenced `Subnet` | `VirtualNetwork=Ready`; every Subnet is `Ready`; every association is available |
+| `ExternalIP` | `ExternalIPPool` | `ExternalIPPool=Ready` with capacity |
+| direct `ExternalIPAttachment` | `ExternalIP`, target workload, and target endpoint | `ExternalIP=Allocated`, target=`Ready`, endpoint present and valid |
+| `NATGateway` | `VirtualNetwork` and `ExternalIP` | `VirtualNetwork=Ready`; `ExternalIP=Allocated` and unconsumed |
+| `ComputeInstance` | Resolved `Subnet`, `SecurityGroup` values, effective Subnet `NetworkACL`, and any required instance profile | All resolved references and profiles are `Ready`; the selected manager combination implements the complete workload path |
+| `Cluster` | Resolved `Subnet`, `SecurityGroup` values, effective Subnet `NetworkACL`, and the resolved cluster template/node-set inputs | All resolved references and profiles are `Ready`; any explicitly required reachability resource is `Ready` |
+| `BaremetalInstance` | Resolved `Subnet`, `SecurityGroup` values, effective Subnet `NetworkACL`, `BareMetalInstanceType`, and the selected BM provisioning inputs | All resolved references and profiles are `Ready`; the selected manager combination implements the complete workload path |
+
+The CaaS private worker exception changes only tenant scope resolution: the
+BMI is materialized in the system tenant, but the trusted request resolves the
+Cluster owner's Subnet, policy, and attachment values. It does not waive the
+readiness requirements in the matrix. A pending or failed Cluster-owned
+network dependency still rejects the private BMI create before a BMI or worker
+CR is persisted.
+
+#### Admission error and atomicity
+
+For an existing dependency in the wrong state, the API returns
+`FailedPrecondition`. The status must include one machine-readable detail for
+each blocker with at least:
+
+- `dependent_resource`: kind and requested name/ID;
+- `field_path`: the request field that introduced the reference;
+- `dependency_resource`: kind and name/ID;
+- `dependency_state`: the observed state;
+- `required_state`: the state required by the matrix; and
+- `remediation`: wait for the dependency to reach the required state, then
+  retry the create request.
+
+The human-readable message uses this form:
+
+```text
+cannot create <DependentKind>/<dependent>: <field_path> references
+<DependencyKind>/<dependency> in state <observed>; required state is
+<required>. Wait for the dependency to become <required> and retry.
+```
+
+For example, a Subnet create against a Pending VirtualNetwork returns
+`FailedPrecondition` identifying `spec.virtual_network` and the VN; a direct
+attachment against a Pending ExternalIP identifies `spec.external_ip` and
+requires `Allocated`. If several references are unusable, the response
+identifies all blockers so the caller can correct the request in one cycle.
+Missing or invisible references continue to use the platform's visibility-safe
+`NotFound`/`InvalidArgument` behavior and must not reveal another tenant's
+resource. No rejected request writes the dependent object, reserves capacity,
+creates a child, creates a CR, or dispatches an AAP job.
+
+#### The only Pending dependency exception
+
+The only create path allowed to persist a child whose dependency is not yet in
+its normal ready state is the OSAC-owned automatic external-access path:
+
+1. The parent workload request must first resolve a `Ready` IPv4
+   `ExternalIPPool` and pass capacity validation.
+2. In the same transaction, OSAC may create the parent workload, an
+   auto-created `ExternalIP` in `Pending`, and an auto-created
+   `ExternalIPAttachment` in `Pending`. The attachment may reference the
+   still-provisioning workload and the Pending ExternalIP.
+3. Only the allowlisted immutable owner relationship and
+   `osac.openshift.io/auto-created: "true"` marker authorize this exception.
+   A tenant-created ExternalIP or attachment cannot use it.
+4. The controllers wait for `ExternalIP=Allocated` and the workload endpoint
+   to be ready before dispatching DNAT. If either becomes terminally Failed,
+   the child reports that failure; it is not silently replaced or attached to
+   another target.
+
+An onboarding-created default NATGateway is not part of this exception. Its
+auto-created ExternalIP may be Pending, but the NATGateway is created only
+after the ExternalIPPool is Ready, the ExternalIP is Allocated, and the
+default VirtualNetwork is Ready. Default VirtualNetwork, Subnet,
+SecurityGroup, NetworkACL, and NATGateway resources therefore follow the same
+strict dependency order as tenant-created resources.
+
+The tenant default SecurityGroup belongs to the tenant default
+VirtualNetwork. Defaulting never creates or selects a SecurityGroup from a
+different VirtualNetwork. After field-level defaulting, the resolved Subnet
+and every resolved SecurityGroup must belong to the same VirtualNetwork. If a
+request supplies a Subnet from a non-default VirtualNetwork while omitting its
+SecurityGroup, or supplies a SecurityGroup that is not compatible with the
+defaulted Subnet, the request is rejected with `InvalidArgument` and a field
+detail identifying both VirtualNetworks. The caller must provide a Ready
+SecurityGroup in the selected VirtualNetwork; the server does not silently
+create a per-VirtualNetwork default group.
+
+### SecurityGroupRule fields
+
+SecurityGroup rules describe traffic that is allowed to or from an attached
+workload. They never contain an allow/deny action field: every rule is an
+allow rule, and traffic that matches no rule is denied. Rules are stateful, so
+return traffic for an accepted connection is allowed automatically. When
+multiple SecurityGroups are attached, their allow rules are aggregated; an
+allow in any attached group is sufficient at the SecurityGroup layer.
+
+| Field | Contract |
+|---|---|
+| `direction` | Required enum: `ingress` or `egress`. Unknown values are rejected. |
+| `protocol` | Required enum: `tcp`, `udp`, `icmp`, or `any`. Values are lowercase and case-sensitive. |
+| `port` | Optional `int32`; for `tcp`/`udp`, omission matches all ports and a supplied value is `1..65535`; `icmp`/`any` omit it. Port ranges are not supported. |
+| `source_cidr` / `destination_cidr` | Exactly one direction-specific field is required. It must be a canonical IPv4 CIDR; `source_cidr` is used for ingress and `destination_cidr` for egress. |
+| Rule evaluation | All matching allow rules from all attached SecurityGroups are aggregated. There are no deny rules, no rule priority, and no most-specific-wins override. Unmatched traffic is denied. Connection state permits the reverse direction for an accepted flow. |
+
+SecurityGroup rules are immutable after creation. A tenant-created group must
+contain at least one rule. The tenant default SecurityGroup is an OSAC-created
+fallback and may have an empty rule list to express default deny.
 
 ### NetworkACLRule fields
 
@@ -233,14 +392,17 @@ arbitrary strings:
 
 | Field | Wire type / presence | Allowed values and validation |
 |---|---|---|
-| `ComputeInstance.network_attachments` | Repeated `ComputeNetworkAttachment`, optional | Missing or empty uses the tenant default Subnet. A supplied list contains zero or one entry only; more than one entry is rejected. The effective NetworkACL is determined by that Subnet. |
+| `ComputeInstance.network_attachments` | Repeated `ComputeNetworkAttachment`, optional | Missing or empty uses the tenant default Subnet and, when the resolved Subnet is in the tenant default VirtualNetwork, the tenant default SecurityGroup. A supplied list contains zero or one entry only; more than one entry is rejected. The effective ACL for the resolved Subnet must be Ready. |
 | `ComputeNetworkAttachment.subnet` | Local Subnet reference, optional at request and required after resolution | If omitted, resolve only the tenant default Subnet. If supplied, it must exist and be `Ready`. |
+| `ComputeNetworkAttachment.security_groups` | Repeated local SecurityGroup references, optional | If omitted or empty, resolve the tenant default SecurityGroup only when the resolved Subnet is in the tenant default VirtualNetwork; otherwise reject with `InvalidArgument` unless a compatible explicit group is supplied. If supplied, use exactly the supplied groups; every group must be Ready, belong to the same tenant and VirtualNetwork, and be unique. |
 | `ComputeNetworkAttachment.primary` | Optional boolean | With the supported single attachment, omission or `true` makes it primary; explicit `false` is rejected. Multi-interface primary selection is unsupported. |
-| `Cluster.network_attachment` | `ClusterNetworkAttachment`, optional | Missing or an empty message uses the tenant default Subnet. When present, exactly one resolved attachment applies to every node set. The effective NetworkACL is determined by that Subnet. |
-| `BaremetalInstance.network_attachments` | Repeated `BareMetalNetworkAttachment`, optional | Missing or empty uses the tenant default Subnet. A non-empty list must contain exactly one entry. The effective NetworkACL is determined by that Subnet. |
+| `Cluster.network_attachment` | `ClusterNetworkAttachment`, optional | Missing or an empty message uses the tenant default Subnet and, when that Subnet is in the tenant default VirtualNetwork, the tenant default SecurityGroup. When present, exactly one resolved attachment applies to every node set. The effective ACL for the resolved Subnet must be Ready. |
+| `ClusterNetworkAttachment.security_groups` | Repeated local SecurityGroup references, optional | If omitted or empty, resolve the tenant default SecurityGroup only when the resolved Subnet is in the tenant default VirtualNetwork; otherwise reject with `InvalidArgument` unless a compatible explicit group is supplied. If supplied, use exactly the supplied groups; every group must be Ready, belong to the same tenant and VirtualNetwork, and be unique. |
+| `BaremetalInstance.network_attachments` | Repeated `BareMetalNetworkAttachment`, optional | Missing or empty uses the tenant default Subnet and, when that Subnet is in the tenant default VirtualNetwork, the tenant default SecurityGroup. A non-empty list must contain exactly one entry. The effective ACL for the resolved Subnet must be Ready. |
+| `BareMetalNetworkAttachment.security_groups` | Repeated local SecurityGroup references, optional | If omitted or empty, resolve the tenant default SecurityGroup only when the resolved Subnet is in the tenant default VirtualNetwork; otherwise reject with `InvalidArgument` unless a compatible explicit group is supplied. If supplied, use exactly the supplied groups; every group must be Ready, belong to the same tenant and VirtualNetwork, and be unique. |
 | `BareMetalNetworkAttachment.interface` | String reference/name, optional | If set, it must identify a valid non-lifecycle port. If omitted, BMaaS selects the first valid `fabric` port from the effective BareMetalInstanceType. |
 | `BareMetalNetworkAttachment.primary` | Optional boolean | The sole BM attachment is implicitly primary; omission or `true` is accepted and explicit `false` is rejected. |
-| `auto_external_ip_attachment` | Boolean, optional | Defaults to `false`; when `true`, the system creates the supported automatic ExternalIP resources. It is create-time-only. |
+| `auto_external_ip_attachment` | Boolean, optional | Defaults to `false`; when `true`, the system creates the automatic ExternalIP resources. It is create-time-only. |
 
 The service-specific documents must not introduce a different type, format,
 default, or validation rule for these shared fields. Service-specific designs
@@ -258,11 +420,11 @@ owning a different class of invariant:
 |---|---|---|---|
 | Request shape | Protobuf/protovalidate and REST gateway | Required fields, `oneof` selection, scalar types, enum membership, repeated-field cardinality that is expressible in the schema, and malformed values | Reject the request before a database write with `InvalidArgument`; do not normalize an invalid value into a valid one. |
 | Tenant/provider authorization | API handler and OPA/RBAC policy | Provider-only NetworkClass access, tenant/project scope, visibility of references, and operation authorization | Return `PermissionDenied` or `NotFound` according to the platform's existing resource-visibility policy; do not leak another tenant's resource. |
-| Semantic API validation | fulfillment-service private server | Canonical formatting, reference type and scope, readiness, uniqueness, cross-field rules, manager capability, and service-specific attachment rules | Return `InvalidArgument` for malformed/contradictory input and `FailedPrecondition` for an existing object that is not in the required state. Persist nothing from a rejected create. |
+| Semantic API validation | fulfillment-service private server | Canonical formatting, reference type and scope, readiness, uniqueness, cross-field rules, complete manager contract, and service-specific attachment rules | Return `InvalidArgument` for malformed/contradictory input and `FailedPrecondition` for an existing object that is not in the required state. Persist nothing from a rejected create. |
 | Transactional validation | fulfillment-service database transaction | Uniqueness races, ExternalIP capacity reservation, one-consumer constraints, reverse-reference protection, and atomic parent/auto-created-resource creation | Abort the transaction. A failed capacity or uniqueness check leaves neither a partial parent resource nor an orphaned auto-created network resource. |
 | Resource CRD validation | Operator CRD schema and CEL rules | The same cardinality and immutable-field rules at the hub-cluster boundary, including every network-owned nested field | Reject an invalid or mutated CR before reconciliation. CRD validation is defense in depth; it must not be weaker than the fulfillment-service contract. |
-| Reconciliation preconditions | osac-operator and service-specific controllers | Dependency readiness, discovered target IPs, manager handoff ordering, and status-to-spec consistency | Do not dispatch a backend operation prematurely. Set a condition and requeue while the dependency is Pending; set Failed only for a terminal, contract-valid provisioning failure. |
-| Backend capability enforcement | Dispatcher and configured manager | The selected manager advertises the requested resource and operation, and returns only contract-valid allocation/status data | Reject unsupported operations before dispatch. Treat a manager response with an invalid family, address, or state transition as a provisioning failure and do not mark the resource Ready. |
+| Reconciliation preconditions | osac-operator and service-specific controllers | Readiness of an already-admitted resource's own manager operation, discovered target IPs, manager handoff ordering, and status-to-spec consistency | Do not dispatch a backend operation prematurely. Requeue an already-admitted resource while its own operation or an allowlisted auto-created ExternalIP/ExternalIPAttachment is Pending. A normal dependent create is rejected at admission and is never represented as a Pending child waiting for another resource. |
+| Backend contract enforcement | Dispatcher and configured manager | Every selected manager receives the requested resource and operation, and returns only contract-valid allocation/status data | Treat a manager response with an invalid family, address, or state transition as a provisioning failure and do not mark the resource Ready. An unfinished operation may use an internal successful no-op AAP role. |
 
 Validation is applied in the following order for every user create request:
 
@@ -273,20 +435,35 @@ Validation is applied in the following order for every user create request:
 3. Resolve Catalog/Template values without changing the meaning of an
    explicitly supplied value. Only the resource-specific attachment fields
    defined by the current API contract are accepted.
-4. Resolve an omitted or empty workload Subnet using the documented tenant
-   default. NetworkACL association is not part of workload defaulting; the
-   effective ACL is determined by the resolved Subnet.
+4. Resolve an omitted or empty workload Subnet and SecurityGroup membership
+   using the documented tenant defaults. The tenant default SecurityGroup may
+   be used only with the tenant default VirtualNetwork. NetworkACL association
+   is not part of workload defaulting. The effective ACL is determined by the
+   resolved Subnet and must be Ready.
 5. Validate every resolved reference for existence, type, scope, readiness,
-   and relationship to the other resolved references.
-6. Validate cross-resource and manager-capability rules, including address
+   and relationship to the other resolved references. A non-Ready existing
+   dependency is a hard `FailedPrecondition` admission failure; it is not
+   persisted as a Pending dependent and is not deferred to reconciliation. In
+   particular, the
+   resolved Subnet and SecurityGroups must belong to the same VirtualNetwork;
+   a missing SecurityGroup is filled only when the tenant default group is in
+   that same VirtualNetwork.
+6. Validate cross-resource and complete-manager rules, including address
    family, CIDR containment/non-overlap, attachment cardinality, target
-   endpoint rules, and one-consumer constraints.
+   endpoint rules, and one-consumer constraints. Every selected manager is an
+   implementation target for every networking resource and workload service;
+   there is no per-resource target lookup or zero-target success path.
 7. Reserve any scarce capacity and persist the complete resolved spec in one
    transaction. If automatic ExternalIP resources are requested, persist the
-   parent and its Pending children atomically.
-8. Reconcile only after persistence. Controllers re-check readiness and
-   manager capability before every backend dispatch because state may change
-   between API persistence and reconciliation.
+   parent and its Pending children atomically; this is the only exception to
+   the strict dependency-ready creation rule.
+8. Reconcile only after persistence. Controllers re-check dependency
+   readiness and the complete manager registration before every backend
+   dispatch because state may change between API persistence and
+   reconciliation. A newly referenced resource that was not Ready at
+   admission is never created by this step. If an implementation is still
+   being completed, its AAP role may finish successfully without changing the
+   public API contract or inventing an unsupported-resource path.
 
 The API distinguishes values that are absent, empty, and explicitly false:
 
@@ -318,25 +495,39 @@ service creates.
   NetworkClass is provider-owned;
 - require at least one of `fabric_manager` and `k8s_manager`, reject an
   unknown manager name, and verify the referenced manager registration exists,
-  is enabled, and declares the required `addressFamily: ipv4` capability;
-- verify that the selected manager combination covers every resource the
-  deployment exposes. A manager may not be selected merely because it can
-  create one resource while lacking the read/delete or allocation capability
-  required by that resource's full lifecycle;
+  is enabled, and is an IPv4 manager;
+- verify before NetworkClass Ready that every selected manager profile provides
+  the complete create/read/delete lifecycle, readiness, policy, allocation,
+  translation, and workload integration for every canonical networking
+  resource and for VMaaS, BMaaS, and CaaS. A profile that is incomplete is a
+  provider configuration error, not a partial-manager registration;
+- allow a development profile to route an incomplete implementation through a
+  successful no-op AAP role while its code is being completed. The no-op is
+  internal provider implementation behavior, is not represented as an
+  unsupported resource or service, and cannot create a second public API path;
+- treat a K8s-only manager as the direct implementation target, not as a
+  fallback to a missing Fabric Manager. For every networking resource, select
+  every configured manager: one selected manager means one job and two
+  selected managers means two jobs. There is no zero-target resource case;
+- validate that the persisted target metadata is complete and unambiguous:
+  the generic implementation annotation names the Fabric target when one is
+  selected, otherwise the K8s target; the K8s-specific annotation is present
+  only for a dual-target resource. The annotations are controller-owned and
+  cannot be supplied or changed by a tenant;
 - require `spec.defaults`, require both default CIDRs, validate their IPv4
   canonical form and containment, and require a valid
-  `metallb_vip_prefix_length` whenever the provider offers the CaaS/MetalLB VIP
-  path. A deployment that does not offer that path must omit the field; there
-  is no separate tenant- or manager-defined CaaS capability key;
-- reject IPv6, dual-stack, unknown capabilities, and arbitrary capability
-  names; capabilities are provider-resolved and not tenant input; and
-- compute and persist the private implementation strategy from the manager
-  combination. A caller-supplied implementation strategy or tenant-selected
+  `metallb_vip_prefix_length` for the CaaS/MetalLB VIP path. There is no
+  manager-defined CaaS service-selection key;
+- reject IPv6 and dual-stack manager/deployment configuration; the complete
+  manager contract is provider-resolved and not tenant input; and
+- compute the per-resource dispatch targets from the manager combination and
+  persist only the controller-owned routing metadata required for reconciliation
+  and deletion. A caller-supplied implementation strategy or tenant-selected
   NetworkClass reference is rejected rather than honored; and
 - publish only a manager-derived status: `addressFamily` must remain `ipv4`,
-  `natGateway` must be false for K8s-only OVN, and the supported-resource set
-  must not claim a resource or operation that the selected managers cannot
-  complete. Status capability changes are provider/controller operations, not
+  and the NetworkClass must not expose a per-resource or per-service support
+  matrix. All canonical resources and workload scopes are part of the selected
+  manager contract. Status changes are provider/controller operations, not
   tenant updates;
 - verify the deployment admission boundary before accepting the NetworkClass:
   exactly one hub cluster must be registered for the deployment and the
@@ -345,11 +536,13 @@ service creates.
   provider configuration precondition; there is no tenant-settable override.
   All networking API and reconciliation paths must resolve through that one
   hub, and every persisted `status.hub` must identify it; and
-- verify the operation set required by each enabled workload service. In
-  particular, BMaaS requires a Fabric Manager operation set containing
-  `move_network_attachment` and `query_dhcp_lease` in addition to the shared
-  networking lifecycle. A K8s-only manager may provide the shared VM surface,
-  but it cannot make BMaaS or the current CaaS BM-worker flow available.
+- verify the complete workload integration before NetworkClass Ready: VMaaS
+  placement, attachment resolution, and IPv4 discovery; BMaaS port movement
+  and DHCP discovery; and CaaS worker placement, reachability, and VIP flow.
+  A missing implementation is a provider configuration/development issue and
+  is handled by the selected AAP implementation (including a temporary no-op
+  stub), never by rejecting a tenant resource because an implementation is
+  still being completed.
 
 **VirtualNetwork.** The API and controller must:
 
@@ -358,10 +551,11 @@ service creates.
   standard resource identity rules;
 - accept only a canonical IPv4 `ipv4_cidr` with host bits zero and reject
   IPv6, dual-stack, malformed, or ambiguous CIDRs;
-- reject a caller-supplied or mismatched implementation strategy; the value
-  must equal the provider-resolved strategy for the deployment;
-- reject a VirtualNetwork create if its deployment NetworkClass is absent,
-  not Ready, or does not advertise the operations required by the resource;
+- reject caller-supplied implementation-strategy annotations or equivalent
+  tenant fields. The controller derives routing metadata from the deployment
+  NetworkClass and never honors a tenant-selected manager;
+- reject a VirtualNetwork create if its deployment NetworkClass is absent or
+  not Ready;
 - prevent a tenant from using the VN as a parent for a Subnet outside the
   tenant/project scope; and
 - keep the VN in Pending/Failed rather than Ready until the configured
@@ -386,25 +580,55 @@ provision an ambiguous address space.
   from the parent VN and NetworkClass;
 - validate any provider-reserved range such as a MetalLB VIP prefix only after
   containment and prefix ordering have been checked; and
-- dispatch `create_subnet` only after the parent VN is Ready and all selected
-  managers support the requested subnet operation. The Subnet becomes Ready
-  only after every required manager reports success.
+- dispatch `create_subnet` only after the parent VN is Ready. The Subnet
+  becomes Ready only after every selected manager reports success (or the
+  development operation completes through its approved no-op AAP role).
+
+A Subnet may be created before a tenant NetworkACL is associated with it. Such
+a Subnet is Ready as a network resource but is not workload-ready: a
+ComputeInstance, Cluster, or BaremetalInstance that resolves to it is rejected
+with `FailedPrecondition` until the effective NetworkACL is Ready. The
+deployment permit baseline is not a substitute for the tenant ACL.
+
+**SecurityGroup and rules.** The API and controller must:
+
+- require a Ready, same-scope VirtualNetwork;
+- require at least one rule for a tenant-created SecurityGroup. The
+  system-created tenant default SecurityGroup may be empty and means default
+  deny;
+- validate every rule independently: required direction and protocol,
+  supported port presence/range, exactly one direction-appropriate CIDR,
+  canonical IPv4 CIDR, and no unsupported extension fields;
+- reject any `allow`/`deny` action field because SecurityGroup rules are
+  allow-only;
+- reject duplicate rules and duplicate SecurityGroup references on an
+  attachment;
+- require every attached group to be Ready, in the same tenant and
+  VirtualNetwork as the workload's resolved Subnet; and
+- keep the complete rule set and VirtualNetwork reference immutable after
+  create. SecurityGroup evaluation is stateful and aggregates allow rules
+  across all attached groups; it does not use deny rules or a most-specific
+  override.
 
 **NetworkACL and rules.** The API and controller must:
 
-- require a Ready, same-scope VirtualNetwork;
+  - require a Ready, same-scope VirtualNetwork;
 - require one or more explicit Ready Subnet associations, each belonging to
   the same VirtualNetwork, with no duplicate references;
-- enforce at most one effective custom NetworkACL association per Subnet;
+- enforce at most one effective NetworkACL association per Subnet, counting
+  the system-created default ACL; an ordinary custom ACL create is rejected if
+  the Subnet already has any effective ACL. Replacing a default ACL is a
+  default-resource replacement workflow, not a second association;
 - require at least one rule for a user-created NetworkACL. Each tenant default
   ACL is populated with the explicit default ACL policy;
 - validate every rule independently before evaluating the rule set: required
   action, direction, and protocol; supported enum value; correct port
   presence/range for the protocol; exactly one direction-appropriate CIDR;
   canonical IPv4 CIDR; and no unsupported extension fields;
-- normalize CIDRs, enum case, and omitted-vs-explicit fields before duplicate
-  detection. Two normalized identical rules are duplicates even if their input
-  text used different equivalent formatting;
+- normalize canonical CIDR text and omitted-vs-explicit fields before duplicate
+  detection. Enum values must already use their canonical lower-case spelling;
+  enum case is not folded. Two normalized identical rules are duplicates even
+  if their input text used different equivalent CIDR formatting;
 - reject conflicting equal-specificity rules after normalization;
 - reject a rule whose source/destination field does not match its direction,
   including ingress with only `destination_cidr` or egress with only
@@ -465,9 +689,10 @@ provision an ambiguous address space.
 
 **NATGateway.** The API and controller must:
 
-- reject creation unless the resolved NetworkClass advertises NATGateway
-  capability; K8s-only OVN deployments return a capability precondition
-  error and never create a permanently Pending NATGateway;
+- accept NATGateway creation as part of the complete manager contract. If the
+  backend operation is not yet implemented, the selected AAP role may complete
+  as a temporary no-op; the API must not reject the tenant resource because a
+  provider implementation is unfinished;
 - require a Ready same-scope VirtualNetwork and an Allocated, unconsumed
   same-scope ExternalIP;
 - enforce one NATGateway per VirtualNetwork and one consumer per ExternalIP;
@@ -501,13 +726,18 @@ tenant surface is intentionally narrow:
   resource-specific contract. The server validates the complete request
   before persistence, resolves defaults, and stores the complete effective
   network spec. A caller cannot create an object with an unresolved
-  dependency merely because a manager might become Ready later.
+  dependency merely because a manager might become Ready later. An existing
+  dependency in `Pending`, `Failed`, or `Deleting` state returns the shared
+  field-specific `FailedPrecondition` detail; only the allowlisted automatic
+  ExternalIP/ExternalIPAttachment transaction may persist Pending children.
 - **Provider-owned resources:** NetworkClass and ExternalIPPool operations
   are provider/deployment operations. A tenant create, update, patch, replace,
   or delete request for either resource is rejected by authorization before
   semantic validation. A tenant may read or reference only the pool made
   visible by the provider's scope policy; it cannot supply a deployment pool
-  definition or mutate its CIDRs, family, capacity, or lifecycle.
+  definition or mutate its CIDRs, family, capacity, or lifecycle. A provider
+  may perform a metadata-only update on an ExternalIPPool using the standard
+  metadata contract; the update must not contain any pool network field.
 - **Read and list:** the API applies the existing tenant/project/provider
   scope before returning network resources, attachments, or references. A
   caller cannot use a list filter, typed reference, Catalog Item, or status
@@ -519,15 +749,39 @@ tenant surface is intentionally narrow:
   `auto_external_ip_attachment`, and provider-resolved implementation data.
   The server must compare the complete immutable network portion, not only
   top-level protobuf fields.
-- **Delete:** a delete request is accepted only when reverse references and
-  child resources have been removed or are in the supported deletion flow.
-  Parent deletion is never converted into an implicit cascade that could
-  leave a backend segment, ACL, DNAT, SNAT rule, or allocated IP orphaned.
-  Auto-created ExternalIP children are the explicit exception and are
-  deleted in the documented attachment-then-IP order by the parent finalizer.
-  A manually created ExternalIPAttachment that targets the parent is a
-  reverse reference, so it blocks parent deletion until the tenant deletes
-  the attachment. It is not detached or changed to Pending implicitly.
+- **Delete:** a delete request is admitted only after the service validates
+  every direct reverse reference and child relationship defined in the shared
+  dependency graph. Tenant-managed dependents always block deletion; parent
+  deletion never deletes, detaches, retargets, or changes a tenant-managed
+  child to Pending. A dependent that has a deletion timestamp but has not yet
+  been archived or otherwise confirmed absent is still a blocker, because it
+  may still hold a backend relationship.
+- **Auto-created delete exception:** the only cascades permitted by this
+  contract are allowlisted OSAC-owned resources with an exact immutable owner
+  relationship:
+  - For a workload's automatic external access, the order is
+    `ExternalIPAttachment -> ExternalIP`.
+  - For an onboarding-created default `NATGateway`, OSAC deletes its owned
+    automatic `ExternalIP` only after the NATGateway's own backend cleanup has
+    completed. VirtualNetwork deletion never directly cascades to the
+    NATGateway or its ExternalIP.
+  Neither exception cascades to the `ExternalIPPool` or to tenant-created
+  resources. If any tenant-managed blocker exists, no auto-created child is
+  deleted as a partial side effect and the parent delete is rejected.
+- **Delete failure:** a rejected delete returns `FAILED_PRECONDITION`, leaves
+  the target and every dependency unchanged, and identifies each direct
+  blocker by resource kind, ID/name, relationship field, and the action needed
+  to remove it. The same information is exposed in machine-readable status
+  details for CLI and UI clients.
+- **Delete completion:** after admission, a resource may remain in
+  `Deleting` while its own backend finalizers run. A finalizer may clean
+  external infrastructure, but it must not bypass a dependency guard or delete
+  tenant-managed API resources. A networking finalizer remains until its
+  cleanup succeeds; it must not be removed merely to leave an orphan.
+- **Soft-deletion lifecycle:** successful delete admission marks the target
+  `Deleting`; archival/removal happens only after the target's own finalizers
+  complete. A deletion timestamp is not absence for reverse-reference checks,
+  and cleanup failure keeps the target and finalizer present for retry.
 - **Retry and idempotency:** retrying the same create or reconciliation input
   must not create a second default resource, a second NATGateway for a VN,
   duplicate NetworkACL rule, duplicate ExternalIP allocation, or second
@@ -558,18 +812,21 @@ NetworkClass per deployment.
 OSAC networking is handled by two managers:
 
 - **Fabric Manager** (optional) — a single provider-configured implementation
-  that manages physical networking: tenant isolation, ACLs, IP allocation,
-  DNAT, SNAT, and inter-subnet L3 routing within a VirtualNetwork. When a VN
-  has multiple subnets, the fabric manager provides the L3 gateway for each
-  subnet and routes between them automatically.
+  that manages the complete physical networking contract: tenant isolation,
+  SecurityGroup and NetworkACL policy, IP allocation, DNAT, SNAT, and
+  inter-subnet L3 routing within a VirtualNetwork. When a VN has multiple
+  subnets, the fabric manager provides the L3 gateway for each subnet and
+  routes between them automatically.
 
-- **K8s Manager** (optional) — creates the K8s overlay (e.g., CUDN with
-  LocalNet) and bridges it to the fabric segment when paired with a Fabric
-  Manager. In K8s-only mode it provides the supported networking resources
-  directly in the OVN/Kubernetes domain. MetalLB IPAddressPool CRs for CaaS
-  VIP allocation are created at subnet creation time when the configured
-  manager advertises that capability (gated on
-  `NetworkClass.spec.metallb_vip_prefix_length`).
+- **K8s Manager** (optional) — provides the complete K8s implementation for
+  every canonical resource and workload scope, and may bridge an OVN overlay
+  to a fabric when paired with a Fabric Manager. In K8s-only mode it is the
+  direct target for every resource and workload operation. Manager-specific
+  profiles define concrete entrypoints and may use temporary successful no-op
+  AAP roles while implementation work is in progress. MetalLB IPAddressPool
+  CRs for CaaS VIP allocation are created at subnet creation time when the
+  selected K8s manager implements the common CaaS path, gated on
+  `NetworkClass.spec.metallb_vip_prefix_length`.
 
 #### Why Two Managers?
 
@@ -584,21 +841,29 @@ physical fabric. The mechanism depends on the deployment — see
 options. The goal is always the same: make VMs part of the fabric. A single
 `k8sManager` field captures this.
 
-When both managers are present, the fabric manager handles the shared
-physical resources uniformly after the k8s manager creates the VM overlay.
-There is no VM-vs-BM distinction for security or ExternalIP operations.
+When both managers are present, every networking resource and workload
+operation is dispatched to both configured managers. There is no per-resource,
+per-scope, or per-service target selection. There is no VM-vs-BM distinction
+for shared resource operations; workload-specific placement and attachment
+mechanics remain in the service designs, while every manager owns the complete
+contract.
 
-At least one manager is required. A K8s-only manager is a supported
-deployment mode and is authoritative for all supported networking resources:
-VirtualNetwork, Subnet, NetworkACL, ExternalIPPool, ExternalIP, and
-ExternalIPAttachment. `NATGateway` is explicitly unsupported in K8s-only
-deployments because the current OVN path cannot provide the required NAT
-gateway behavior. A K8s-only NetworkClass must reject NATGateway creation;
-it must not leave the resource Pending indefinitely.
+At least one manager is required. A K8s-only manager is a supported deployment
+mode and is authoritative for the complete contract. Every configured manager
+receives every canonical networking resource operation and every workload
+scope operation. One configured manager produces one internal target; two
+configured managers produce two targets, and both must complete before the
+resource or workload is Ready. There is no unsupported-resource or
+unsupported-scope branch in the public API. During development, a selected
+manager's AAP job may be a successful no-op, but the dispatcher still sends the
+operation to that manager and records its normal result.
 
-The operator resolves the manager combination into the private,
-provider-owned `VirtualNetwork.spec.implementation_strategy`. Tenants never
-select a NetworkClass or implementation strategy per VirtualNetwork.
+The operator resolves the manager combination into an internal dispatch plan.
+There is no tenant-settable or persisted `VirtualNetwork.spec.implementation_strategy`
+field. The operator-owned implementation-strategy annotations described in
+[Dispatcher and AAP job routing](#dispatcher-and-aap-job-routing) are routing
+metadata only; tenants never select a manager or implementation strategy per
+VirtualNetwork.
 
 #### NetworkClass Examples
 
@@ -637,7 +902,10 @@ status:
     addressFamily: ipv4
 ```
 
-**K8s-only deployment (no Fabric Manager; no NATGateway):**
+**K8s-only deployment (no Fabric Manager):**
+
+The topology is shared here; the current manager registration and complete
+manager contract are defined in the [K8s-only Networking Manager design](/enhancements/OSAC-1433-k8s-only-k8s-manager/design.md).
 
 ```yaml
 apiVersion: osac.openshift.io/v1alpha1
@@ -645,43 +913,38 @@ kind: NetworkClass
 metadata:
   name: ovn-only-1
 spec:
-  k8sManager: ovn_networking
+  k8sManager: <configured-k8s-only-manager>
   defaults:
     virtualNetworkCIDR: 10.0.0.0/16
     ipv4SubnetCIDR: 10.0.1.0/24
-  metallbVipPrefixLength: 28 # required when CaaS VIP support is advertised
+  metallbVipPrefixLength: 28 # required by the shared CaaS VIP contract
 status:
   capabilities:
     addressFamily: ipv4
+    # All canonical resources and VMaaS, BMaaS, and CaaS workload scopes are
+    # part of the selected manager contract. No per-resource support matrix is
+    # exposed.
 ```
 
-#### Capabilities
-
-Capabilities are **inferred from the assigned managers** and published in
-the NetworkClass status — the provider does not set them manually. The
-operator composes the capabilities and supported-resource declarations from
-the configured managers. It does not require a Fabric Manager when the K8s
-manager declares the complete supported surface.
+#### Manager contract
 
 All networking managers and NetworkClasses expose IPv4-only behavior. IPv6 and
-dual-stack networking are not supported.
+dual-stack networking are not supported. The manager registration has no
+per-resource, per-policy, per-scope, or per-service subset declaration. Selecting a
+manager means selecting the complete OSAC networking contract: VirtualNetwork,
+Subnet, SecurityGroup, NetworkACL, ExternalIPPool, ExternalIP,
+ExternalIPAttachment, NATGateway, and the VMaaS, BMaaS, and CaaS workload
+flows.
 
-| Capability | Type | Meaning |
-|-----------|------|---------|
-| `addressFamily` | enum | `ipv4` |
-| `dpuSupport` | bool | DPU-accelerated networking available |
-| `natGateway` | bool | `true` only when the configured managers support NATGateway; `false` for K8s-only OVN deployments |
+The provider validates the complete manager profile before the NetworkClass is
+Ready. A development profile may route a not-yet-implemented operation to a
+successful no-op AAP role; this keeps the API and dispatcher contract uniform
+while the backend is being completed. It is not reported as an unsupported
+resource, workload scope, or manager-specific contract and must not be used to claim
+production dataplane readiness.
 
-The set of capabilities is defined by the operator and is fixed — adding a
-new capability requires an operator update. Managers declare which
-capabilities they support; they cannot define custom capabilities.
-
-CaaS/MetalLB VIP availability is not a manager-defined capability key. It is a
-deployment-level prerequisite declared by configuring a valid
-`metallb_vip_prefix_length` for a deployment that offers the CaaS path. The CaaS
-service requires that declaration and the corresponding manager/topology path;
-the manager registration contract remains limited to the canonical capabilities
-and `supportedResources` fields above.
+The only deployment-wide value exposed in NetworkClass status is the fixed
+`addressFamily: ipv4` contract, alongside ordinary readiness and job status.
 
 #### Manager Registration (ConfigMap)
 
@@ -689,13 +952,13 @@ Each manager ships a ConfigMap declaring its type and capabilities. These
 ConfigMaps are deployed as part of the OSAC installation alongside the
 manager's Ansible roles.
 
-The ConfigMap's shared `supportedResources` declaration is not the complete
-workload integration contract. Provider deployment metadata must also bind
-the dispatcher operations implemented by the selected manager. This metadata
-is provider-owned and is not a tenant-settable capability or public resource
-field. A manager is eligible for BMaaS only when that binding includes
-`move_network_attachment` and `query_dhcp_lease`; the BMaaS server repeats the
-check before each create/worker dispatch.
+The ConfigMap identifies the manager and its type. It does not contain a
+resource, policy, workload-scope, or service subset declaration. Provider
+installation validation verifies that the selected profile contains the
+complete OSAC operation set before NetworkClass Ready. A temporary development
+profile may use successful no-op AAP roles for unfinished operations; the
+dispatcher still invokes those jobs using the normal resource and workload
+contracts.
 
 **Fabric managers:**
 
@@ -706,48 +969,49 @@ metadata:
   name: fabric-manager
   namespace: osac
   labels:
-    osac.openshift.io/network/fabric-manager: "true"
+    osac.openshift.io/network-fabric-manager: "true"
 data:
   name: <configured-fabric-manager>
   description: "Provider fabric implementation — tenant isolation, ACL, IPAM, DNAT, SNAT"
   capabilities: "addressFamily:ipv4"
 ```
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
 **K8s managers:**
 
 ```yaml
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: k8s-manager-cudn-localnet
+  name: k8s-manager-<profile>
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"
+    osac.openshift.io/network-k8s-manager: "true"
 data:
-  name: cudn_localnet
-  description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
+  name: <configured-k8s-manager>
+  description: "Provider K8s networking implementation"
   capabilities: "addressFamily:ipv4"
-  supportedResources: "virtualNetwork,subnet,networkAcl,externalIPPool,externalIP,externalIPAttachment"
 ```
 
+Every manager profile must implement every canonical resource and all three
+workload scopes. Native Kubernetes NetworkPolicy alone does not satisfy the
+OSAC policy contracts; a development-only no-op role may temporarily stand in
+for unfinished policy behavior without changing the public API or registration
+shape. Concrete profiles document backend mappings, not advertised subsets.
+
 The `cudn_evpn` K8s manager is defined by the [OSAC-4291 Phase 1 design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md).
-It is an IPv4-only, prerequisite-gated design and is not part of the proven
-default manager set or the current K8s-only support boundary until its
-acceptance and end-to-end connectivity criteria are complete. When registered,
-it must advertise the same create/read/delete contract and omit NATGateway
-support.
+It is a separate manager profile and inherits the complete manager contract;
+this shared contract does not expand CUDN-EVPN feature behavior.
 
 The operator discovers managers by listing ConfigMaps with the appropriate
 labels. When a NetworkClass is created, the operator validates each manager
-assignment against the corresponding ConfigMap and verifies that the selected
-manager combination covers every resource exposed by the deployment. A
-K8s-only manager must omit `natGateway` from its supported resources because
-the current OVN implementation cannot provide it. Adding a new manager means
-deploying a new ConfigMap and Ansible role — no tenant API changes are needed.
+assignment against the corresponding ConfigMap and verifies the complete
+manager profile. Adding a new manager means deploying a new ConfigMap and
+Ansible role — no tenant API changes are needed.
+
+See the [K8s-only Networking Manager design](/enhancements/OSAC-1433-k8s-only-k8s-manager/design.md)
+for the concrete current K8s-only manager profile. Its backend mappings are
+implementation details of the complete contract; they do not define optional
+resource or workload support.
 
 ### How VMs Join the Fabric
 
@@ -794,66 +1058,129 @@ matters is the contract: once the k8sManager has bridged a subnet, VMs on
 that subnet are reachable from the fabric at their subnet IP.
 
 In a K8s-only deployment there is no physical Fabric Manager. The configured
-k8sManager provides the supported VirtualNetwork, Subnet, NetworkACL,
-ExternalIPPool, ExternalIP, and ExternalIPAttachment behavior directly in the
-OVN/Kubernetes networking domain. The tenant API remains the same, but
-NATGateway is rejected because the OVN implementation does not provide that
-capability.
+K8s manager provides the complete networking API and all three workload service
+integrations in the OVN/Kubernetes networking domain. The concrete backend
+mechanics are defined in the [K8s-only Networking Manager
+design](/enhancements/OSAC-1433-k8s-only-k8s-manager/design.md), but they do not
+change the public resource or service contract.
 
-The shared resource API does not imply that every workload service is
-supported by every manager combination. VMaaS may use K8s-only mode when the
-k8sManager advertises the complete VM networking surface. BMaaS requires a
-Fabric Manager that supports its switch-port movement and DHCP operations.
-The current CaaS BM-worker flow is supported in BM-only and combined-manager
-topologies; it is not enabled for K8s-only mode merely because shared
-networking resources are available.
+The same complete contract applies in K8s-only, Fabric-only, and combined
+deployments. In a combined deployment both selected managers receive every
+resource and workload operation. If an implementation is temporarily
+unfinished, its AAP role may complete successfully as a provider-internal
+no-op; the API still admits the operation and does not expose a partial
+capability or service-selection branch.
 
 ### Infrastructure-Agnostic Subnets
 
 VirtualNetwork and Subnet do not carry a scope or service field. Subnets are
 infrastructure-agnostic — the dispatcher provisions the configured network
 backend(s) for every subnet. Any resource type can be placed on any subnet
-supported by the selected manager combination.
+permitted by the shared placement contract.
 
-At subnet creation, the dispatcher runs:
+At subnet creation, the dispatcher sends the operation to every configured
+manager:
 
-1. **Fabric manager** (if present) — creates fabric segment (e.g., VLAN, VPC)
-2. **K8s manager** (if present) — creates K8s overlay on each hosting
-   cluster in the deployment and bridges it to the fabric segment
+1. **Fabric manager** — creates the fabric segment (for example VLAN or VPC).
+2. **K8s manager** — creates the K8s overlay on each hosting cluster; in a
+   combined deployment it also performs the configured bridge/integration work.
+
+Every configured manager receives the Subnet operation. The same complete
+manager rule applies to VirtualNetwork, SecurityGroup, NetworkACL,
+ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway; manager
+presence always means that the manager is an implementation target.
 
 With both managers, VMs are placed in the K8s overlay and BM servers and
 cluster nodes are placed directly on the fabric segment. In K8s-only mode,
-workloads supported by the selected k8sManager use its supported OVN
-networking domain; service-specific designs define workload eligibility.
+all three workload services use the selected K8s manager's networking domain;
+service-specific designs define the mechanics, not manager eligibility.
 
-Manager-specific placement constraints remain part of the supported surface.
-For example, the Phase 1 cudn_evpn manager permits VM placement only on the
-single VM-capable Subnet under a VirtualNetwork. Additional Subnets may be
-provisioned for supported fabric workloads, but VM placement on them is
-rejected until that manager supports it. The service and manager validation
-must reject unsupported placement before persistence.
+Manager-specific placement constraints remain implementation validation inside
+the complete service contract. For example, the Phase 1 cudn_evpn manager may
+limit where its current VM placement implementation can run; that does not
+create a public manager capability or a resource/service rejection branch.
+Development-only AAP stubs may complete the operation while the placement
+implementation is being delivered.
 
-### Dispatcher (Operator Composition Logic)
+### Dispatcher and AAP job routing
 
-The osac-operator acts as a **dispatcher**: when reconciling any networking
-resource, it resolves the NetworkClass and calls the
-appropriate managers. Each manager corresponds to an Ansible role — the
-dispatcher triggers the appropriate AAP playbook, passing the resource and
-context as the event payload.
+The osac-operator acts as a dispatcher: it resolves the single deployment
+NetworkClass, validates the referenced complete manager registrations, and
+builds an internal dispatch plan. The plan contains one target per configured
+manager, never zero targets, and never a combined implementation-strategy
+string. Targets are ordered deterministically as `fabric`, then `k8s`:
 
-| Operation | Managers called |
-|-----------|----------------|
-| VN create/delete | `fabricManager` when configured; otherwise `k8sManager` |
-| Subnet create/delete | `fabricManager` + `k8sManager` when both are configured; otherwise the configured manager |
-| NetworkACL create/delete | `fabricManager` when configured; otherwise `k8sManager` |
-| ExternalIP alloc/release | `fabricManager` when configured; otherwise `k8sManager` |
-| ExternalIPAttachment create/delete | `fabricManager` when configured; otherwise `k8sManager` |
-| NATGateway create/delete | `fabricManager` only; rejected without one |
+| Effective targets | Result |
+|---|---|
+| Fabric only | One Fabric target and one Fabric AAP job |
+| K8s only | One K8s target and one K8s AAP job |
+| Fabric and K8s | Two targets and two AAP jobs; both must succeed |
 
-In a combined deployment, the Fabric Manager remains the source of truth for
-physical resources and the K8s Manager supplies the overlay. In a K8s-only
-deployment, the K8s Manager owns every supported operation listed above except
-NATGateway, which is rejected at validation time.
+The K8s-only case is not a physical-network fallback. It is direct dispatch to
+the K8s manager's implementation for that resource. The concrete entrypoint
+and current supported-resource table are maintained in the [K8s-only
+Networking Manager design](/enhancements/OSAC-1433-k8s-only-k8s-manager/design.md).
+
+The same rule applies in a combined deployment: both managers receive every
+resource and workload operation. The operator does not infer partial support
+from manager type, workload type, or a resource-specific registration field.
+
+#### Manager resolution and implementation annotations
+
+`NetworkClass.spec.fabric_manager` and `NetworkClass.spec.k8s_manager` are
+manager-registration references, not tenant-selectable implementation values.
+The resolver fetches each referenced ConfigMap by its manager label and
+`data.name`, rejects missing or wrong-type registrations, and returns the
+validated manager names to the dispatcher.
+
+The operator retains two internal annotations for AAP routing:
+
+| Annotation | Meaning |
+|---|---|
+| `osac.openshift.io/implementation-strategy` | The primary/legacy target. It contains the Fabric manager name when a Fabric target exists; otherwise it contains the K8s manager name. This is why the key has no `fabric` prefix. |
+| `osac.openshift.io/k8s-implementation-strategy` | The second K8s target's manager name, present only when the same resource is dispatched to both Fabric and K8s targets. It is absent for K8s-only resources. |
+
+These annotations are controller-owned, are not accepted from tenant input,
+and are not combined into values such as `netris+<k8s-manager>`. They are persisted
+so deletion can select the same targets even when a parent resource used for
+resolution has already been deleted.
+
+#### AAP translation
+
+The operator uses the standard action template for the resource, for example:
+
+```text
+VirtualNetwork create       -> osac-create-virtual-network
+Subnet delete               -> osac-delete-subnet
+ExternalIPAttachment create -> osac-attach-external-ip
+```
+
+The AAP event contains the complete resource as `osac_job_vars.resource`.
+The playbook reads the generic implementation-strategy annotation and includes
+the manager role:
+
+```text
+osac.templates.<manager-name>
+```
+
+For a two-target plan, the operator launches the same action once per target.
+For each launch it passes a resource copy whose generic annotation is
+temporarily set to that target's manager name. The persisted resource is not
+mutated by this per-job override. Job status records carry the target role
+(`fabric` or `k8s`), and the resource becomes Ready only after every selected
+target's latest job succeeds. A failure or Pending result on any selected
+target prevents Ready and is retried independently.
+
+Read and list operations are fulfillment-service operations over the persisted
+OSAC resource and controller status; they do not launch an AAP job or require
+the manager to be resolvable at read time. Backend health and readiness are
+reported asynchronously through reconciliation. Create and delete are the
+operations that dispatch to the selected manager targets.
+
+Deletion uses the persisted target metadata and launches the corresponding
+delete action for every target that provisioned the resource. A target is not
+invented during deletion, and a manager outside the persisted dispatch plan is
+never called.
 
 The dispatch table above covers **networking resources only**. Compute
 resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
@@ -868,27 +1195,30 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 NetworkClass (per deployment, provider-only)
 
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
-  ├── Subnet              → configured manager(s)
-  ├── NetworkACL       → configured manager
-  └── NATGateway          → fabricManager only
+  ├── Subnet              → every configured manager
+  ├── SecurityGroup       → every configured manager
+  ├── NetworkACL          → every configured manager
+  └── NATGateway          → every configured manager
 
 ExternalIPPool (deployment-scoped, provider-managed)
-  └── ExternalIP (tenant-managed) → configured manager
+  └── ExternalIP (tenant-managed) → every configured manager
 
 ExternalIPAttachment (tenant-managed)
-                          → configured manager
-                            references an ExternalIP and a target resource
+                          → every configured manager; references an ExternalIP
+                            and a target resource
 ```
 
 ### ExternalIPPool
 
 "External" in ExternalIPPool/ExternalIP means **external to the
 VirtualNetwork**. In the supported connected deployment boundary, the
-provider supplies the routable addresses and the configured manager allocates
-them. Air-gapped deployment behavior is outside the supported contract.
+  provider supplies the routable addresses and every selected manager
+allocates or reserves its implementation of them. Air-gapped deployment
+behavior is outside the supported contract.
 
-ExternalIPPools are provider-managed and deployment-scoped. The configured
-manager handles ExternalIP allocation — one pool serves all resource types.
+ExternalIPPools are provider-managed and deployment-scoped. Every selected
+manager handles its ExternalIP allocation — one pool serves all
+resource types.
 
 ### Normative CLI contract
 
@@ -899,6 +1229,10 @@ Server validation errors are displayed with their API field path and backend
 status: `InvalidArgument` for malformed or contradictory input,
 `FailedPrecondition` for an existing dependency that is not Ready/Allocated,
 and `PermissionDenied` or visibility-safe `NotFound` for unauthorized scope.
+For a strict dependency failure, the CLI also displays each dependency
+blocker's kind/name, observed state, required state, and the remediation to
+wait and retry. It must not turn this failure into a local Pending operation or
+silently retry the create while the dependency is unready.
 
 #### Common command and reference rules
 
@@ -925,11 +1259,11 @@ and `PermissionDenied` or visibility-safe `NotFound` for unauthorized scope.
   `--ipv6`, `--dual-stack`, `--hub`, or `--air-gapped` networking mode.
 - Each tenant's default NetworkACL contains the explicit default ACL policy:
   deny all ingress and allow all egress. There is no CLI flag for changing
-  that tenant policy. Separately, the provider-owned deployment baseline is
-  hard-coded to `permit` all traffic, is the least-specific fallback, and is
-  not tenant data or a tenant CLI input. `implementation_strategy`, manager
-  selection on a tenant VirtualNetwork, and provider capabilities are not
-  tenant CLI inputs.
+  that tenant policy. Separately, the
+  provider-owned deployment baseline is hard-coded to `permit` all traffic,
+  is the least-specific fallback, and is not tenant data or a tenant CLI
+  input. Controller-owned dispatch annotations, manager selection on a tenant
+  VirtualNetwork, and provider capabilities are not tenant CLI inputs.
 
 #### Provider networking commands
 
@@ -952,12 +1286,12 @@ deployment. `--fabric-manager` and `--k8s-manager` are independently
 optional, but at least one must be present. The two default CIDRs are required
 and canonical;
 the subnet CIDR must be contained by the VirtualNetwork CIDR. The MetalLB
-prefix is supplied only when CaaS VIP allocation is supported and must satisfy
-the shared prefix and containment validation. `implementation_strategy` is
-derived from the managers and is never accepted as a flag. Each tenant's
-default NetworkACL policy is fixed to deny-all ingress and allow-all egress
-and is provisioned through tenant default-resource handling, not this
-deployment command. Separately, the provider-owned deployment default ACL
+prefix is supplied for the CaaS VIP allocation path and must satisfy the shared
+prefix and containment validation. The dispatch plan is derived from
+the managers and is never accepted as a flag. Each tenant's
+  default NetworkACL policy is fixed to deny-all ingress and allow-all egress
+  and is provisioned through tenant default-resource handling, not this
+  deployment command. Separately, the provider-owned deployment default ACL
 policy is hard-coded to `permit` all traffic and is not a tenant or
 CLI-configurable field.
 
@@ -981,23 +1315,35 @@ instead of multiple CIDRs in one pool.
 osac create virtualnetwork --cidr <ipv4-cidr> --name <vn-name>
 osac create subnet --virtual-network <vn-name> \
   --cidr <contained-ipv4-cidr> --name <subnet-name>
+osac create security-group --virtual-network <vn-name> --name <sg-name> \
+  --rule 'direction=ingress,protocol=tcp,port=22,source-cidr=192.0.2.0/24'
 osac create network-acl --virtual-network <vn-name> \
   --subnet <subnet-name> \
-  --rule 'action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0' \
+  --rule 'action=allow,direction=ingress,protocol=tcp,port=443,source-cidr=0.0.0.0/0' \
   --name <network-acl-name>
 ```
 
 `--virtual-network` and `--pool`/target reference flags identify existing
 resources by name (or by the corresponding typed-reference ID form where the
 field supports it). The referenced VirtualNetwork must be Ready and in the
-same tenant/project for Subnet and NetworkACL creation. NetworkACL creation
-requires one or more explicit `--subnet` references. Every referenced Subnet
-must be Ready, belong to the VirtualNetwork, and have no other custom
-NetworkACL association. A single NetworkACL may be associated with multiple
-Subnets. The Subnet CIDR must be contained by its parent and must not overlap
-a sibling Subnet.
+same tenant/project for Subnet, SecurityGroup, and NetworkACL creation.
+SecurityGroup creation requires at least one allow-only rule. NetworkACL
+creation requires one or more explicit `--subnet` references. Every referenced Subnet
+must be Ready, belong to the VirtualNetwork, and have no existing effective
+NetworkACL association. The system-created default ACL counts as an effective
+association. A single NetworkACL may be associated with multiple Subnets. The
+Subnet CIDR must be contained by its parent and must not overlap a sibling
+Subnet. Replacing a default ACL uses the documented default-resource
+replacement workflow after the old default and its blockers have been removed.
 
-`--rule` is repeatable, one NetworkACLRule per occurrence. Each rule uses
+For SecurityGroup, `--rule` is repeatable, one SecurityGroupRule per occurrence.
+Each rule contains `direction`, `protocol`, an optional single `port`, and
+exactly one direction-appropriate `source-cidr` or `destination-cidr`. It must
+not contain an `action` key; SecurityGroup rules are allow-only and unmatched
+traffic is denied. Multiple SecurityGroups on a workload aggregate their
+allow rules.
+
+For NetworkACL, `--rule` is repeatable, one NetworkACLRule per occurrence. Each rule uses
 the key/value grammar shown above and must contain:
 
 - `action`: `allow` or `deny`;
@@ -1010,10 +1356,13 @@ the key/value grammar shown above and must contain:
 
 Port ranges, unknown keys, duplicate rules, conflicting equal-specificity
 rules, IPv6 CIDRs, and an empty rule list for a user-created NetworkACL are
-rejected. Each tenant's default NetworkACL contains explicit deny-all
-ingress and allow-all egress rules. A separate provider-owned deployment
-baseline is always present as the least-specific fallback and is currently
-hard-coded to `permit` all traffic; it is not serialized in the tenant ACL.
+rejected. Each tenant's default NetworkACL contains explicit deny-all ingress
+and allow-all egress rules. A separate provider-owned deployment baseline is
+always present as the least-specific fallback and is currently hard-coded to
+`permit` all traffic; it is not serialized in the tenant ACL. Every selected
+manager receives the NetworkACL operation. Native Kubernetes NetworkPolicy
+alone does not change the OSAC NetworkACL contract; while an implementation is
+being completed, its AAP role may execute as an internal successful no-op.
 
 #### Workload attachment grammar
 
@@ -1022,13 +1371,18 @@ fields are repeated. The option selects a Subnet; the effective NetworkACL is
 inherited from that Subnet:
 
 ```text
---network-attachment subnet=<subnet-name>[,interface=<port-name>]
+--network-attachment subnet=<subnet-name>[,security-groups=<sg-name>...]\
+[,interface=<port-name>]
 ```
 
 The option may occur zero or one time. Repeating the option, using an unknown
-key, or providing an empty key/value is rejected. Omitting the entire option
+key, or providing an empty key/value is rejected. `security-groups` is a
+repeatable comma-separated typed local reference list; duplicates are rejected.
+Omitting the entire option
 means the API receives an omitted/empty attachment field and resolves the
-tenant default Subnet. There is no workload-level NetworkACL key; ACL
+tenant default Subnet and the default SecurityGroup only when that Subnet is in
+the tenant default VirtualNetwork and the group is available. There is no
+workload-level NetworkACL key; ACL
 associations are managed through the NetworkACL resource.
 
 The CLI does not emit `primary`; the sole attachment is implicitly primary.
@@ -1041,9 +1395,9 @@ The canonical resource mappings are:
 
 | Resource | API field and value type | CLI form | Additional allowed keys |
 |---|---|---|---|
-| ComputeInstance | repeated `network_attachments` of `ComputeNetworkAttachment`, zero or one | one optional `--network-attachment` | `subnet`; `interface` is forbidden |
-| BaremetalInstance | repeated `network_attachments` of `BareMetalNetworkAttachment`, zero or one | one optional `--network-attachment` | `subnet`, optional `interface` |
-| Cluster | singular `network_attachment` of `ClusterNetworkAttachment` | one optional `--network-attachment` | `subnet`; `interface` and `primary` are forbidden |
+| ComputeInstance | repeated `network_attachments` of `ComputeNetworkAttachment`, zero or one | one optional `--network-attachment` | `subnet`, `security-groups`; `interface` is forbidden |
+| BaremetalInstance | repeated `network_attachments` of `BareMetalNetworkAttachment`, zero or one | one optional `--network-attachment` | `subnet`, `security-groups`, optional `interface` |
+| Cluster | singular `network_attachment` of `ClusterNetworkAttachment` | one optional `--network-attachment` | `subnet`, `security-groups`; `interface` and `primary` are forbidden |
 
 For BaremetalInstance, `interface=<port-name>` must identify a valid
 non-lifecycle port from the effective BareMetalInstanceType. When omitted,
@@ -1086,9 +1440,9 @@ osac create natgateway --virtual-network <ready-vn-name> \
   --externalip <allocated-unused-ip-name> --name <gateway-name>
 ```
 
-Only one NATGateway may exist per VirtualNetwork. The command is rejected when
-the resolved deployment manager does not advertise NATGateway support,
-including K8s-only OVN deployments. NATGateway has no update/replace command.
+Only one NATGateway may exist per VirtualNetwork. NATGateway has no
+update/replace command. Every selected manager receives the operation; an
+unfinished implementation may use a successful internal no-op AAP role.
 
 ### End-to-End Flows
 
@@ -1110,7 +1464,12 @@ osac admin create externalippool \
   --name external-pool-1
 ```
 
-The fabric manager registers the IP range in its IPAM for allocation.
+The ExternalIPPool controller registers the range with every selected manager.
+The concrete
+implementation is defined by the selected manager profile; a Fabric Manager
+uses its own IPAM, while the current K8s-only profile is documented in the
+[K8s-only Networking Manager design](/enhancements/OSAC-1433-k8s-only-k8s-manager/design.md).
+The pool is Ready only after the selected implementation(s) confirm the range.
 
 #### Networking Setup (Same for All Resource Types)
 
@@ -1125,7 +1484,8 @@ osac create virtualnetwork --cidr 10.0.0.0/16 \
   --name my-net
 ```
 
-The configured network manager creates an isolated tenant segment.
+Every configured manager creates its implementation of the isolated tenant
+segment.
 
 **Create Subnet:**
 
@@ -1134,21 +1494,48 @@ osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
   --name my-subnet
 ```
 
-The configured manager(s) create the subnet backend. If both managers are
+Every configured manager creates its subnet backend. If both managers are
 configured, the Fabric Manager creates a fabric segment and the K8s Manager
 creates an overlay on each eligible hosting cluster and bridges it to that
 segment, subject to the selected manager's hosting-cluster limits.
+
+**Create SecurityGroup:**
+
+```bash
+osac create security-group --virtual-network my-net --name my-sg \
+  --rule "direction=ingress,protocol=tcp,port=443,source-cidr=0.0.0.0/0"
+```
+
+The SecurityGroup is implemented by every configured manager. If both managers
+are configured, both must report successful enforcement before the group is
+Ready. The rules are
+allow-only and stateful; unmatched traffic remains denied.
 
 **Create NetworkACL:**
 
 ```bash
 osac create network-acl --virtual-network my-net --name my-nacl \
   --subnet my-subnet \
-  --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
+  --rule "action=allow,direction=ingress,protocol=tcp,port=443,source-cidr=0.0.0.0/0"
 ```
 
-The selected networking implementation creates the stateless ACL rules at
-each associated Subnet boundary.
+Every configured manager creates the stateless ACL rules at the associated
+Subnet boundary. If an implementation is not yet complete, its AAP role may
+execute as a temporary successful no-op while the API and resource lifecycle
+remain available.
+
+#### SecurityGroup Rule Semantics
+
+SecurityGroup rules are stateful allow rules attached to a workload through
+its network attachment. There is no `allow`/`deny` action field. The default
+SecurityGroup may contain no rules, which means that unmatched traffic is
+denied. Tenant-created groups require at least one rule.
+
+When multiple SecurityGroups are attached, their allow rules are aggregated;
+an allowed match in any attached group permits the SecurityGroup layer. There
+is no deny rule and no most-specific override at this layer. Once a flow is
+accepted, its return traffic is allowed by connection state. The final packet
+decision still requires the effective Subnet NetworkACL to allow the packet.
 
 #### NetworkACL Rule Semantics
 
@@ -1163,6 +1550,10 @@ contains the default ACL policy:
 ingress: deny  any  0.0.0.0/0
 egress:  allow any  0.0.0.0/0
 ```
+
+Every selected manager receives the default NetworkACL operation. The
+deployment `permit` baseline is separate from the tenant default ACL and does
+not replace it during development.
 
 Each packet is evaluated independently. Tenant rules take precedence whenever
 they match; when no tenant rule matches, the provider-owned deployment baseline
@@ -1270,18 +1661,20 @@ The resource-specific Catalog fields are:
 | BaremetalInstance | `network_attachments` (at most one attachment) | Provisioning-network handoff and switch-side port operations |
 
 At Create, Catalog policy and tenant input are resolved first, followed by
-Template defaults. Default networking then resolves only the workload Subnet:
-an omitted or empty attachment receives the tenant default Subnet, while a
-supplied attachment receives a default only when its Subnet is missing.
-The effective NetworkACL is inherited from the resolved Subnet; ACL references
-are not workload fields. Supplied fields are never replaced. The final value
-is then checked with the ordinary Subnet, NetworkACL, VirtualNetwork,
+Template defaults. Default networking then resolves the workload Subnet and
+SecurityGroup membership: an omitted or empty attachment receives the tenant
+default Subnet and default SecurityGroup when those resources exist, while a
+supplied attachment receives defaults only for missing fields. The effective
+NetworkACL is inherited from the resolved Subnet; ACL references are never
+workload fields. Supplied fields are never replaced. The final value is then
+checked with the ordinary Subnet, SecurityGroup, NetworkACL, VirtualNetwork,
 cardinality, primary, and interface rules for that resource type.
 
 A shared Catalog Item cannot lock or default a tenant-local Subnet or
-NetworkACL. It must leave such values editable or ungoverned so the tenant
-can supply them or receive the tenant's default network. A tenant-owned item
-may reference resources in its own tenant and project scope.
+SecurityGroup. It must leave such values editable or ungoverned so the tenant
+can supply them or receive the tenant's defaults. NetworkACL association is
+never a Catalog or workload field. A tenant-owned item may reference resources
+in its own tenant and project scope.
 
 The Catalog `auto_external_ip_attachment` policy governs only whether the
 resource-specific automatic external-access behavior is enabled. It does not
@@ -1291,7 +1684,8 @@ ExternalIP for Compute and Bare Metal, and the API and ingress ExternalIPs for
 Cluster.
 
 Catalog governance ends after the resource is created. The resolved network
-value is immutable after creation, including the NetworkACL membership.
+value is immutable after creation, including SecurityGroup membership and the
+effective NetworkACL inherited from the Subnet.
 Later changes require deleting and recreating the parent resource. Catalog
 Item definitions and metadata remain governed by the Catalog Items design and
 are outside this networking change.
@@ -1301,10 +1695,10 @@ for the typed policy representation and reference lifecycle.
 
 #### External Access (Same for All Resource Types)
 
-External access operations are uniform across resource types. With a Fabric
-Manager, it handles DNAT and SNAT identically for all resource types. In
-K8s-only mode, the K8s Manager handles supported DNAT/IP operations and
-NATGateway remains unavailable.
+External access operations are uniform across resource types. Every configured
+manager handles the corresponding ExternalIP, ExternalIPAttachment, and
+NATGateway operation. Manager type and K8s-only versus combined topology do
+not change the public contract.
 
 **Allocate ExternalIP:**
 
@@ -1312,8 +1706,9 @@ NATGateway remains unavailable.
 osac create externalip --pool external-pool-1 --name my-ip
 ```
 
-The configured network manager allocates an IP from its IPAM (e.g.,
-203.0.113.45).
+Every selected manager allocates or reserves its implementation of the
+ExternalIP (for example, `203.0.113.45`). The ExternalIP becomes Allocated
+only after all selected implementations report success.
 
 **Attach for inbound access (DNAT):**
 
@@ -1331,8 +1726,9 @@ osac create externalipattachment --externalip my-ip \
   --cluster my-cluster --target-endpoint api --name api-att
 ```
 
-The configured network manager creates a DNAT rule: external IP → resource's
-subnet IP.
+Every selected manager creates its DNAT rule: external IP → resource's
+subnet IP. The ExternalIPAttachment becomes Ready only after all selected
+implementations report success.
 Each resource (ComputeInstance, BaremetalInstance) is associated with one
 subnet and has one fabric IP — the DNAT targets that IP directly. For BMaaS,
 that is the IP of the single tenant network attachment.
@@ -1345,15 +1741,16 @@ straightforward. For clusters, the DNAT target is a service-level VIP
 The VIP allocation is decoupled from the networking layer:
 
 1. CaaS template creates MetalLB LoadBalancer Services for API server
-   and ingress. MetalLB allocates VIPs from its IPAddressPool (created
-   by k8s_manager at subnet creation).
+   and ingress. MetalLB allocates VIPs from its IPAddressPool, created by the
+   selected K8s manager at Subnet creation, or by the CaaS BM-only
+   fabric-level path in a Fabric-only deployment.
 2. Template discovers the allocated VIPs and writes them to ClusterOrder
    CR status (`apiEndpoint`, `ingressEndpoint`)
 3. Feedback controller syncs VIPs to the Cluster object in the
    fulfillment service as `api_endpoint` and `ingress_endpoint` fields
 4. ExternalIPAttachment controller reads the VIP from ClusterOrder
-   status → calls fabric manager to create DNAT: external IP →
-   internal VIP
+   status → dispatches DNAT creation to every selected manager for
+   the attachment
 5. ExternalIPAttachment transitions to Ready
 
 The tenant can inspect the allocated VIPs:
@@ -1408,9 +1805,9 @@ precondition checks and requeue:
 - fulfillment-service reconcilers push ExternalIP and
   ExternalIPAttachment CRs to the hub cluster (independently, around
   the same time)
-- osac-operator ExternalIP controller dispatches to AAP → fabric
-  manager allocates an IP address → ExternalIP transitions to
-  **Allocated**
+- osac-operator ExternalIP controller dispatches to AAP for every selected
+  manager → all selected implementations allocate or confirm the IP
+  address → ExternalIP transitions to **Allocated**
 - osac-operator ExternalIPAttachment controller checks two
   preconditions before dispatching:
   - **ExternalIP must be Allocated** (have an allocated address). If
@@ -1418,9 +1815,9 @@ precondition checks and requeue:
   - **Target resource must have a known IP.** The required IP depends
     on the target type (see below). If not yet available, the
     controller requeues.
-- Once both preconditions are met, the controller dispatches to AAP → the
-  configured network manager creates the DNAT rule → ExternalIPAttachment
-  transitions to **Ready**
+- Once both preconditions are met, the controller dispatches to AAP for every
+  selected manager → all selected implementations create the DNAT
+  rule → ExternalIPAttachment transitions to **Ready**
 
 *ExternalIPAttachment controller preconditions per target type:*
 
@@ -1511,41 +1908,64 @@ SNAT rule creation:
 | Referenced VirtualNetwork must be Ready (fabric segment provisioned) | VirtualNetwork CR status |
 | Referenced ExternalIP must be Allocated (have an allocated address) | ExternalIP CR status |
 
-If either precondition is not met, the NATGateway controller requeues.
-This prevents dispatching to AAP before the VN's fabric segment exists
-(no segment to attach the SNAT rule to) or without a valid SNAT source
-address.
+The API and direct hub-CR admission path must evaluate these preconditions
+before persisting a new NATGateway. If either is not met, a new create is
+rejected with the shared field-specific `FailedPrecondition`; it is not
+persisted as a Pending NATGateway merely to wait for the dependency.
+
+After a NATGateway has been admitted successfully, its controller rechecks
+both preconditions before every backend dispatch. If a dependency is
+temporarily unavailable or its own SNAT operation is still in progress, the
+controller requeues that already-admitted NATGateway. If a dependency becomes
+terminally Failed or is being deleted, the NATGateway reports the documented
+failure and does not dispatch SNAT. Requeueing is therefore a reconciliation
+retry for an existing object, never an admission path for an invalid create.
 
 *Auto-provisioned resource labeling:*
 
-All auto-created resources receive the label
-`osac.openshift.io/auto-created: "true"`. Auto-provisioned
-ExternalIPs also receive a parent-resource label
-`osac.openshift.io/auto-created-for: <resource-id>` so that the
-cleanup logic can find orphaned ExternalIPs directly, even if the
-intermediate ExternalIPAttachment has already been deleted.
+All auto-created resources receive the canonical marker
+`osac.openshift.io/auto-created: "true"` and an immutable exact owner
+relationship containing the owner kind and owner ID. Auto-provisioned
+ExternalIPs and ExternalIPAttachments are eligible for the workload-delete
+cleanup, and the ExternalIP created for an onboarding default NATGateway is
+eligible for cleanup by that exact NATGateway owner after NAT backend cleanup.
+An owner label may support indexed lookup, but a label alone is not proof of
+ownership and must not authorize deletion of a resource.
 
 *Auto-provisioned resource cleanup on parent deletion:*
 
-The parent resource's finalizer uses a phased requeue approach to
-ensure correct ordering:
+The parent resource's cleanup finalizer uses a phased requeue approach to
+ensure correct ordering without touching tenant-managed resources:
 
-1. Query ExternalIPAttachments labeled `auto-created` targeting
-   this resource. Issue delete for each. Requeue.
+1. Query only allowlisted ExternalIPAttachments whose immutable owner is
+   exactly this resource. If ownership is missing or inconsistent, fail
+   safely rather than guessing. Issue delete for each. Requeue.
 2. On next reconcile: check if all ExternalIPAttachments are fully
    deleted (including their own finalizers completing the DNAT rule
    removal). If not, requeue.
-3. Once all ExternalIPAttachments are gone: query ExternalIPs labeled
-   `auto-created-for: <this-resource>`. Issue delete for each.
+3. Once all ExternalIPAttachments are gone: query only allowlisted
+   ExternalIPs whose immutable owner is exactly this resource. Issue delete
+   for each. Requeue.
    Requeue.
 4. On next reconcile: check if all ExternalIPs are fully deleted. If
    not, requeue.
-5. Once all ExternalIPs are gone: proceed with parent resource
-   deletion.
+5. Once all ExternalIPs are gone: proceed with parent resource deletion.
+   The ExternalIPPool is never deleted by this workflow.
 
-If cleanup fails permanently (after N retries): finalizer is removed,
-parent resource deleted, orphaned resources left in cluster. Orphaned
-resources are identifiable by the `auto-created-for` label.
+This five-phase sequence is the workload path. A default NATGateway uses a
+separate finalizer path: first validate that the NATGateway delete has been
+admitted and that the exact immutable owner relationship identifies its
+automatic ExternalIP; then remove the NAT backend binding, wait for that
+cleanup to complete, delete only the owned ExternalIP, and remove the
+NATGateway finalizer after the ExternalIP is fully absent. VirtualNetwork
+deletion never invokes this path, and the ExternalIPPool and all
+tenant-managed resources remain outside it.
+
+If cleanup fails, the parent remains in `Deleting` and the finalizer retries.
+The workload finalizer is not removed merely to unblock parent deletion, and
+the workload workflow never deletes a tenant-managed attachment, ExternalIP,
+pool, Subnet, NetworkACL, NATGateway, or VirtualNetwork. The default-NAT
+finalizer likewise fails closed if ownership is missing or inconsistent.
 
 **Enable outbound NAT (SNAT):**
 
@@ -1555,9 +1975,9 @@ osac create natgateway --virtual-network my-net --externalip nat-ip \
   --name my-nat
 ```
 
-The Fabric Manager creates a SNAT rule for the VN: all egress traffic from
-the VN's CIDR is source-NATted to the ExternalIP. NATGateway is unavailable
-in K8s-only OVN deployments.
+Every selected manager creates a SNAT rule for the VN: all egress traffic from
+the VN's CIDR is source-NATted to the ExternalIP. An unfinished implementation
+may complete through a temporary successful no-op AAP role.
 
 ### API Extensions
 
@@ -1566,15 +1986,40 @@ in K8s-only OVN deployments.
 ```protobuf
 message VirtualNetworkSpec {
   string ipv4_cidr = 2;               // required, immutable
-  string implementation_strategy = 4; // provider-resolved/private, immutable
 }
 ```
 
 No scope or service field — subnets are infrastructure-agnostic.
 
-`implementation_strategy` is populated by the provider/operator from the
-single deployment NetworkClass and is not accepted from a tenant create
-request.
+The implementation target is not a tenant-visible `VirtualNetwork` field.
+The operator persists only its controller-owned dispatch annotations (when
+needed for reconciliation and deletion), as defined in the dispatcher section.
+
+#### SecurityGroup
+
+```protobuf
+message SecurityGroupRule {
+  SecurityGroupRuleDirection direction = 1; // required: INGRESS or EGRESS
+  SecurityGroupRuleProtocol protocol = 2;   // required: TCP, UDP, ICMP, or ANY
+  optional int32 port = 3; // TCP/UDP: omitted means all ports; otherwise 1..65535; no ranges
+  oneof remote_cidr {
+    string source_cidr = 4;      // required for ingress
+    string destination_cidr = 5; // required for egress
+  }
+}
+
+message SecurityGroupSpec {
+  VirtualNetworkLocalReference virtual_network = 1; // required, immutable
+  repeated SecurityGroupRule rules = 2;              // immutable
+}
+```
+
+SecurityGroup rules are allow-only; there is no action field and no deny rule.
+An attached workload is denied when none of its SecurityGroup rules match.
+The tenant default SecurityGroup is system-created and may have an empty rule
+list to represent default deny. Tenant-created SecurityGroups require at
+least one rule. A SecurityGroup is implemented by every configured manager; one
+internal target is used for each selected manager.
 
 #### NetworkACL
 
@@ -1601,7 +2046,8 @@ Each tenant's default NetworkACL is associated with its default Subnet and
 contains explicit deny-all ingress and allow-all egress rules. Every
 user-created NetworkACL requires at least one rule and one or more explicit
 Subnet associations. A Subnet cannot be associated with more than one custom
-NetworkACL.
+NetworkACL. Every selected manager receives the operation; unfinished policy
+implementation may use a temporary successful no-op AAP role.
 
 #### BareMetalInstanceType and Interface Resolution
 
@@ -1652,7 +2098,8 @@ tenant network.
 #### Network Attachment Types
 
 Each resource type has its own network attachment message. The core fields
-(`subnet`) are shared, but each type adds resource-specific fields. Resource
+(`subnet` and optional `security_groups`) are shared, but each type adds
+resource-specific fields. Resource
 references use the typed local-reference messages defined by
 [OSAC-1330](/enhancements/OSAC-1330-type-safe-resource-references/design.md).
 In a create request, a local reference is an object such as
@@ -1670,6 +2117,7 @@ immutable after resource creation.
 message ComputeNetworkAttachment {
   SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
   optional bool primary = 2;            // one-entry attachment is implicitly primary
+  repeated SecurityGroupLocalReference security_groups = 3; // omitted/empty -> tenant default SecurityGroup only for the tenant default VirtualNetwork
 }
 ```
 
@@ -1687,6 +2135,7 @@ message BareMetalNetworkAttachment {
   SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
   string interface = 2;                 // omitted -> first fabric interface
   optional bool primary = 3;            // the sole attachment is implicitly primary
+  repeated SecurityGroupLocalReference security_groups = 4; // omitted/empty -> tenant default SecurityGroup only for the tenant default VirtualNetwork
 }
 ```
 
@@ -1701,6 +2150,7 @@ catalog does not imply support for multiple tenant network attachments.
 ```protobuf
 message ClusterNetworkAttachment {
   SubnetLocalReference subnet = 1;                 // omitted -> tenant default Subnet
+  repeated SecurityGroupLocalReference security_groups = 2; // omitted/empty -> tenant default SecurityGroup only for the tenant default VirtualNetwork
 }
 ```
 
@@ -1764,7 +2214,7 @@ message ClusterSpec {
   rejected by the service-specific placement validation. CaaS node sets share
   one tenant subnet and use the system-resolved fabric interface. VMaaS
   ComputeInstances use the separate ComputeNetworkAttachment contract and,
-  where the selected K8s manager supports it, the K8s overlay.
+  using the selected manager's K8s overlay where the workload is hosted.
 
 The Cluster resource also gains two fields populated by the system
 during provisioning:
@@ -1893,67 +2343,111 @@ All fields are immutable after creation.
 
 #### Deletion Dependency Guards
 
-When the API layer (fulfillment-service) soft-deletes networking resources,
-it accepts the delete as soon as child resources are themselves soft-deleted.
-On the operator side, each controller triggers its AAP deprovision job when
-it sees a `deletionTimestamp`. If a parent and its children are deleted
-near-simultaneously, the parent's deprovision job fires before children
-have been fully removed from the infrastructure backend, causing the backend
-to reject the parent deletion.
+Deletion uses direct reverse-reference validation, not a recursive graph walk.
+For each resource type, the API checks only the tables or relationship indexes
+that can directly point to that resource. An existence-only check may stop at
+the first match; a rejected request performs indexed lookups that return the
+blocking resource kind, ID/name, relationship field, and lifecycle state. The
+cost is proportional to the direct blockers returned, not to the total number
+of resources or to unrelated descendants.
 
-To prevent unnecessary failed jobs and backoff delays, each parent
-controller gates its deprovision on the complete removal of child CRs.
-The controller lists child CRs referencing the parent before triggering the
-AAP deprovision job. If any children still exist on the cluster (regardless
-of their own deletion state), the controller requeues with a short interval
-(10 seconds) instead of dispatching a doomed job.
+The check and the deletion admission are one transaction. The service locks
+the target, reads its direct blockers, and marks it for deletion only when no
+tenant-managed blockers remain. Reference creation takes a compatible lock on
+the target and verifies that it is still Ready/active. This prevents a
+concurrent create from racing a successful delete. Database constraints or
+triggers remain the final guard even when the API has already performed the
+same preflight query.
 
-| Controller | Gate deprovision on |
-|---|---|
-| VirtualNetwork | No Subnet, NetworkACL, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
-| NetworkClass | No VirtualNetwork, Subnet, NetworkACL, ExternalIPPool, ExternalIP, ExternalIPAttachment, or NATGateway resources, workload network attachments, or manager integrations remain dependent on this deployment configuration |
-| Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnet`, no ClusterOrder CRs with `spec.networkAttachment.subnet`, and no BareMetalInstance CRs with `spec.networkAttachments[].subnet` referencing this Subnet (see the per-service designs) |
-| NetworkACL | No Subnet association references this NetworkACL |
-| ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
-| ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
-
-The full dependency chain (delete order, leaf first):
+For a rejected request, the service returns `FAILED_PRECONDITION` with
+machine-readable blocker details and a human-readable equivalent such as:
 
 ```text
-ComputeInstance / BareMetalInstance (leaf)
-  must be gone before --> Subnet
-  must be gone before --> ExternalIPAttachment (via auto-cleanup)
-
-ExternalIPAttachment
-  must be gone before --> ExternalIP
-
-NATGateway
-  must be gone before --> ExternalIP
-  must be gone before --> VirtualNetwork
-
-NetworkACL
-  must be gone before --> Subnet
-  must be gone before --> VirtualNetwork
-
-Subnet
-  must be gone before --> VirtualNetwork
-
-ExternalIP
-  must be gone before --> ExternalIPPool
-
-VirtualNetwork (delete last)
+cannot delete VirtualNetwork "vn-1"; blockers:
+- Subnet "subnet-a" via spec.virtual_network (delete the Subnet first)
+- SecurityGroup "sg-a" via spec.virtual_network (delete the SecurityGroup first)
+- NetworkACL "acl-a" via spec.virtual_network (delete the NetworkACL first)
+- NATGateway "nat-a" via spec.virtual_network (delete the NATGateway first)
 ```
 
-This is the same pattern used during provisioning (e.g., the NATGateway
-controller gates provisioning on ExternalIP readiness and VirtualNetwork
-readiness) -- applied symmetrically to the deprovision path.
+The service returns all direct blockers under the configured response limit and
+includes the total count when the limit is exceeded. A blocker whose
+`deletion_timestamp` is set but whose row has not yet been archived is still
+reported: a tenant must wait for that child to disappear before deleting its
+parent. This makes the user-visible order deterministic and prevents backend
+cleanup races.
 
-Catalog Items with governed Subnet references are also strong references while
-those policies are stored. Their reverse-reference
-protection is defined by Catalog Items v2 and applies even when the Catalog
-Item has not yet produced a resource. After materialization, the resource's
-network reference continues to protect the network object, while
-`spec.catalog_item` remains weak provenance.
+The shared direct dependency graph is:
+
+| Resource being deleted | Direct tenant-managed blockers |
+|---|---|
+| Workload (`ComputeInstance`, `BaremetalInstance`, or `Cluster`) | Tenant-created `ExternalIPAttachment` resources targeting the workload; valid OSAC-owned auto-created attachments are the documented exception |
+| `VirtualNetwork` | `Subnet`, `SecurityGroup`, `NetworkACL`, and `NATGateway` resources referencing the VN |
+| `SecurityGroup` | ComputeInstance, BaremetalInstance, and Cluster network attachments, or Catalog Item/Template network policies, referencing the SecurityGroup |
+| `Subnet` | ComputeInstance, BaremetalInstance, and Cluster attachments, or Catalog Item/Template network policies, referencing the Subnet; NetworkACLs whose explicit association list contains the Subnet |
+| `NetworkACL` | No child is implied by the ACL's own `virtual_network` or `subnets[]` references; the ACL must be deleted before those referenced resources, and its deletion never deletes or detaches them |
+| `NATGateway` | No child is implied by the gateway's own VirtualNetwork or ExternalIP references; the gateway must be deleted before those referenced resources |
+| `ExternalIP` | ExternalIPAttachments and NATGateways consuming the IP |
+| `ExternalIPPool` | ExternalIPs allocated from the pool |
+| `ExternalIPAttachment` | No child is implied by its target or ExternalIP references; the attachment must be deleted before the target workload and ExternalIP |
+| `NetworkClass` | All deployment resources and manager integrations that depend on its resolved manager targets; this is provider-only |
+
+The workload attachment fields are reverse references to their resolved
+Subnet. They do not become independent child resources and are removed only
+when the workload itself is deleted. A manually created
+`ExternalIPAttachment` targeting a workload is a separate reverse reference
+and blocks workload deletion until the tenant deletes the attachment.
+
+The dependency edges and leaf-first order are therefore:
+
+```text
+Tenant-managed ExternalIPAttachment -> target workload and ExternalIP
+NATGateway -> ExternalIP and VirtualNetwork
+SecurityGroup -> workload network attachments and VirtualNetwork
+NetworkACL -> associated Subnets and VirtualNetwork
+Workload network attachment -> Subnet
+Subnet -> VirtualNetwork
+ExternalIP -> ExternalIPPool
+VirtualNetwork -> deployment NetworkClass resolution
+
+Delete leaves first, respecting the edges above:
+  tenant-managed ExternalIPAttachments before their target workloads and
+  ExternalIPs; workload resources, SecurityGroups, NetworkACLs, and NATGateways
+  before the resources they reference
+  then ExternalIPs and Subnets
+  then ExternalIPPools and VirtualNetworks
+```
+
+The only exceptions are OSAC-owned automatic resources with explicit,
+immutable ownership: the resource must carry the canonical auto-created marker,
+the exact owner kind and owner ID, and an allowlisted resource type. A target
+reference or tenant match alone does not qualify. When a workload with valid
+auto-created resources is deleted, the parent cleanup finalizer deletes the
+auto-created ExternalIPAttachment first, waits for it to disappear, then
+deletes the auto-created ExternalIP and waits for it to disappear. When an
+onboarding default NATGateway is deleted, its finalizer may delete only its
+owned automatic ExternalIP after the NAT backend binding is gone. The
+ExternalIPPool and every tenant-managed resource are outside these cascades;
+VirtualNetwork deletion never directly cascades to NATGateway resources. If
+ownership metadata is missing or inconsistent, the service fails safely
+instead of guessing.
+
+If the workload has both valid auto-created resources and a tenant-managed
+blocker, the entire delete request is rejected and no auto-created resource is
+partially deleted. If auto-resource cleanup fails, the parent remains in
+`Deleting` and the finalizer retries; it is not removed to create an orphan.
+
+Relationship checks use indexed reference columns or expression indexes. For
+repeated references such as `NetworkACL.spec.subnets[]`, the implementation
+must use a normalized relationship index or an equivalent GIN/indexed JSON
+representation. Auto-resource lookup must use an indexed immutable owner
+relationship rather than an unbounded label scan. The API may preflight for
+rich error details, but the transactional database guard is authoritative.
+
+Catalog Item and Template policies do not introduce a second deletion model.
+While a Catalog Item policy contains a governed network reference, that policy
+is a blocker according to the Catalog Items contract. After materialization,
+the workload or network resource's direct reference remains authoritative.
 
 #### NATGateway Scope
 
@@ -1984,7 +2478,7 @@ fabric's DHCP server assigns an IP on the network segment. The provisioning
 template does NOT configure host-side networking (no static IP, gateway, or
 DNS configuration) — DHCP handles it automatically.
 
-**ExternalIPAttachment:** For BMaaS, the configured network manager creates a
+**ExternalIPAttachment:** For BMaaS, every selected manager creates a
 DNAT rule to the single attachment's subnet IP. The tenant does not select an
 interface for the DNAT target because BMaaS has only one tenant attachment.
 
@@ -1996,13 +2490,12 @@ multi-NIC node requests are rejected. The `primary` field does not apply to
 
 #### Multiple Hosting Clusters Per Deployment
 
-Multiple hosting clusters are supported by manager and workload combinations
-that advertise that capability. At subnet creation, the k8sManager creates a
-K8s overlay on each eligible hosting cluster and bridges it to the fabric
-segment. VMs on different hosting clusters share the same subnet via the
-fabric when the selected k8sManager supports that topology. A manager-specific
-design may impose a stricter limit; for example, CUDN-EVPN Phase 1 supports
-one hosting cluster only.
+Multiple hosting clusters are a provider placement concern. At subnet
+creation, the k8sManager creates a K8s overlay on each eligible hosting
+cluster and bridges it to the fabric segment. VMs on different hosting
+clusters share the same subnet via the fabric. A manager-specific design may
+impose a stricter implementation limit; for example, CUDN-EVPN Phase 1
+currently uses one hosting cluster.
 
 #### Deployment Topology
 
@@ -2019,16 +2512,31 @@ the inventory must identify exactly one active hub and report
 `connectivity_mode=connected`. Missing, duplicate, or non-connected inventory
 state is a provider configuration error and prevents NetworkClass acceptance.
 
-The currently supported deployment boundary is connected deployments only;
-air-gapped deployments are not currently supported. All shared networking
-resources and manager integrations use IPv4; IPv6 and dual-stack networking
-are not supported.
+##### Deployment Support Boundary
+
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected deployments are outside the supported boundary and
+must not be advertised as a supported networking topology. A connected
+deployment is one whose active hub, selected networking managers, and required
+provider-controlled network services can reach one another and the deployment's
+configured external address infrastructure. Connectivity is provider-owned
+deployment configuration; it is not a tenant-selectable NetworkClass,
+VirtualNetwork, or workload option.
+
+The provider must establish and validate this boundary before the deployment
+NetworkClass is accepted. Tenant networking resources and workload attachments
+must not be admitted through a deployment that does not satisfy it. The
+connected-only rule applies equally to Fabric-only, K8s-only, and combined
+manager profiles; manager choice does not create an air-gapped exception.
+
+All shared networking resources and manager integrations use IPv4; IPv6 and
+dual-stack networking are not supported.
 
 Hosting clusters are distinct from the hub. Where a `k8sManager` is
 configured, subnet creation provisions the K8s overlay on each eligible
-hosting cluster and bridges it to the fabric segment. VMs on different hosting
-clusters share the same subnet via the fabric when the selected manager
-supports it; those hosting clusters do not create additional hubs.
+hosting cluster and bridges it to the fabric segment. VMs on different
+hosting clusters share the same subnet via the fabric; those hosting clusters
+do not create additional hubs.
 Manager-specific placement and hosting-cluster limits remain authoritative.
 
 #### Cross-VN Communication
@@ -2043,15 +2551,12 @@ template roles create DNS records. A DNS API is a separate enhancement.
 
 #### BM-Only Deployments
 
-If the single deployment NetworkClass has no k8sManager, the deployment does
-not support VMs. ComputeInstance creation is rejected when there is no K8s
-manager because there is no K8s overlay to place the VM on.
-
-CaaS clusters work without a k8sManager. MetalLB IPAddressPool creation
-is handled by the Subnet controller (gated on
-`NetworkClass.spec.metallb_vip_prefix_length`), not by the k8sManager. BM-only
-CaaS deployments provision clusters with fabric-level networking and
-MetalLB VIP allocation without requiring a K8s overlay.
+Fabric-only deployments use the Fabric Manager's complete VM, BMaaS, and CaaS
+integration. K8s-only deployments use the K8s Manager's complete integration.
+Combined deployments run both implementations. The CaaS path creates the
+MetalLB IPAddressPool where a K8s overlay is used and uses the fabric-level
+VIP path where the deployment is Fabric-only; the deployment-level
+`metallb_vip_prefix_length` remains the single source of that reservation.
 
 #### CIDR Overlap
 
@@ -2071,11 +2576,12 @@ VirtualNetwork at creation time.
 ### Drawbacks
 
 This design requires K8s-to-fabric connectivity in every deployment that
-hosts VMs. The k8sManager must bridge the OVN overlay to the physical
-fabric for VMs to participate. In deployments without VMs (BM-only, with
-or without CaaS), the k8sManager is not needed and the design reduces to
-fabric-manager-only. MetalLB IPAddressPool creation for CaaS VIP
-allocation is handled by the Subnet controller, not the k8sManager.
+hosts VMs on a fabric-bridged K8s overlay. The k8sManager must provide that
+bridge for the selected VM-capable topology. In deployments without VMs
+(BM-only, with or without CaaS), the k8sManager is not needed for BM port
+movement, while a combined CaaS topology may still use it for the overlay
+and MetalLB IPAddressPool. The CaaS design defines whether the pool is
+created by the selected K8s manager or by the BM-only fabric-level path.
 
 The trade-off is justified by infrastructure-agnostic subnets: any resource
 type on any subnet, uniform security enforcement via the fabric, and no
@@ -2118,14 +2624,16 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 4. **One NATGateway per VN.** Multiple gateways are ambiguous. Per-subnet
    NAT association is unsupported.
 
-5. **ExternalIPPool shared.** The configured network manager handles ExternalIP
-   allocation for all resource types. One pool per deployment.
+5. **ExternalIPPool shared.** Every selected manager handles its
+   ExternalIP allocation for all resource types. Multiple deployment-scoped pools are
+   supported; each pool has exactly one CIDR and pools must not overlap unless
+   the provider explicitly declares disjoint allocation ownership. Automatic
+   allocation selects a Ready pool with the most available capacity.
 
-6. **Multiple hosting clusters where supported.** Subnet creation provisions
-   the K8s overlay on each eligible hosting cluster. VMs on different
-   clusters share the subnet via the fabric only when the selected manager
-   supports that topology; manager-specific limits, such as CUDN-EVPN Phase 1
-   being single-cluster, remain authoritative.
+6. **Multiple hosting clusters.** Subnet creation provisions the K8s overlay
+   on each eligible hosting cluster. VMs on different clusters share the
+   subnet via the fabric. Manager-specific implementation limits, such as
+   CUDN-EVPN Phase 1 being single-cluster, remain authoritative.
 
 7. **Internal IP pools.** Managed by managers with sensible defaults. Not
    part of the tenant API or NetworkClass spec.
@@ -2139,9 +2647,16 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    network-attachment field are immutable after resource creation. Changing
    any of them requires deleting and recreating the resource.
 
-10. **Security enforcement.** The fabric is the single enforcement point
-    for NetworkACLs. No separate K8s-level ACL needed — VMs are on the
-    fabric.
+10. **Security enforcement.** Each configured manager is an implementation
+    target for both SecurityGroup and NetworkACL. A K8s manager may implement
+    either policy directly only when it satisfies the complete OSAC contract.
+    Native Kubernetes NetworkPolicy alone does not satisfy either OSAC policy
+    contract; a K8s SecurityGroup adapter must implement the complete stateful
+    SecurityGroup semantics, and a NetworkACL adapter must implement the
+    complete stateless rule semantics. The current K8s-only profile's concrete
+    adapter is defined in the [K8s-only Networking Manager
+    design](../OSAC-1433-k8s-only-k8s-manager/design.md). Both selected
+    managers reconcile the same OSAC resource in a combined deployment.
 
 11. **Per-resource NetworkAttachment types.** Separate proto messages
     (`ComputeNetworkAttachment`, `BareMetalNetworkAttachment`,

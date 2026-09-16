@@ -22,6 +22,12 @@ superseded-by:
 
 This design replaces `FieldDefinition` with typed policies for selected resource fields and Template parameters. Each policy has one of three states: ungoverned, locked, or editable with an optional Catalog default.
 
+Catalog Item human-readable fields use the shared Metadata contract: the
+technical `metadata.name` is immutable, while optional mutable
+`metadata.display_name` and `metadata.description` hold the friendly label and
+description. The legacy top-level Catalog Item `title` and `description`
+fields are removed and reserved according to OSAC-2921.
+
 Provisioning continues through the standard `Create` RPC for ComputeInstance, Cluster, and BareMetalInstance. Each request selects exactly one source: a Catalog Item or a Template. Catalog-based creation applies policy, materializes `spec.template`, resolves all defaults, validates the final spec, and persists the resource.
 
 `spec.catalog_item` remains as immutable weak provenance. Existing resources use their persisted Template reference and resolved fields throughout their lifecycle. Catalog Item changes apply only to future provisioning.
@@ -491,7 +497,10 @@ The object schema changes as follows:
 
 - Field 8 (`field_definitions`) is reserved. Field 10 adds the resource-specific `fields` message.
 - Field 9 adds `template_parameters`.
-- Existing `id`, `metadata`, `title`, `description`, `template`, and `published` fields keep their numbers and types.
+- Existing `id`, `metadata`, `template`, and `published` fields keep their
+  numbers and types. The legacy top-level `title` and `description` fields are
+  removed and reserved; their values belong in `metadata.display_name` and
+  `metadata.description`.
 - `template` keeps its type but becomes required and immutable.
 - The legacy top-level `tenant` field (7) is removed and reserved.
 
@@ -503,9 +512,6 @@ Using Cluster as the example (the same shape applies to all three types):
 message ClusterCatalogItem {
   string id = 1;
   Metadata metadata = 2;
-  string title = 3;
-  string description = 4;
-
   ClusterTemplateReference template = 5 [
     (google.api.field_behavior) = REQUIRED,
     (google.api.field_behavior) = IMMUTABLE,
@@ -514,8 +520,8 @@ message ClusterCatalogItem {
 
   bool published = 6;
 
-  reserved 7, 8;
-  reserved "tenant", "field_definitions";
+  reserved 3, 4, 7, 8;
+  reserved "title", "description", "tenant", "field_definitions";
 
   map<string, TemplateParameterPolicy> template_parameters = 9;
   ClusterCatalogItemFields fields = 10;
@@ -591,7 +597,7 @@ Governable lists keep their ordinary `repeated` shape. A `repeated` field has no
 | `boot_disk.size_gib` | Int32 | Value only |
 | `run_strategy` | Enum | Value only |
 | `user_data` | String | Value only |
-| `network_attachments` | Whole list | Subnet, SecurityGroup |
+| `network_attachments` | Whole list | Subnet and SecurityGroup membership; NetworkACL is inherited from the Subnet and must be Ready |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The governable Compute fields collect into one `Fields` message, one policy per field:
@@ -617,9 +623,11 @@ A tenant-owned item that exercises every Compute policy shape, from a locked ima
 
 ```json
 {
-  "metadata": { "name": "linux-workstation" },
-  "title": "Linux Workstation",
-  "description": "General-purpose Linux VM with a fixed image and a resizable boot disk.",
+  "metadata": {
+    "name": "linux-workstation",
+    "display_name": "Linux Workstation",
+    "description": "General-purpose Linux VM with a fixed image and a resizable boot disk."
+  },
   "template": { "name": "ocp_virt_vm", "shared": true },
   "published": true,
   "fields": {
@@ -636,7 +644,6 @@ A tenant-owned item that exercises every Compute policy shape, from a locked ima
             {
               // Local references are valid because this Catalog Item is tenant-owned.
               "subnet": { "name": "tenant-subnet-a" },
-              "security_groups": [{ "name": "default" }, { "name": "web" }],
               "primary": true
             }
           ]
@@ -680,7 +687,7 @@ Notes on the fields above:
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
 - `network_attachments` is the only supported Compute networking field. Catalog policy governs this complete list of `ComputeNetworkAttachment` values.
 - Compute attachment policy governs the complete list. The field remains list-shaped but accepts zero or one attachment only. A single attachment is implicitly primary when `primary` is omitted; explicit `primary: false` and more than one attachment are rejected. Catalog validation applies the same rule as direct Compute creation.
-- Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups.
+- Network attachment policy references use the Catalog Item's scope, so a tenant-owned item may reference its own Subnets and SecurityGroups. NetworkACL association is managed by the NetworkACL resource and is not carried in the attachment policy; the effective ACL is inherited from the selected Subnet and must be Ready.
 
 ### Cluster
 
@@ -691,7 +698,7 @@ Notes on the fields above:
 | `pull_secret_secret` | Whole reference | Secret |
 | `network.pod_cidr` | CIDR string | Value only |
 | `network.service_cidr` | CIDR string | Value only |
-| `network_attachment` | Whole `ClusterNetworkAttachment` value | Subnet, SecurityGroup |
+| `network_attachment` | Whole `ClusterNetworkAttachment` value | Subnet and SecurityGroup membership; NetworkACL is inherited from the Subnet and must be Ready |
 | `node_sets[name].size` | Int32 | Value only |
 | `auto_external_ip_attachment` | Bool | Value only |
 
@@ -718,9 +725,11 @@ A shared, provider-curated item that pins the version, mixes locked and editable
 
 ```json
 {
-  "metadata": { "name": "managed-openshift-small" },
-  "title": "Managed OpenShift (Small)",
-  "description": "Provider-curated OpenShift cluster with a fixed version.",
+  "metadata": {
+    "name": "managed-openshift-small",
+    "display_name": "Managed OpenShift (Small)",
+    "description": "Provider-curated OpenShift cluster with a fixed version."
+  },
   "template": { "name": "ocp_4_17_small", "shared": true },
   "published": true,
   "fields": {
@@ -751,7 +760,7 @@ Notes on the fields above:
   hardware or interface catalog. A provisioning wizard must load these node
   sets from the resolved ClusterTemplate; it must not offer a separate
   BareMetalInstanceType picker or tenant-composed node-set rows.
-- `network_attachment` governs the single tenant-facing `ClusterNetworkAttachment`. `fabric_interface` is resolved from each node set's BareMetalInstanceType and is not a Catalog field. A shared item leaves tenant-local subnet and SecurityGroup selection editable; an item with a Catalog default may use only references visible in the item's scope.
+- `network_attachment` governs the single tenant-facing `ClusterNetworkAttachment`, including its SecurityGroup list. `fabric_interface` is resolved from each node set's BareMetalInstanceType and is not a Catalog field. A shared item leaves tenant-local Subnet and SecurityGroup selection editable; an item with a Catalog default may use only references visible in the item's scope. NetworkACL association is inherited from the selected Subnet and is not a Catalog field; the ACL must be Ready.
 - Raw `pull_secret` stays ungovernable, because storing it would expose secret material through Catalog Item Get and List. The typed `pull_secret_secret` field is governable: it stores a `SecretLocalReference` that names a Secret in the tenant, so the Catalog Item holds a reference and keeps secret material out. A shared item accepts `editable {}` for it, so each tenant supplies its own Secret at provisioning.
 
 ### BareMetalInstance
@@ -762,7 +771,7 @@ Notes on the fields above:
 | `user_data` | String | Value only |
 | `run_strategy` | Enum | Value only |
 | `image` | Whole structured value | Value only |
-| `network_attachments` | Whole list of `BareMetalNetworkAttachment` values | Subnet, SecurityGroup |
+| `network_attachments` | Whole list of `BareMetalNetworkAttachment` values | Subnet and SecurityGroup membership; NetworkACL is inherited from the Subnet and must be Ready |
 | `auto_external_ip_attachment` | Bool | Value only |
 
 The Bare Metal `Fields` message covers the OS image, run strategy, credentials, network attachments, and automatic ExternalIP attachment:
@@ -782,9 +791,11 @@ A tenant-owned item with a locked OS image and a single locked network attachmen
 
 ```json
 {
-  "metadata": { "name": "gpu-baremetal-node" },
-  "title": "GPU Bare Metal Node",
-  "description": "Single-tenant GPU host with a fixed OS image.",
+  "metadata": {
+    "name": "gpu-baremetal-node",
+    "display_name": "GPU Bare Metal Node",
+    "description": "Single-tenant GPU host with a fixed OS image."
+  },
   "template": { "name": "baremetal_gpu_large", "shared": true },
   "published": true,
   "fields": {
@@ -800,7 +811,6 @@ A tenant-owned item with a locked OS image and a single locked network attachmen
           {
             // Local references are valid because this Catalog Item is tenant-owned.
             "subnet": { "name": "tenant-fabric" },
-            "security_groups": [{ "name": "baremetal-default" }],
             "interface": "eno1",
             "primary": true
           }
@@ -880,11 +890,28 @@ Catalog resolution requires the effective tenant and project, so Create attribut
 
 Resource-specific default-network resolution runs after Catalog and Template precedence has been resolved and applies the shared field-level defaulting matrix to the resulting tenant-facing attachment:
 
-- For ComputeInstance and BaremetalInstance, an omitted or empty `network_attachments` list receives both tenant defaults; for Cluster, an empty `network_attachment` message receives both tenant defaults.
-- A supplied attachment entry or non-empty `network_attachment` message receives a default only for each missing subnet or SecurityGroup field (and the applicable Bare Metal interface field). Supplied non-empty fields are preserved.
+- For ComputeInstance and BaremetalInstance, an omitted or empty
+  `network_attachments` list receives the tenant default Subnet and default
+  SecurityGroup when those resources exist. The default SecurityGroup may be
+  selected only when the resolved Subnet belongs to the tenant default
+  VirtualNetwork; otherwise a missing SecurityGroup is rejected unless a
+  compatible explicit group is supplied. Baremetal additionally receives its
+  default valid fabric interface. For Cluster, an empty
+  `network_attachment` message receives the tenant default Subnet and default
+  SecurityGroup, subject to the same default-VirtualNetwork
+  condition; each node set's physical interface is resolved from its
+  BareMetalInstanceType.
+- A supplied attachment entry or non-empty `network_attachment` message
+  receives a default only for each missing Subnet or SecurityGroup field (and
+  the applicable Bare Metal interface field). Supplied non-empty fields are
+  preserved. A tenant default SecurityGroup fills a missing or empty field
+  only when the resolved Subnet belongs to the tenant default
+  VirtualNetwork; a non-default-VirtualNetwork Subnet without a compatible
+  explicit SecurityGroup is rejected. NetworkACL association is resolved from
+  the effective Subnet and must be Ready.
 - An empty repeated network policy is therefore treated as unset. An empty structured Cluster policy is also treated as unset; a partial structured policy remains partial and is completed field-by-field rather than being replaced wholesale.
 
-The resulting value is then validated using the same subnet, SecurityGroup, VirtualNetwork, primary, interface, readiness, and cardinality rules as direct resource creation.
+The resulting value is then validated using the same Subnet, NetworkACL-inheritance, VirtualNetwork, primary, interface, readiness, and cardinality rules as direct resource creation.
 
 Resource Create validates dependencies and Template parameters again. A later Template or lifecycle change may make a Catalog Item temporarily unprovisionable even though the item remains structurally valid. Reference-valued policies are materialized like other field values; reference lifecycle semantics are defined in [Reference semantics](#reference-semantics).
 
@@ -925,7 +952,10 @@ apply the following rules:
   `items` field contains `ComputeNetworkAttachment` values and accepts zero or
   one entry only. More than one item and an item
   with explicit `primary: false` are rejected. Omitted `primary` and
-  `primary: true` are the only accepted single-entry forms.
+  `primary: true` are the only accepted single-entry forms. Each
+  `security_groups` entry is a typed local SecurityGroup reference; entries
+  must be unique, and final materialization requires each group to be Ready
+  and in the same tenant and VirtualNetwork as the resolved Subnet.
 - A Bare Metal `network_attachments` policy accepts zero or one
   `BareMetalNetworkAttachment` entry and
   applies the same implicit-primary rule, while its interface reference must
@@ -933,9 +963,10 @@ apply the following rules:
   is materialized. Catalog authoring must not invent a physical interface
   catalog separate from BareMetalInstanceType.
 - A Cluster `network_attachment` policy is one `ClusterNetworkAttachment`
-  structured attachment. It may
-  govern only the tenant-facing Subnet and SecurityGroup fields; node-set
-  fabric-interface derivation and VIP endpoint values remain system-owned.
+  structured attachment and may govern its tenant-facing Subnet and
+  `security_groups` fields. The effective ACL is inherited from that Subnet
+  and must be Ready, while node-set fabric-interface derivation and
+  VIP endpoint values remain system-owned.
 - Empty repeated network policy values and empty structured Cluster attachment
   policies have the existing Catalog semantics of “unset” and fall through to
   the next defaulting source. A partial structured policy is not empty and is
@@ -943,14 +974,14 @@ apply the following rules:
   editable default is rejected where the target resource treats empty as unset.
   This does not make an explicitly invalid non-empty value acceptable.
 - Locked and editable policy values are checked for reference scope. A shared
-  Catalog Item cannot lock or default tenant-local Subnet/SecurityGroup
+  Catalog Item cannot lock or default tenant-local Subnet or SecurityGroup
   references. A tenant-owned item may reference resources in its own scope,
   but those references must exist and be Ready before the resulting workload
   is accepted.
 - After Catalog and Template precedence is resolved, the final materialized
   resource must pass the complete Unified Networking contract and the
   corresponding VMaaS, CaaS, or BMaaS validation. Catalog resolution must not
-  bypass readiness, cardinality, same-VN, interface, manager-capability, or
+  bypass readiness, cardinality, same-VN, interface, complete-manager, or
   ExternalIP prerequisite checks.
 - If final validation fails, the Catalog-based resource create is atomic: no
   parent resource or auto-created networking child is persisted. Updating the
@@ -1123,7 +1154,9 @@ Delete protection for strong references uses existing `Z0003` reverse-reference 
 1. Add Template protection for Catalog Items and materialized resources.
 2. Extend InstanceType protection to Catalog Items.
 3. Update DiskImage and ClusterVersion paths for the new policy structure.
-4. Extend Subnet and SecurityGroup protection for stored network-attachment policies.
+4. Extend Subnet protection for stored network-attachment policies; NetworkACL
+   associations remain owned by the NetworkACL resource and are not stored in
+   workload attachment policies.
 5. Add Secret reverse-reference protection for governed `pull_secret_secret` values.
 6. Remove resource-to-Catalog-Item protection.
 

@@ -29,7 +29,11 @@ triggers, and CEL filter paths accordingly. See [PRD](prd.md) for detailed
 requirements.
 
 The networking schemas covered by this design use IPv4 CIDRs only; IPv6 and
-dual-stack networking are not supported.
+dual-stack networking are not supported. Every configured Fabric or K8s manager
+is a complete target for the SecurityGroup and NetworkACL contracts. The
+effective ACL is inherited from the selected Subnet. Kubernetes NetworkPolicy
+alone does not satisfy the stateless NetworkACL contract; an unfinished
+provider adapter may use a successful no-op AAP operation during development.
 
 ## Motivation
 
@@ -147,8 +151,9 @@ attachment.
    `catalog_item` field is a `ComputeInstanceCatalogItemReference` (full
    reference, since catalog items may be cross-tenant). The `subnet` field is
    a `SubnetLocalReference` (local, since subnets are always same-tenant). The
-   The attachment contains only a `SubnetLocalReference`; its effective
-   NetworkACL is resolved from the referenced Subnet.
+   attachment contains a `SubnetLocalReference` and optional typed
+   `SecurityGroupLocalReference` values; its effective NetworkACL is resolved
+   from the referenced Subnet and is not embedded in the attachment.
 
 3. The reference validation interceptor fires before the server handler. It
    walks the `CreateComputeInstanceRequest` message using protoreflect,
@@ -193,7 +198,8 @@ Tenants do not select a NetworkClass for individual VirtualNetworks.
 2. The server resolves the single deployment NetworkClass and derives the
    provider/private `implementation_strategy`.
 
-3. The server validates the CIDR format and the resolved manager capabilities.
+3. The server validates the CIDR format and the complete resolved manager
+   contract.
 
 #### Creating a catalog item referencing a template in another tenant (Cloud Provider Admin)
 
@@ -326,9 +332,9 @@ attachments use the resource-specific messages defined by Unified Networking:
 
 | Resource | Canonical field | Canonical message | Typed reference fields |
 |---|---|---|---|
-| ComputeInstance | `spec.network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`; effective NetworkACL is inherited from the Subnet |
-| Cluster | `spec.network_attachment` | `ClusterNetworkAttachment` (singular) | `subnet: SubnetLocalReference`; effective NetworkACL is inherited from the Subnet |
-| BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `BareMetalInstanceSpec.catalog_item: BareMetalInstanceCatalogItemReference`; `BareMetalInstanceSpec.instance_type: BareMetalInstanceTypeReference`; attachment `subnet: SubnetLocalReference`; effective NetworkACL is inherited from the Subnet |
+| ComputeInstance | `spec.network_attachments` | repeated `ComputeNetworkAttachment` (zero or one supported) | `subnet: SubnetLocalReference`; `security_groups: repeated SecurityGroupLocalReference`; effective NetworkACL is inherited from the Subnet |
+| Cluster | `spec.network_attachment` | `ClusterNetworkAttachment` (singular) | `subnet: SubnetLocalReference`; `security_groups: repeated SecurityGroupLocalReference`; effective NetworkACL is inherited from the Subnet |
+| BaremetalInstance | `spec.network_attachments` | repeated `BareMetalNetworkAttachment` (zero or one supported) | `BareMetalInstanceSpec.catalog_item: BareMetalInstanceCatalogItemReference`; `BareMetalInstanceSpec.instance_type: BareMetalInstanceTypeReference`; attachment `subnet: SubnetLocalReference`; `security_groups: repeated SecurityGroupLocalReference`; effective NetworkACL is inherited from the Subnet |
 
 The resource-specific messages retain the API shapes required by the service
 contracts, but all reference-bearing fields use the typed messages above. The
@@ -773,7 +779,7 @@ introduced by this EP.
 IDs), trigger queries must add tenant predicates when switching from ID-based
 to name-based matching. The scoping rule depends on the reference type:
 
-- **Same-tenant local references** (Subnet→VN, CI→Subnet, SG→VN,
+- **Same-tenant local references** (Subnet→VN, CI→Subnet, NetworkACL→VN,
   CI→InstanceType): Currently match on `id` with no tenant filter. After
   migration, add `tenant = new.tenant` (forward triggers) or
   `tenant = old.tenant` (reverse triggers) to scope lookups within the

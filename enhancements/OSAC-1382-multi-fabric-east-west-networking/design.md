@@ -48,9 +48,10 @@ resources are reconciled through that hub; the fabric and workload servers
 remain data-plane infrastructure rather than additional hubs.
 
 > **Current implementation boundary:** OSAC supports connected deployments only.
-> Air-gapped deployments are not supported. The shared networking contract
-> propagates this topology boundary, but this PR does not change the
-> FabricDomain workload-participation or resize behavior defined by this EP.
+> Air-gapped deployments are not supported. This proposal inherits the
+> [Unified Networking deployment support boundary](../OSAC-1433-unified-networking/design.md#deployment-support-boundary);
+> it does not change the FabricDomain workload-participation or resize
+> behavior defined by this EP.
 
 ## Motivation
 

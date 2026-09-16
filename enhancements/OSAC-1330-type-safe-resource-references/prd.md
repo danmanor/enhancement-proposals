@@ -20,6 +20,12 @@ When users create or update OSAC resources that reference other resources — a 
 - Incremental delivery — each chunk leaves the system fully functional. [Clarify: R2.Q3]
 - API documentation and OpenAPI specifications updated to reflect the new format.
 
+For networking examples, every configured manager is a target for the shared
+stateless NetworkACL contract. Kubernetes NetworkPolicy alone does not replace
+that contract. If a provider adapter is unfinished, its normal AAP operation
+may complete as a successful no-op while preserving the API resource and
+status contract.
+
 ## Out of Scope
 
 - Migration from identifier-based to (tenant, project, name)-based resource identification. Reference types prepare the foundation, but the migration is a separate initiative. [Clarify: R1.Q5]

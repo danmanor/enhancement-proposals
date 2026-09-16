@@ -257,7 +257,7 @@ Tables requiring `active_` companions (based on existing Pattern A triggers):
 | Table | Reason |
 |-------|--------|
 | `active_subnets` | Referenced by compute_instances |
-| `active_virtual_networks` | Referenced by subnets, security_groups, nat_gateways |
+| `active_virtual_networks` | Referenced by subnets, network_acls, nat_gateways |
 | `active_instance_types` | Referenced by compute_instances |
 | `active_cluster_catalog_items` | Referenced by clusters |
 | `active_compute_instance_catalog_items` | Referenced by compute_instances |

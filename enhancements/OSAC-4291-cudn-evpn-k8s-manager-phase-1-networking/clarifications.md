@@ -209,19 +209,22 @@ Underlay configuration (physical link, Netris port setup, BGP session) is a docu
 
 ### R2.Q4: NetworkClass ConfigMap Schema
 
-The Jira mentions "k8s manager registration via ConfigMap with declared capabilities."
+The Jira mentions k8s-manager registration via ConfigMap.
 
 What exact fields are in the ConfigMap?
 
 #### Answer
 
-NetworkClass ConfigMap should contain: `name: cudn_evpn` with the `ipv4`
-capability (same structure as other k8s managers, no additional EVPN-specific
-fields). IPv6 and dual-stack networking are not supported.
+NetworkClass ConfigMap should contain: `name: cudn_evpn` with the deployment-wide
+`addressFamily: ipv4` setting (same structure as other k8s managers, with no
+additional EVPN-specific fields). IPv6 and dual-stack networking are not
+supported.
 
 #### Impact
 
-PRD documents NetworkClass ConfigMap schema matching existing pattern from OSAC-1433 unified networking. No EVPN-specific ConfigMap fields beyond standard name and capabilities.
+PRD documents the NetworkClass ConfigMap schema matching the existing pattern
+from OSAC-1433 unified networking. No EVPN-specific ConfigMap fields beyond the
+standard name and deployment-wide address-family setting.
 
 ---
 
@@ -308,15 +311,24 @@ Is this in scope for Phase 1?
 
 #### Answer
 
-MetalLB IPAddressPool is out of scope for Phase 1.
+The earlier Phase 1 boundary treated MetalLB IPAddressPool creation as a
+separate CaaS concern. The current design makes the selected K8s manager's
+IPAddressPool creation and readiness part of the shared Subnet lifecycle when
+the CaaS/VIP path is enabled.
 
 #### Impact
 
-PRD Out of Scope section explicitly lists MetalLB IPAddressPool creation. This is handled separately in OSAC-1436 (CaaS Networking).
+The current PRD and design no longer assign competing pool creation to CaaS.
+The selected K8s manager owns the manager-side IPAddressPool creation; CaaS
+consumes the resulting pool and VIPs.
 
 #### Decision (D9)
 
-MetalLB IPAddressPool creation is out of scope for Phase 1 (deferred to OSAC-1436 CaaS Networking).
+MetalLB IPAddressPool creation is in scope for the selected K8s manager's
+Subnet readiness path for the CaaS/VIP flow. This does not add a second
+CaaS-owned pool or change the shared resource API. If the provider operation is
+unfinished during development, the normal AAP job may complete as a successful
+no-op.
 
 ---
 
@@ -376,5 +388,7 @@ When tenant creates VirtualNetwork/Subnet:
 - **D6:** Underlay configuration is documented prerequisite, not automated
 - **D7:** Route targets come from Netris (no client-side calculation)
 - **D8:** Integration test is automated in CI with real Netris fabric
-- **D9:** MetalLB IPAddressPool creation is out of scope
+- **D9:** The selected K8s manager owns MetalLB IPAddressPool creation when the
+  CaaS/VIP path is enabled; CaaS consumes the pool and does not create a
+  competing pool.
 - **D10:** Design extends OSAC-1433, not a new document

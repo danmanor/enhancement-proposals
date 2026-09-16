@@ -6,12 +6,21 @@
   DHCP Discovery, and Auto External Access
 - **Source design:** [design.md](design.md)
 - **Shared contract:** [Unified Networking test plan](../OSAC-1433-unified-networking/testplan.md)
+- **Deployment support boundary:** [Unified Networking deployment support
+  boundary](../OSAC-1433-unified-networking/design.md#deployment-support-boundary);
+  BMaaS is supported only in connected deployments, not air-gapped or
+  disconnected deployments.
+- **Inherited creation rule:** BM and private worker admission follows the
+  [strict dependency-ready creation contract](../OSAC-1433-unified-networking/design.md#strict-dependency-ready-creation); BMaaS never creates a workload to wait for a Pending network dependency. Only OSAC-owned automatic ExternalIP children may be Pending after pool readiness and capacity validation.
 - **Scope:** One tenant-facing physical attachment, BareMetalInstanceType
   interface validation, provisioning-network isolation, port move/reboot,
   DHCP lease discovery, CaaS private handoff, ExternalIP, and cleanup.
 - **Prerequisite ownership:** The deployment-owned provisioning network,
   DHCP/gateway/SNAT, initial attach, BMC, inventory, and interface-MAC
-  annotation exist before BMaaS begins. BMaaS does not create them.
+  annotation exist before BMaaS begins. Every configured manager is a complete
+  target with the BM handoff operations. Native Kubernetes NetworkPolicy alone
+  is not sufficient for either OSAC policy contract. BMaaS does
+  not create these deployment prerequisites.
 
 ## Execution strategy
 
@@ -37,18 +46,27 @@
 
 | Input | Expected result |
 |---|---|
-| List omitted/empty | One default Subnet, effective NetworkACL from that Subnet, first fabric interface |
-| Only Subnet | Preserve Subnet; fill only interface; inherit the effective NetworkACL |
-| Only interface | Preserve interface; fill only Subnet; inherit the effective NetworkACL |
+| List omitted/empty | One default Subnet, default SecurityGroup, and first fabric interface; effective NetworkACL comes from that Subnet |
+| Only Subnet in the tenant default VirtualNetwork | Preserve Subnet; fill only SecurityGroup and interface; inherit effective NetworkACL |
+| Subnet in a non-default VirtualNetwork with SecurityGroup omitted | Reject with `InvalidArgument`; do not apply the tenant default group from another VirtualNetwork |
+| One entry with an explicitly empty `security_groups` list | Treat the empty list as missing; preserve a default-VN Subnet and resolve the tenant default SecurityGroup; reject with `InvalidArgument` for a non-default-VN Subnet without a compatible group |
+| Only compatible SecurityGroup list, Subnet omitted | Preserve groups; fill only the Subnet and interface when the groups belong to the tenant default VirtualNetwork; inherit effective NetworkACL |
+| SecurityGroup list from a non-default VirtualNetwork, Subnet omitted | `InvalidArgument`; the default Subnet and explicit groups would be in different VirtualNetworks; no BM is persisted |
+| Only interface | Preserve interface; fill only Subnet and SecurityGroup; inherit effective NetworkACL |
+| Subnet and SecurityGroup list | Preserve both; fill only interface; inherit effective NetworkACL |
 | Complete entry | Preserve every supplied field |
 | Invalid explicit value | Reject; never replace with default |
+| Selected Subnet has no effective NetworkACL | Reject with `FailedPrecondition`; do not use the deployment baseline or persist the BM |
 
 ##### Expected results
 
 - Persisted BM resource contains exactly one attachment after resolution.
 - The Subnet and its effective NetworkACL are Ready, in the same scope and
-  VirtualNetwork, and IPv4.
+  VirtualNetwork, and IPv4. Every explicit/default
+  SecurityGroup is unique, Ready, same-scope, and in the same VirtualNetwork.
 - Omitted/true primary is accepted; sole entry is implicitly primary.
+- After a Ready NetworkACL is associated with the previously unprotected
+  Subnet, the same BM request succeeds and inherits that ACL.
 
 #### TC-R1-02: Any multi-entry list and any explicit false-primary input are rejected
 
@@ -66,6 +84,63 @@
   presence/encoding are rejected before
   interface discovery or persistence.
 - Direct API, Catalog, private CaaS, CRD, and controller paths agree.
+
+#### TC-R1-03: SecurityGroup rule and complete-manager validation
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated |
+
+##### Cases
+
+- Create a tenant SecurityGroup with one valid allow-only rule and attach it
+  to a BM; create an empty tenant group and verify rejection.
+- Verify the auto-created default SecurityGroup may be empty and means deny.
+- Reject action fields, deny rules, invalid direction/protocol/port/CIDR,
+  duplicate group references, cross-tenant/wrong-VN groups, and non-Ready
+  groups.
+- Configure one complete manager or two complete managers.
+- Route one policy operation through the temporary successful no-op AAP role.
+
+##### Expected results
+
+- One configured manager receives one policy target; two configured managers
+  receive two targets and both must become Ready.
+- Native Kubernetes NetworkPolicy alone is not sufficient for either OSAC
+  policy contract; the complete adapter is required for manager registration.
+- The resolved SecurityGroup list is carried through BM provisioning and the
+  packet must pass both the SecurityGroup and effective Subnet ACL layers.
+
+#### TC-R1-04: Non-Ready dependencies reject BM admission
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection and retry | critical | automated |
+
+##### Cases
+
+- Hold the selected Subnet, SecurityGroup, or effective NetworkACL in
+  `Pending`, `Failed`, and `Deleting`; submit omitted, partial, and complete
+  BM attachment requests.
+- Hold the BareMetalInstanceType or required provisioning input non-Ready.
+- Repeat through direct BMaaS, Catalog, private CaaS worker, REST, and direct
+  CR paths; then advance each dependency and retry.
+
+##### Expected results
+
+- Every blocked request returns `FailedPrecondition` naming the exact
+  attachment/profile field, dependency identity, observed state, required
+  state, and wait-and-retry remediation.
+- No BaremetalInstance, auto-child, capacity reservation, CR, interface move,
+  DHCP request, or backend job is created for a rejected request.
+- The private CaaS system-tenant BMI path still validates the Cluster owner's
+  network dependencies; the tenant-scope exception does not bypass readiness.
+- A BM may be `Pending` only after valid admission while its own provisioning
+  and handoff run. Only OSAC-owned automatic ExternalIP and attachment
+  children may be Pending; BMaaS never creates a workload to wait for a
+  Pending network dependency.
+- After the dependency is Ready, retry succeeds exactly once and begins one
+  provisioning/handoff flow.
 
 ### R2: BareMetalInstanceType and physical interface
 
@@ -115,7 +190,7 @@
   system never targets a different NIC based on list position, display label,
   or an inconsistent annotation key.
 
-#### TC-R2-03: Deployment capability admission is enforced
+#### TC-R2-03: Complete manager admission is enforced
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -123,21 +198,58 @@
 
 ##### Cases
 
-- K8s-only NetworkClass with no Fabric Manager;
+- no manager registration with the complete BM handoff contract;
+- partial resource/policy/scope/service manager registration;
 - disabled Fabric Manager;
 - Fabric Manager missing `move_network_attachment`;
 - Fabric Manager missing `query_dhcp_lease`;
-- capability becomes unavailable between NetworkClass creation and private
-  CaaS worker dispatch.
+- complete manager registration becomes invalid between NetworkClass creation
+  and private CaaS worker dispatch.
 
 ##### Expected results
 
-- Standalone, Catalog-based, and private CaaS BM creates fail with
+- Standalone, Catalog-based, and private CaaS BM creates fail with a provider
   `FailedPrecondition` before BM, automatic ExternalIP, attachment, or CR
-  persistence when the required capability set is unavailable.
-- BMaaS does not create a long-lived Pending instance waiting for an
-  unsupported capability.
-- The capability check is repeated before private CaaS worker dispatch.
+  persistence when the complete manager profile is invalid.
+- An unfinished operation uses the successful no-op AAP role rather than a
+  tenant-visible partial manager/service path.
+- The complete-profile check is repeated before private CaaS worker dispatch.
+
+#### TC-R2-04: Shared resource dispatch and BM-specific handoff are separated
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E | critical | automated |
+
+##### Cases
+
+- Create a VirtualNetwork, Subnet, SecurityGroup, NetworkACL, ExternalIP,
+  ExternalIPAttachment, and NATGateway under complete Fabric-only, K8s-only,
+  and combined manager registrations.
+- Use the [K8s-only manager test plan](../OSAC-1433-k8s-only-k8s-manager/testplan.md)
+  for the complete K8s manager entrypoints, and a Fabric-only manager with the
+  required BM handoff operations.
+- Attempt BM creation in K8s-only mode through the complete workload path.
+- In a combined deployment, make shared-resource jobs and the BM
+  `move_network_attachment`/`query_dhcp_lease` phases complete or fail
+  independently.
+
+##### Expected results
+
+- Shared resource creation follows the unified complete-manager contract: one
+  target when one manager is configured, two targets when both are configured.
+- BMaaS uses the selected manager's `move_network_attachment` and
+  `query_dhcp_lease` operations; an unfinished operation may use the approved
+  successful no-op.
+- The current K8s-only profile's shared-resource entrypoints and complete
+  `NetworkACL`/`NATGateway` contract are covered by the [K8s-only manager
+  test plan](../OSAC-1433-k8s-only-k8s-manager/testplan.md). Its provider
+  mechanics do not use the Fabric-specific BM port-move or DHCP jobs.
+- ExternalIP and ExternalIPAttachment are dispatched to every selected
+  manager. Their readiness waits for all selected implementations, while BM
+  IP discovery remains a Fabric-manager DHCP operation.
+- No tenant-supplied manager name, implementation annotation, or alternate
+  dispatch path can make K8s-only BMaaS pass its Fabric prerequisite.
 
 ### R3: Provisioning network and handoff
 
@@ -210,6 +322,13 @@
 - Host is not running tenant workload on provisioning network.
 - Ironic/Metal3 cleanup runs after the network move.
 - Subsequent inspection can use the provisioning network.
+- The fabric manager confirms that the selected port no longer has an active
+  lease in the tenant Subnet, the released address is no longer advertised in
+  BaremetalInstance status after network cleanup, and a later server can
+  allocate the address without a stale ownership conflict.
+- If lease release/verification fails, the networking finalizer remains and
+  the deletion retries; the controller does not silently finish with a stale
+  tenant lease or status address.
 
 ### R4: DHCP lease discovery and status
 
@@ -259,7 +378,9 @@
 - Ready IPv4 pool and capacity are required.
 - Parent, ExternalIP, and Pending ExternalIPAttachment are atomic.
 - Auto-created ExternalIP and ExternalIPAttachment carry the canonical
-  auto-created labels, including `auto-created-for` on the ExternalIP.
+  auto-created marker and exact immutable BM owner relationship. The
+  ExternalIP may also carry `auto-created-for` for indexed discovery, but the
+  label alone is not ownership proof.
 - Attachment target is BM with `UNSPECIFIED` endpoint.
 - DNAT waits for both ExternalIP Allocated and discovered BM IP.
 - DNAT uses the selected interface's discovered IP only.
@@ -274,13 +395,50 @@
 ##### Expected results
 
 - Pool exhaustion leaves no BM, child, job, or capacity reservation.
-- Auto attachment is deleted before ExternalIP and before parent finalizer
-  removal.
-- Manual ExternalIP resources remain tenant-managed.
-- Transient finalizer/fabric failure retries without duplicate moves or IPs;
-  permanent failure follows documented manual cleanup.
+- An owned auto-created attachment is deleted before its owned ExternalIP and
+  before the BM finalizer completes. Ownership requires the canonical marker
+  and exact immutable BaremetalInstance owner; the label alone is insufficient.
+- A tenant-created ExternalIPAttachment targeting the BM blocks BM deletion;
+  it is never detached, retargeted, or deleted by the BM controller.
+- Transient or permanent cleanup failure retains the BM finalizer and leaves
+  the BM `Deleting` until the attachment and ExternalIP cleanup succeeds; the
+  controller never removes the finalizer to create an orphan.
+- Manual ExternalIP resources remain tenant-managed and the ExternalIPPool is
+  never cascaded.
 
-#### TC-R5-03: Asynchronous ExternalIP and DNAT failures preserve BM state
+#### TC-R5-03: BMaaS dependency guards and NetworkACL associations
+
+| Test type | Priority | Automation |
+|---|---|---|
+| Unit, integration, E2E rejection | critical | automated |
+
+##### Cases
+
+- Delete a Subnet referenced by the BM's single attachment and by its effective
+  NetworkACL. Verify the BM attachment and ACL are returned as direct blockers,
+  including a child already `Deleting` but not archived; the SecurityGroup is
+  validated as part of the BM attachment and is not a direct Subnet blocker.
+- Delete the VirtualNetwork while its Subnet, SecurityGroup, NetworkACL, or supported
+  NATGateway exists. Verify all direct blockers are returned and no resource is
+  detached or deleted as a side effect.
+- Attempt Subnet and VirtualNetwork deletion while a NetworkACL association
+  exists. Verify the ACL is reported as a blocker with its identity and
+  relationship. Delete the ACL, verify only the ACL/rules are removed and the
+  Subnets and VirtualNetwork are unchanged, then retry the parent deletions
+  and verify the ACL is no longer reported as a blocker.
+- Run BM deletion concurrently with creation of a tenant attachment. Verify
+  the transaction/locking contract admits either the reference or the delete,
+  never a deleted target with a live attachment.
+
+##### Expected results
+
+- Every rejected delete returns `FAILED_PRECONDITION` with blocker kind,
+  ID/name, relationship field, and required remediation, and leaves API,
+  backend, finalizer, and capacity state unchanged.
+- The BM-specific one-attachment contract remains immutable; deletion never
+  changes the attachment list to make a non-leaf resource appear deletable.
+
+#### TC-R5-04: Asynchronous ExternalIP and DNAT failures preserve BM state
 
 | Test type | Priority | Automation |
 |---|---|---|
@@ -313,11 +471,11 @@
 
 ##### Expected results
 
-- Private request contains exactly one attachment with Cluster Subnet and
-  immutable node-set fabric interface; the effective NetworkACL is inherited
-  from the Subnet.
-- BMaaS revalidates port role, type, readiness, and the Subnet's effective
-  NetworkACL. For the trusted private CaaS path, network references are resolved in the source Cluster's
+- Private request contains exactly one attachment with Cluster Subnet,
+  SecurityGroup list, and immutable node-set fabric interface; the effective
+  NetworkACL is inherited from the Subnet.
+- BMaaS revalidates port role, type, readiness, SecurityGroup references, and
+  the Subnet's effective NetworkACL. For the trusted private CaaS path, network references are resolved in the source Cluster's
   tenant/project and are not rejected merely because the destination BMI is
   owned by the `system` tenant.
 - Private caller cannot inject a second attachment or lifecycle port.
@@ -330,7 +488,13 @@
 
 ##### Expected results
 
-- Locked/editable policy and tenant/default precedence match direct creation.
+- Execute the shared [TC-R4-04 precedence matrix](../OSAC-1433-unified-networking/testplan.md#tc-r4-04-catalog-template-private-and-direct-default-precedence-match)
+  for direct BM creation, Catalog/Template materialization, and the trusted
+  private CaaS worker request. Locked fields reject conflicting values;
+  editable Catalog values accept an explicit valid tenant value; omitted values
+  fall back Catalog → Template → tenant defaults; and explicit invalid,
+  non-Ready, wrong-scope, or wrong-VirtualNetwork values are rejected rather
+  than repaired.
 - Shared Catalog Items cannot lock/default tenant-local references.
 - Catalog metadata and existing BM network specs remain unchanged after policy
   updates.
@@ -383,7 +547,8 @@
 
 **Unit:** Verify one optional `--network-attachment` maps to repeated
 `spec.network_attachments` containing `BareMetalNetworkAttachment`. Verify
-the compound `interface=<port-name>` key, rejection of a NetworkACL key,
+the compound `interface=<port-name>` key, `security-groups=<name>[,...]`,
+rejection of a NetworkACL key,
 omitted interface selection, invalid/lifecycle interfaces, repeated
 attachments, the deprecated plural `--network-attachments` option, and
 explicit `primary=false` behavior.
@@ -395,8 +560,8 @@ sets true and starts automatic external access; omitted sets false, creates no
 automatic ExternalIP/attachment, and consumes no pool capacity. Verify the
 switch is immutable and there is no separate `--interface` syntax.
 
-**E2E:** Create a BM with an explicit interface, with a default interface,
-with partial networking, and with no attachment, with the external-access flag
+**E2E:** Create a BM with an explicit interface and SecurityGroup list, with a
+default interface, with partial networking, and with no attachment, with the external-access flag
 both present and omitted. Verify the resolved list, create-time switch, port
 move, reboot, DHCP discovery, automatic ExternalIP behavior, and cleanup.
 Attempt a second attachment, the deprecated plural `--network-attachments`
@@ -407,7 +572,7 @@ verify no partial BM, port move, or allocation remains.
 
 - Every BMaaS server-validation rule and phase-ordering rule has unit or
   integration coverage.
-- NetworkClass Fabric Manager capability admission, including the repeated
+- NetworkClass Fabric Manager complete-profile admission, including the repeated
   private-worker check, has negative coverage.
 - E2E covers one-attachment success, isolation, port move, reboot, DHCP,
   ExternalIP, CaaS handoff, deletion, and recovery.

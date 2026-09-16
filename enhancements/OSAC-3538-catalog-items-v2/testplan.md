@@ -38,7 +38,9 @@
 - Cluster singular attachment policy;
 - BM zero-or-one attachment policy;
 - locked, editable, and editable-with-default policies;
-- valid typed Subnet/SecurityGroup references visible in the item's scope;
+- valid typed Subnet references visible in the item's scope;
+- valid typed `security_groups` references, including an explicitly empty list
+  that invokes the tenant default during resource creation;
 - compatible `primary: true` or omitted primary;
 - `auto_external_ip_attachment` boolean policy.
 
@@ -62,6 +64,7 @@
 - explicit false primary;
 - repeated Cluster attachment;
 - malformed IPv4/CIDR/reference;
+- malformed, duplicate, wrong-scope, or non-Ready SecurityGroup references;
 - wrong-type or invisible reference;
 - Cluster node-set `baremetal_instance_type` or CaaS physical
   `fabric_interface` governed by Catalog;
@@ -89,8 +92,9 @@
 - omitted optional field;
 - explicit empty repeated attachment list;
 - explicit empty singular Cluster attachment message;
-- partial singular Cluster attachment with only Subnet or only
-  SecurityGroups;
+- partial singular Cluster attachment with only the Subnet field;
+- partial attachments with only `security_groups` or with both Subnet and
+  SecurityGroup fields;
 - explicit empty string;
 - explicit zero;
 - explicit false;
@@ -119,6 +123,11 @@
 - Catalog default wins when tenant supplies nothing.
 - Template default is considered next.
 - Tenant default networking fills only still-missing fields.
+- Tenant default SecurityGroup fills only a missing or empty SecurityGroup
+  field and only when the resolved Subnet belongs to the tenant default
+  VirtualNetwork; explicit SecurityGroup references are preserved. A
+  non-default-VirtualNetwork Subnet with no compatible explicit group is
+  rejected.
 - Requiredness and final VM/CaaS/BM validation run after resolution.
 - Invalid explicit Catalog/Template values are rejected, not repaired.
 
@@ -138,7 +147,16 @@
    create with an exhausted pool.
 4. Include a BM policy with a valid interface and a policy with an unknown or
    lifecycle interface against the effective BareMetalInstanceType.
-5. Compare resolved resource specs and validation outcomes.
+5. Include default and explicit SecurityGroup lists and verify that the
+   effective NetworkACL is inherited from the selected Subnet rather than
+   materialized as an attachment field.
+6. Repeat the defaulting comparison with a Template-provided typed
+   SecurityGroup reference and verify Catalog/Template precedence and the same
+   final readiness and scope checks.
+7. Exercise a partial policy with a custom Subnet in a non-default
+   VirtualNetwork and no SecurityGroup, and a custom Subnet in an
+   ACL-capable deployment without a Ready effective NetworkACL.
+8. Compare resolved resource specs and validation outcomes.
 
 ##### Expected results
 
@@ -152,6 +170,15 @@
   materializing a resource.
 - The owning service's readiness, same-VN, and immutability checks are not
   bypassed by Catalog materialization.
+- A partial policy with a non-default-VirtualNetwork Subnet and no compatible
+  SecurityGroup fails with `InvalidArgument`; the tenant default-VN group is
+  not injected and no parent or auto-created child is persisted.
+- A selected Subnet without a Ready effective NetworkACL in an ACL-capable
+  deployment fails with `FailedPrecondition`; the deployment baseline is not
+  used as a fallback and no parent or auto-created child is persisted.
+- SecurityGroup references are materialized as typed local references and are
+  validated for readiness, scope, uniqueness, and same-VirtualNetwork
+  relationship exactly as direct creates.
 - CaaS endpoint bindings remain limited to the matching `API`/`INGRESS`
   ExternalIP attachments; automatic ExternalIP capacity failures leave no
   parent or child resource.
@@ -179,16 +206,24 @@
 
 ##### Cases
 
-- tenant-owned item references its own Ready Subnet/SecurityGroup;
+- tenant-owned item references its own Ready Subnet;
+- tenant-owned item references its own Ready SecurityGroup;
 - shared item uses editable local reference supplied by tenant;
 - shared item attempts locked/default local reference;
 - referenced object missing, wrong type, cross-tenant, cross-project,
   Pending, Failed, or wrong VirtualNetwork.
+- partial attachment with a custom non-default-VirtualNetwork Subnet and
+  missing SecurityGroup;
+- custom Subnet in an ACL-capable deployment without a Ready effective
+  NetworkACL.
 
 ##### Expected results
 
 - Valid references are materialized into the resource.
 - Invalid/invisible references are rejected without resource persistence.
+- The non-default-VirtualNetwork partial attachment is rejected with
+  `InvalidArgument`, and the ACL-less selected Subnet is rejected with
+  `FailedPrecondition`; neither path creates a parent or auto-created child.
 - Error does not expose another tenant's object identity.
 
 ### R5: Metadata and unrelated fields
@@ -201,8 +236,9 @@
 
 ##### Expected results
 
-- Title, description, publication state, ownership, metadata, and unrelated
-  Template parameters remain unchanged during networking resolution.
+- `metadata.display_name`, `metadata.description`, publication state, ownership,
+  metadata, and unrelated Template parameters remain unchanged during
+  networking resolution.
 - Only an explicit Catalog update changes Catalog metadata.
 - Network reconciliation never uses Catalog metadata as an alternate spec
   mutation path.

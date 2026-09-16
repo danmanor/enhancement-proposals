@@ -17,6 +17,12 @@ OSAC's unified networking model (EP #50) provides north-south connectivity and g
 The north-south and east-west IP address space described by this PRD is IPv4
 only. IPv6 and dual-stack networking are not supported.
 
+This proposal inherits the [Unified Networking deployment support
+boundary](../OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+OSAC networking supports connected deployments only, and air-gapped or
+disconnected deployments are not supported. East-west networking does not
+create an exception to that shared boundary.
+
 ## In Scope (Phase 1)
 
 - Declarative east-west connectivity on Ethernet-based fabrics.

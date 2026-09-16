@@ -6,7 +6,10 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1435 |
 | Date        | 2026-09-10 |
 
-> This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared networking resources and operation contract; the [Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology) defines the supported IPv4-only, connected single-hub boundary. This document defines the VMaaS-specific requirements and user stories.
+> This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared networking resources and operation contract; the [Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology) defines the IPv4 topology, and its [deployment support boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary) requires connected deployments and excludes air-gapped deployments. This document defines the VMaaS-specific requirements and user stories.
+
+VMaaS follows the shared [strict dependency-ready creation
+contract](/enhancements/OSAC-1433-unified-networking/design.md#strict-dependency-ready-creation): resolved networking references and VM placement prerequisites must be Ready before the VM is persisted. Only OSAC-owned automatic ExternalIP children may be created Pending after a Ready pool and capacity validation.
 
 ## 1. Problem Statement
 
@@ -24,8 +27,7 @@ creation flows while VMs require explicit networking details on every create.
 
 - A tenant can create a VM with zero or one list-shaped network attachment; a single attachment is implicitly primary
 - A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
-- A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and network ACL
-- The platform prevents VM creation in deployments that do not support virtualization
+- A tenant can create a VM without specifying networking details — the system uses the tenant's default Subnet and default SecurityGroup, and inherits the effective NetworkACL from the Subnet; an unfinished provider adapter may complete its normal operation as a successful no-op
 
 ### 2.2 Non-Goals
 
@@ -39,13 +41,13 @@ creation flows while VMs require explicit networking details on every create.
 - As a Tenant User, I want to create a VM with one network attachment using a list-shaped field, so that the API can retain a stable list shape while supporting only one interface today
 - As a Tenant User, I want the single network interface to be implicitly primary, so that it provides the VM's default gateway and DNS configuration
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
-- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and its effective default ACL policy and I can get started quickly
+- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default Subnet, default SecurityGroup, and effective default ACL policy and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
 
 ### Tenant Admin Stories
 
-- As a Tenant Admin, I want to inspect the default Subnet and its effective NetworkACL when VMs are created without explicit network configuration
-- As a Tenant Admin, I want to see which Subnet each VM is attached to and the effective NetworkACL inherited from that Subnet, so I can audit my organization's network topology
+- As a Tenant Admin, I want to inspect the default Subnet, default SecurityGroup, and effective NetworkACL when VMs are created without explicit network configuration
+- As a Tenant Admin, I want to see which Subnet and SecurityGroups each VM uses and the effective NetworkACL inherited from that Subnet, so I can audit my organization's network topology
 
 ### Cloud Infrastructure Admin Stories
 
@@ -68,19 +70,25 @@ creation flows while VMs require explicit networking details on every create.
 
 - **FR-3:** Network configuration is optional when creating a VM. When the
   attachment list is omitted or empty, the system uses the tenant default
-  Subnet. NetworkACL membership is inherited from the Subnet and is not a
-  workload attachment field. When an attachment omits its subnet, only that
-  field is defaulted; supplied fields are preserved. [User]
+  Subnet and default SecurityGroup. NetworkACL membership is
+  inherited from the Subnet and is not a workload attachment field. When an
+  attachment omits its subnet or SecurityGroup list, only those missing fields
+  are defaulted; supplied fields are preserved. Traffic must pass both the
+  SecurityGroup and effective NetworkACL layers. The tenant default
+  SecurityGroup is used only with the tenant default VirtualNetwork; a
+  non-default Subnet without a compatible explicit group is rejected. A
+  selected Subnet without a Ready effective ACL is rejected until an ACL is
+  associated. [User]
 
 #### Auto External IP
 
 - **FR-4:** VMs support `--external-ip-attachment`. When specified, the
   system auto-selects the IPv4 ExternalIPPool with the most available
   capacity, reserves capacity, and creates a Pending ExternalIP and
-  ExternalIPAttachment for the VM's single network attachment. Fabric
-  allocation, VM IP discovery, DNAT programming, and activation are
+  ExternalIPAttachment for the VM's single network attachment. Allocation by
+  every selected manager, VM IP discovery, DNAT programming, and activation are
   asynchronous; the ExternalIP and attachment are cleaned up when the VM is
-  deleted. Default networking resources (virtual networks, subnets, NetworkACL,
+  deleted. Default networking resources (virtual networks, subnets, SecurityGroup, NetworkACL,
   NATGateway) are not cleaned up as they are tenant-scoped and shared
   across resources. [User]
 
@@ -107,7 +115,7 @@ creation flows while VMs require explicit networking details on every create.
 
 - **NFR-1:** Pool capacity validation and creation of Pending ExternalIP and
   ExternalIPAttachment records complete synchronously within the create request.
-  Fabric allocation,
+  Selected-manager allocation,
   VM IP discovery, DNAT programming, and the transition to Ready are
   asynchronous. The ExternalIP transitions `Pending -> Allocated`; the
   ExternalIPAttachment transitions `Pending -> Ready` only after the VM
@@ -125,21 +133,35 @@ creation flows while VMs require explicit networking details on every create.
 - [ ] A single-interface VM is provisioned with its attachment operational and providing the default gateway
 - [ ] VM status shows the allocated IP address for the single network attachment after provisioning completes
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's attachment IP
-- [ ] Auto-created external IPs and attachments are visible in list views with a `osac.openshift.io/auto-created: "true"` label
+- [ ] Auto-created external IPs and attachments are visible in list views with a `osac.openshift.io/auto-created: "true"` marker and exact immutable ComputeInstance owner relationship
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
 - [ ] The VM API accepts only the resource-specific `network_attachments` field and rejects the replaced shared attachment format
+- [ ] A VM attachment may include zero or more unique typed SecurityGroup
+  references; omitted groups receive the tenant default only when the resolved
+  Subnet is in the tenant default VirtualNetwork, while every explicit group
+  is Ready, same-tenant, and in the attachment's VN. A non-default-VN Subnet
+  without a compatible explicit group is rejected
+- [ ] A tenant-created SecurityGroup has at least one allow-only rule; the
+  default SecurityGroup may be empty and means deny. A SecurityGroup action
+  field or deny rule is rejected
 - [ ] Creating a VM with `primary: false` on its sole attachment returns a single-interface validation error
 - [ ] Updating or patching a VM's network attachment list or any attachment field is rejected; changing it requires delete and recreate under the [unified networking operation contract](/enhancements/OSAC-1433-unified-networking/prd.md#network-operation-contract)
 
 ## 6. Assumptions
 
-- The tenant has default networking resources (virtual network, subnet, network ACL) pre-created by the platform (see Default Networking PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
+- The tenant has default networking resources (VirtualNetwork and Subnet)
+  pre-created by the platform (see Default Networking PRD), plus a default
+  SecurityGroup and NetworkACL from the complete manager profile. If the
+  required defaults are not
+  configured, creating a VM without explicit network configuration fails with
+  a clear error. Kubernetes NetworkPolicy alone is not a substitute for
+  either policy contract.
 - The target deployment supports virtualization. Bare-metal-only deployments do not support VMs.
 
 ## 7. Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, network ACLs, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default subnet and network ACL selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, SecurityGroups, network ACLs, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
+- **Default Networking PRD** — default subnet, SecurityGroup, and NetworkACL selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 - **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the IPv4 pool with the most available capacity
 - **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
 - **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)
@@ -150,12 +172,16 @@ creation flows while VMs require explicit networking details on every create.
 ### 8.1 Virtualization platform integration blocked or delayed
 
 - **Owner:** Engineering / Product
-- **Mitigation:** OSAC-1511 and OSAC-1717 are both in spike/blocked state. If neither lands, VM networking cannot function. Prioritize unblocking one of these dependencies or accept that VMs remain unavailable until a virtualization platform integration exists.
+- **Mitigation:** OSAC-1511 and OSAC-1717 are both in spike/blocked state. If neither lands, the manager's VM AAP operation uses the approved development no-op until a virtualization platform integration exists.
 
-### 8.2 Multi-job tracking not implemented
+### 8.2 Multi-target dispatch tracking is unavailable
 
 - **Owner:** Platform team
-- **Mitigation:** OSAC-1459 is a prerequisite for subnet provisioning to trigger multiple backend jobs. If not implemented, subnet provisioning can only call one backend system — defer multi-backend support or accept single-backend-only subnet provisioning.
+- **Mitigation:** OSAC-1459 is a prerequisite for per-resource dispatch to
+  multiple manager targets. Until it is available, the combined deployment
+  remains provider-blocked or routes the unfinished operation through the
+  approved internal no-op; it never silently reduces a complete plan to one
+  backend.
 
 ### 8.3 External IP pool exhaustion
 

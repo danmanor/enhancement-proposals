@@ -30,21 +30,31 @@ This design extends OSAC-1433's NetworkClass two-manager architecture with a new
 
 Shared field types, formats, presence rules, allowed values, and validation
 are defined by the [Unified Networking field contract](/enhancements/OSAC-1433-unified-networking/design.md#field-types-formats-and-validation).
-The shared networking resource model, IPv4-only scope, and connected
-single-hub deployment boundary are defined by the [Unified Networking
-design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology).
+The shared networking resource model and IPv4-only scope are defined by the
+[Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#deployment-topology).
+The connected-only deployment boundary, including the exclusion of air-gapped
+deployments, is defined by the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary).
 The shared create/read/delete-only operation contract is defined by
 [Supported Operations and Immutability](/enhancements/OSAC-1433-unified-networking/design.md#supported-operations-and-immutability).
+
+This design also inherits the Unified Networking [strict dependency-ready
+creation contract](/enhancements/OSAC-1433-unified-networking/design.md#strict-dependency-ready-creation). A CUDN-EVPN Subnet request must have a
+Ready parent VirtualNetwork before admission. The Subnet itself may remain
+Pending while its own ordered Fabric-manager and CUDN-manager operations run;
+that internal handoff is not permission to create another resource that waits
+for a non-Ready dependency. The only Pending dependency exception remains the
+shared OSAC-owned automatic ExternalIP/ExternalIPAttachment flow.
 
 ## Related Designs
 
 This design builds on and interacts with several networking designs:
 
 - **OSAC-1435 VMaaS Networking** — VMs provisioned via the list-shaped `ComputeNetworkAttachment` field consume the cudn_evpn namespaces created by this design. The field accepts zero or one entry only; VMaaS placement logic must resolve the namespace name (same as subnet name) when placing a VM in an EVPN-bridged Subnet and validate that the target Subnet has a CUDN (first subnet only) before allowing VM placement.
-- **OSAC-1436 CaaS Networking** — CaaS clusters may run on EVPN-bridged subnets. Port-move primitive compatibility with EVPN transport (VXLAN encap vs VLAN trunking) is TBD (out of scope for Phase 1).
+- **OSAC-1436 CaaS Networking** — CaaS uses the shared CaaS networking contract with this manager as it does with every other manager. The CaaS BM-worker flow moves a physical port and relies on the BMaaS provisioning lifecycle; EVPN-specific worker dataplane integration can remain a successful no-op AAP operation while that provider implementation is being completed. The API must not reject a CaaS request because of a manager-specific service-support advertisement.
 - **OSAC-1437 BMaaS Networking** — Bare-metal servers provisioned via `BareMetalNetworkAttachment` are L2/L3 peers of EVPN-bridged VMs. This design validates same-subnet (L2) and cross-subnet (L3 via fabric ipVRF) connectivity in test cases.
-- **OSAC-1433 Default Networking** — Auto-provisioning of VN/Subnet/NetworkACL/NAT at tenant onboarding uses a default NetworkClass. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., k8s-only or none).
-- **OSAC-2135 CaaS BM Worker Provisioning** — System-tenant bare-metal instances reference tenant Subnets. If those Subnets use `cudn_evpn`, the BMI provisioning flow interacts with the EVPN namespace/CUDN. Interaction is TBD (out of scope for Phase 1).
+- **OSAC-1433 Default Networking** — Auto-provisioning of VN/Subnet/NetworkACL/NAT at tenant onboarding uses a default NetworkClass. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking consumes the manager profile selected by Unified Networking; the current K8s-only profile is defined in the [K8s-only Networking Manager design](../OSAC-1433-k8s-only-k8s-manager/design.md). This CUDN-EVPN design does not define that profile and must not select `cudn_evpn` as the default in Phase 1.
+- **OSAC-2135 CaaS BM Worker Provisioning** — System-tenant bare-metal instances reference tenant Subnets. The BM-worker provisioning path uses the shared CaaS contract; any unfinished EVPN-specific worker integration is handled inside the provider AAP operation and may complete as a successful no-op rather than causing a tenant-visible unsupported-service rejection.
 - **OSAC-1382 Multi-Fabric East-West** — Phase 1 east-west isolation domains will need to work across EVPN-bridged and non-EVPN subnets. Inter-domain routing with EVPN transport is TBD (out of scope for Phase 1).
 
 ## Motivation
@@ -122,7 +132,9 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
 **Important:**
 - VirtualNetwork creation does NOT trigger Netris VPC or CUDN provisioning
 - First Subnet triggers VPC + VNet + CUDN (CUDN created immediately, not on VM creation)
-- Second+ Subnets trigger only VNet (fabric-only, no CUDN)
+- Second+ Subnets trigger the VNet and the normal k8s-manager operation; the
+  latter completes as a successful no-op, leaving the Subnet fabric-only
+  (without a CUDN)
 - **CUDN persists when adding subnets**, but VMaaS blocks VMs in all subnets when multiple exist
 
 Key resources:
@@ -155,9 +167,10 @@ sequenceDiagram
     participant FRR as FRR Operator
 
     Tenant->>API: Create Subnet (IPv4 CIDR)
+    API->>API: Require parent VirtualNetwork=Ready
     API->>API: Validate VM topology constraint
-    Note over API: Check NetworkClass k8s_manager,<br/>reject second subnet if VMs exist
-    API-->>Tenant: 201 Created
+    Note over API: Pending/Failed/Deleting parent → FailedPrecondition;<br/>check NetworkClass k8s_manager and reject second subnet if VMs exist
+    API-->>Tenant: 201 Created (after admission)
 
     Controller->>Controller: Dispatch to fabric + k8s managers
     Note over Controller: Sequential: fabric → k8s
@@ -191,13 +204,18 @@ sequenceDiagram
 ### API Extensions
 
 **New:**
-- osac-installer ConfigMap `k8s-manager-cudn-evpn` (declares k8s manager capabilities)
+- osac-installer ConfigMap `k8s-manager-cudn-evpn` (registers the complete k8s manager contract)
 - osac-aap fabric manager template role `netris` (creates Netris VPC/VNet, returns VNI)
 - osac-aap k8s manager template role `cudn_evpn` (creates CUDN)
-- **Subnet annotation `osac.openshift.io/skip-k8s-manager: "true"`** — optional annotation to explicitly skip k8s manager (fabric-only). If omitted, operator auto-detects: first subnet gets CUDN, second+ subnets are fabric-only.
+- No tenant or provider annotation can remove a manager target from the shared
+  dispatch plan. For a fabric-only Phase 1 Subnet, the normal k8s-manager AAP
+  operation completes as a successful no-op after the fabric target is ready.
 
 **Modified:**
-- osac-operator Subnet controller: sequential provisioning instead of parallel, auto-detects subnet count to skip k8s manager for second+ subnets under same VirtualNetwork (first subnet's CUDN persists, honors explicit skip annotation if present)
+- osac-operator Subnet controller: sequential provisioning instead of parallel;
+  it dispatches the complete target plan for every Subnet. The k8s-manager role
+  creates a CUDN for the first VM-capable Subnet and uses the approved no-op
+  path for later fabric-only Subnets.
 
 **External CRDs Used (not created by OSAC):**
 - `ClusterUserDefinedNetwork` (k8s.ovn.org/v1, OVN-Kubernetes) — created by k8s manager
@@ -206,9 +224,12 @@ sequenceDiagram
 
 **No changes** to existing fulfillment-service proto schema. NetworkClass.k8s_manager field already exists.
 
-**Annotation Semantics:**
+**Dispatch Semantics:**
 
-The `osac.openshift.io/skip-k8s-manager` annotation is **optional** and provides explicit control over k8s manager provisioning. When omitted, the operator automatically determines provisioning behavior based on subnet count.
+The shared dispatcher always includes every configured manager for every
+Subnet. CUDN-EVPN's Phase 1 placement rule still determines whether a Subnet
+is VM-capable, but that rule does not remove the k8s-manager target or expose a
+manager-selection annotation.
 
 ```yaml
 # First Subnet - creates Netris VNet + CUDN (auto-detected, VMs allowed)
@@ -230,25 +251,30 @@ metadata:
 spec:
   virtualNetwork: vpc-1  # Same VPC
   ipv4CIDR: 10.0.2.0/24
-# Result: vm-subnet's CUDN persists, baremetal-subnet gets fabric-only (no CUDN)
+# Result: vm-subnet's CUDN persists, baremetal-subnet is fabric-only (the
+# k8s-manager operation completes through its successful no-op path)
 # VMaaS blocks VM creation in BOTH subnets (subnet count > 1)
 ```
 
 **Provisioning behavior:**
 - **First subnet (alone):** Operator provisions fabric + k8s manager (CUDN), VMs allowed
-- **Second+ subnets:** Operator provisions fabric-only (no CUDN), first subnet's CUDN persists
+- **Second+ subnets:** Operator dispatches both manager targets; the fabric
+  target provisions the VNet and the k8s-manager operation completes as a
+  successful no-op, so the Subnet remains fabric-only and the first CUDN persists
 - **Multiple subnets (2+):** VMs blocked in ALL subnets by VMaaS validation (subnet count > 1)
-- **Explicit annotation:** skip k8s manager even if this is the only subnet (fabric-only by choice)
-- Dispatcher only provisions fabric manager target for fabric-only subnets
+- No annotation can skip a manager target or select a subset of the shared API
 - Netris role creates VNet under same VPC (VPC created by first Subnet, or new if none exists)
-- No CUDN, no namespace, no k8s resources created for second+ subnets
+- No CUDN, namespace, or other k8s resource is created for second+ subnets;
+  the k8s-manager no-op is still recorded in the normal target lifecycle
 
 **Important:** If VMs exist in the single subnet, API blocks creation of second subnet (see fulfillment-service validation above)
 
 **Deletion behavior:**
 - Subnet controller checks: did this Subnet provision a CUDN? (checks if namespace exists, namespace name = subnet name)
 - **First Subnet (has CUDN):** k8s deprovision (CUDN + namespace) → fabric deprovision (Netris VNet)
-- **Second+ Subnets (no CUDN):** skip k8s deprovision → fabric deprovision only (Netris VNet)
+- **Second+ Subnets (no CUDN):** the k8s-manager delete operation follows the
+  normal successful no-op path, then the fabric target deprovisions the Netris
+  VNet
 - VirtualNetwork deletion waits for ALL child Subnets deleted before deleting Netris VPC
 
 
@@ -401,7 +427,7 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
 | Single subnet under VPC | 1 | ✅ Yes (first subnet) | ✅ **Allowed** - Creates VM in CUDN namespace |
 | First subnet with VMs, second+ added | 2+ | ✅ Yes (persists) | ❌ **Blocked** - VMaaS validation: subnet count > 1 |
 | Multiple subnets, no VMs | 2+ | ✅ Yes (first subnet, persists) | ❌ **Blocked** - VMaaS validation: subnet count > 1 |
-| Single subnet with skip annotation | 1 | ❌ No (explicit fabric-only) | ❌ **Blocked** - No CUDN to place VM into |
+| Single subnet without a VM-capable CUDN | 1 | ❌ No | ❌ **Blocked** - No CUDN to place VM into |
 
 **Error Messages:**
 
@@ -439,20 +465,19 @@ The EVPN manager is prerequisite-gated and inherits the shared
 These additional rules are mandatory whenever the resolved NetworkClass uses
 `k8s_manager: cudn_evpn`:
 
-**Manager and resource capability:**
+**Manager and complete contract:**
 
 - `cudn_evpn` may be selected only by a provider and only after its required
   VTEP, FRR, BGP, fabric, and hosting-cluster prerequisites are registered as
   available. A tenant cannot select the manager through a VirtualNetwork or
-  bypass the NetworkClass capability check.
-- The `cudn_evpn` K8s manager advertises IPv4-only,
-  create/read/delete support for VirtualNetwork, Subnet, NetworkACL,
-  ExternalIPPool, ExternalIP, and ExternalIPAttachment. NATGateway is not a
-  `cudn_evpn` operation because Phase 1 does not provide OVN NAT capability.
-  In the combined NetworkClass used by this design, NATGateway is dispatched
-  to the configured fabric manager and is allowed only when that manager
-  advertises NAT support. A K8s-only NetworkClass rejects NATGateway at
-  validation time.
+  bypass provider NetworkClass profile validation.
+- The `cudn_evpn` K8s manager is registered as an IPv4 manager with the
+  complete OSAC resource and workload contract. NetworkACL and NATGateway are
+  part of that contract; their backend operations may use a successful
+  development no-op AAP role while implementation work is unfinished.
+- In a combined NetworkClass every selected manager receives every resource and
+  workload operation. Kubernetes NetworkPolicy does not replace the OSAC
+  NetworkACL or SecurityGroup contract.
 - A NetworkClass or Subnet must not become Ready merely because the Netris
   fabric side succeeded. For a VM-capable first Subnet, the CUDN, namespace,
   bridge, and MetalLB IPAddressPool prerequisites must also be confirmed.
@@ -481,9 +506,8 @@ These additional rules are mandatory whenever the resolved NetworkClass uses
   every Subnet, including the first one. Deleting a VM does not automatically
   convert an already-created fabric-only Subnet into a VM-capable CUDN;
   topology changes require a new supported create flow.
-- A provider-only fabric-skip annotation may select fabric-only behavior, but
-  it is not tenant input. A tenant request cannot use an annotation or hidden
-  field to bypass the single-subnet VM rule.
+- The single-subnet VM rule is provider-owned. A tenant request cannot use an
+  annotation or hidden field to bypass it or select a manager target.
 
 **VM placement:**
 
@@ -509,9 +533,9 @@ These additional rules are mandatory whenever the resolved NetworkClass uses
   with the exact Subnet and VirtualNetwork. A status from another subnet or
   hosting cluster cannot satisfy the selected Subnet's readiness.
 - Deleting the first CUDN-capable Subnet is blocked until all VMs and other
-  dependent resources are removed. Deleting a fabric-only Subnet must skip
-  CUDN deprovision but still remove its fabric segment; deletion of the VN
-  waits for every child Subnet.
+  dependent resources are removed. Deleting a fabric-only Subnet runs the
+  k8s-manager delete operation as a successful no-op and still removes its
+  fabric segment; deletion of the VN waits for every child Subnet.
 - If fabric provisioning succeeds and CUDN provisioning fails, recovery may
   retry the missing manager operation, but it must not mark the Subnet Ready
   or allow VM placement. If CUDN deletion succeeds and fabric deletion fails,
@@ -625,20 +649,9 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request)
         return reconcile.Result{}, err
     }
 
-    // Determine if k8s manager should be skipped (fabric-only provisioning)
-    skipK8sManager, err := r.shouldSkipK8sManager(ctx, subnet)
-    if err != nil {
-        return reconcile.Result{}, err
-    }
-
     // Build targets with dependencies
     var targets []provisioning.JobTarget
     for _, dispatchTarget := range plan.Targets {
-        // Skip k8s manager target if explicit annotation OR auto-detected
-        if dispatchTarget.Role == dispatcher.K8sManager && skipK8sManager {
-            continue
-        }
-
         target := provisioning.JobTarget{
             Name:         dispatchTarget.TemplateName,
             TemplateName: dispatchTarget.TemplateName,
@@ -668,35 +681,6 @@ func (r *SubnetReconciler) Reconcile(ctx context.Context, req reconcile.Request)
     return provisioning.RunMultiTargetProvisioningLifecycle(ctx, targets, r.buildCallbacks(subnet))
 }
 
-func (r *SubnetReconciler) shouldSkipK8sManager(ctx context.Context, subnet *osacv1.Subnet) (bool, error) {
-    // Check explicit annotation first (takes precedence)
-    if subnet.GetAnnotations()["osac.openshift.io/skip-k8s-manager"] == "true" {
-        return true, nil
-    }
-
-    // Auto-detect: count total Subnets under this VirtualNetwork
-    // Phase 1 limitation: only single-subnet VirtualNetworks support VMs (CUDN provisioning)
-    // - First subnet (alone) → CUDN provisioned
-    // - Second+ subnets → no new CUDN provisioned (fabric-only)
-    var subnetList osacv1.SubnetList
-    if err := r.List(ctx, &subnetList, client.MatchingLabels{
-        "osac.openshift.io/virtual-network": subnet.Spec.VirtualNetwork,
-    }); err != nil {
-        return false, err
-    }
-
-    subnetCount := len(subnetList.Items)
-
-    // If multiple subnets exist, skip k8s manager (fabric-only)
-    // First subnet's CUDN persists, but no new CUDNs provisioned
-    if subnetCount > 1 {
-        return true, nil  // Skip k8s manager (second+ subnet, fabric-only)
-    }
-
-    // First subnet (alone) → provision CUDN
-    return false, nil  // Do not skip k8s manager
-}
-
 func getDeploymentNetworkClass(ctx context.Context, subnet *osacv1.Subnet) (*osacv1.NetworkClass, error) {
     // Resolve the single provider-owned NetworkClass for the deployment that
     // owns the Subnet. No tenant VirtualNetwork/Subnet annotation selects it.
@@ -706,11 +690,13 @@ func getDeploymentNetworkClass(ctx context.Context, subnet *osacv1.Subnet) (*osa
 ```
 
 **Rationale:**
-- Auto-detection: only first Subnet (when alone) gets CUDN provisioned
-- Subnet count check (simple and predictable): count > 1 → skip k8s manager for all new subnets
+- The first Subnet (when alone) gets a CUDN provisioned.
+- The shared dispatch plan is never reduced: when the CUDN-EVPN Phase 1 rule
+  makes a Subnet fabric-only, the k8s-manager operation uses the successful
+  no-op path instead of being omitted.
 - **First subnet's CUDN persists** when second+ subnets added (operator doesn't delete it)
-- Second+ subnets: operator skips k8s manager entirely (fabric-only, no CUDN provisioned)
-- Explicit skip annotation overrides auto-detection (for first-subnet fabric-only case)
+- Second+ subnets remain fabric-only (no CUDN is provisioned), while both
+  manager targets remain represented in the lifecycle.
 - Sequential logic in provisioning package (not controller) makes it reusable for ANY future fabric→k8s dependency
 - Controllers declaratively specify dependencies via `DependsOn` and `ExtraVarsFrom` fields
 - ConfigMap data path is explicit and verified (not an assumption like AAP Job CR status.extraVars)
@@ -731,7 +717,7 @@ collections/ansible_collections/osac/templates/roles/netris/tasks/
 └── delete_subnet.yaml               # NEW: Delete Netris VNet
 ```
 
-The existing `meta/osac.yaml` already declares `fabric_manager: netris` with capabilities — no changes needed there. For reference, the existing schema:
+The existing `meta/osac.yaml` already registers `fabric_manager: netris` with the deployment-wide IPv4 setting — no changes needed there. For reference, the existing schema:
 
 ```yaml
 ---
@@ -843,7 +829,7 @@ capabilities:
 ```
 collections/ansible_collections/osac/templates/roles/cudn_evpn/
 ├── meta/
-│   └── osac.yaml                    # Capability declaration
+│   └── osac.yaml                    # Role metadata
 ├── tasks/
 │   ├── create_subnet.yaml           # Create CUDN + FRRConfiguration
 │   └── delete_subnet.yaml           # Delete VMs → wait → delete CUDN → delete namespace (ordered cleanup)
@@ -912,7 +898,7 @@ capabilities:
           evpn: "true"  # Picked up by RouteAdvertisements
         annotations:
           osac.openshift.io/tenant: "{{ tenant_id }}"
-          osac.openshift.io/owner-reference: "VirtualNetwork/{{ vnet_name }}"
+          osac.openshift.io/owner-reference: "Subnet/{{ subnet_name }}"
       spec:
         namespaceSelector:
           matchLabels:
@@ -1052,8 +1038,9 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
         // Run k8s deprovision job (CUDN delete → namespace delete)
         // Then trigger fabric deprovision (Netris VNet delete) only after CUDN fully deleted
     } else {
-        // Fabric-only subnet (no CUDN) → proceed directly to fabric deprovision
-        // No VM check needed (VMs cannot exist without CUDN namespace)
+        // Fabric-only subnet (no CUDN) → the k8s-manager delete operation is a
+        // successful no-op, then proceed to fabric deprovision.
+        // No VM check is needed (VMs cannot exist without a CUDN namespace).
     }
 
     return r.runDeprovisionJob(ctx, subnet)
@@ -1079,14 +1066,18 @@ When a VirtualNetwork has multiple Subnets, deletion must follow this order:
 2. **VirtualNetwork controller blocks deletion** until all child Subnets are deleted (enforced via Kubernetes finalizer)
 3. **Subnets must be deleted individually first:**
    - **First Subnet (has CUDN):** k8s manager deprovision (CUDN + namespace) → fabric deprovision (Netris VNet)
-   - **Second+ Subnets (no CUDN):** fabric deprovision only (Netris VNet, no k8s resources to clean up)
-   - **Any Subnet with `skip-k8s-manager` annotation:** fabric deprovision only (Netris VNet)
+   - **Second+ Subnets (no CUDN):** k8s-manager delete no-op followed by
+     fabric deprovision (Netris VNet, no k8s resources to clean up)
+   - **Any fabric-only Subnet:** the k8s-manager delete operation completes
+     through its normal successful no-op path, followed by fabric deprovision
+     of the Netris VNet
 4. **After all Subnets deleted:** VirtualNetwork finalizer clears, fabric manager deprovision runs (deletes Netris VPC)
 
 **Deletion Detection:**
 - Controller checks if namespace exists (namespace name = subnet name)
 - If namespace exists → Subnet has CUDN → run k8s deprovision job
-- If namespace not found → Subnet is fabric-only → skip k8s deprovision, run fabric deprovision only
+- If namespace not found → Subnet is fabric-only → the k8s-manager delete
+  operation completes as a successful no-op, then fabric deprovision runs
 
 **Critical constraint:** Netris API rejects VPC deletion if any VNets exist under it. The VirtualNetwork fabric manager playbook must validate no child VNets exist before deleting VPC:
 
@@ -1196,23 +1187,22 @@ metadata:
   name: k8s-manager-cudn-evpn
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"  # Matches OSAC-1433 label path
+    osac.openshift.io/network-k8s-manager: "true"  # Matches OSAC-1433 manager-registration label
 data:
   name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
   description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
   capabilities: "addressFamily:ipv4"
-  supportedResources: "virtualNetwork,subnet,networkAcl,externalIPPool,externalIP,externalIPAttachment"
   # template_role field removed - not in OSAC-1433 spec, dispatcher resolves role name from k8s_manager field
 ```
 
-**Capability Fields:**
+**Registration Fields:**
 - `addressFamily:ipv4` — IPv4 address family supported
-- `supportedResources` — the shared resources handled by this K8s manager;
-  NATGateway is intentionally omitted because Phase 1 does not provide that
-  capability
+- There is no per-resource, policy, scope, or service subset declaration. Selecting
+  `cudn_evpn` selects the complete shared contract. An unfinished operation is
+  represented by its normal AAP job and may complete as a successful no-op.
 
 The single-VM-capable-Subnet rule is a CUDN-EVPN placement validation, not a
-new shared NetworkClass capability. It remains enforced by the
+new shared NetworkClass contract. It remains enforced by the
 fulfillment-service Subnet/VM validation described above.
 
 **RBAC:**
@@ -1260,7 +1250,7 @@ subjects:
 
 All OSAC resources include standard tenant isolation metadata:
 - `osac.openshift.io/tenant` annotation on CUDN and namespace
-- `osac.openshift.io/owner-reference` annotation linking CUDN to parent VirtualNetwork
+- `osac.openshift.io/owner-reference` annotation linking CUDN to its owning Subnet
 - OPA policies enforce read/write isolation at fulfillment-service API layer
 
 **New Isolation Boundary:**
@@ -1340,8 +1330,13 @@ Existing RBAC model applies. Tenant users interact via fulfillment-service API (
 
 **Owner Reference Annotations:**
 
-- CUDN annotation `osac.openshift.io/owner-reference: "VirtualNetwork/<vnet-id>"` links to parent
-- Used for garbage collection: deleting VirtualNetwork cascades to CUDN via finalizer
+- CUDN annotation `osac.openshift.io/owner-reference: "Subnet/<subnet-id>"` links
+  the provider-owned CUDN to the Subnet that created it.
+- The annotation is an indexed ownership link for the Subnet finalizer; it is
+  not a permission to cascade from VirtualNetwork deletion. A VirtualNetwork
+  delete is rejected while any Subnet remains. After a Subnet delete has been
+  admitted, its finalizer removes its owned CUDN/namespace before completing
+  Subnet deletion.
 
 ### Observability and Monitoring
 
@@ -1465,7 +1460,8 @@ Where is the authoritative MAC value? Does Netris VNet gateway MAC come from a p
 ## Test Plan
 
 The executable, reviewable Phase 1 plan is maintained in
-[testplan.md](testplan.md). It covers manager registration and capabilities,
+[testplan.md](testplan.md). It covers complete manager registration and the
+deployment-wide IPv4 setting,
 sequential fabric-to-CUDN provisioning, supported subnet and VM placement,
 deletion and dependency guards, concurrency and isolation, and explicitly
 unsupported Phase 1 behavior. Shared networking contracts are covered by the
@@ -1504,8 +1500,10 @@ NetworkClass has `k8s_manager="cudn_evpn"`:
 
 1. Identify each deployment's active NetworkClass and confirm its
    `k8s_manager` is `cudn_evpn`
-2. List all VirtualNetworks in those deployments and delete their Subnets
-   (cascades CUDN deletion)
+2. List all VirtualNetworks in those deployments and delete their Subnets.
+   Each admitted Subnet deletion removes only its own provider-owned CUDN and
+   namespace through the Subnet finalizer; VirtualNetwork deletion remains
+   blocked until all Subnets are gone.
 3. Delete the deployment NetworkClass
 4. Downgrade osac components (fulfillment-service, osac-operator, osac-aap, osac-installer)
 5. CUDN CRDs remain on cluster (OVN-Kubernetes owns them, safe to leave)

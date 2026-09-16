@@ -11,7 +11,10 @@
   readiness, deletion, and Phase 1 failure recovery.
 - **Inherited boundary:** The shared Unified Networking plan owns IPv4-only,
   connected single-hub admission, create/read/delete-only operations, and
-  tenant reference/defaulting validation.
+  tenant reference/defaulting validation. It also owns strict dependency-ready
+  admission: a Subnet requires a Ready VirtualNetwork, while the Subnet may
+  remain Pending only for its own ordered fabric-to-CUDN provisioning. The
+  only Pending dependency exception is OSAC-owned automatic ExternalIP access.
 - **Manual prerequisites:** OCP with OVN-Kubernetes, FRR, NMState, VTEP,
   RouteAdvertisements, BGP underlay, gateway MAC coordination, and a real
   Netris fabric. These are installation prerequisites, not tenant API
@@ -23,8 +26,8 @@
 
 ## Execution strategy
 
-- **Unit:** fulfillment-service topology validation, manager capability
-  resolution, operator phase/state logic, VNI/ConfigMap parsing, CUDN
+- **Unit:** fulfillment-service topology validation, complete-manager
+  registration resolution, operator phase/state logic, VNI/ConfigMap parsing, CUDN
   readiness, VM placement, and deletion guards.
 - **Integration:** real PostgreSQL and validation path, envtest/Kind CRDs and
   controllers, fake Netris/AAP jobs, documented ConfigMap data handoff, fake
@@ -34,7 +37,7 @@
 
 ## Test cases
 
-### R1: Provider manager registration and capability contract
+### R1: Provider manager registration and complete manager contract
 
 #### TC-R1-01: Valid `cudn_evpn` registration is accepted
 
@@ -45,24 +48,37 @@
 ##### Steps
 
 1. Install the provider ConfigMap declaring `cudn_evpn`.
-2. Verify IPv4 support, IPv6 disabled, create/read/delete operations, and the
+2. Verify IPv4 support, IPv6 disabled, create/read/delete operations, the
+   complete shared resource and VMaaS/BMaaS/CaaS service contract, and the
    separate Phase 1 single-subnet VM-placement validation.
 3. Create a NetworkClass with `fabric_manager=netris` and
    `k8s_manager=cudn_evpn`.
-4. With the Fabric Manager advertising NATGateway support, create a Ready
-   VirtualNetwork and an Allocated, unconsumed ExternalIP, then create a
-   NATGateway through the combined NetworkClass.
+4. Create a NetworkACL for a Ready Subnet and inspect the dispatcher calls.
+5. Create a SecurityGroup for a Ready VirtualNetwork and inspect the dispatcher
+   calls.
+6. Create a Ready VirtualNetwork and an Allocated, unconsumed ExternalIP, then
+   create a NATGateway through the combined NetworkClass.
+7. Submit one representative VMaaS, BMaaS, and CaaS operation and inspect that
+   the manager receives the normal operation. Execute one unfinished operation
+   through a successful no-op AAP role.
 
 ##### Expected results
 
-- Registration and capability loading succeed.
+- Registration succeeds with the complete shared manager contract; no
+  per-resource, policy, scope, or service capability matrix is loaded.
+- NetworkACL and SecurityGroup operations are dispatched to every configured
+  manager target. Kubernetes NetworkPolicy is not substituted for the shared
+  NetworkACL contract.
+- VMaaS, BMaaS, and CaaS operations are all dispatched to the manager target;
+  an unfinished provider implementation may return a successful no-op AAP
+  result.
 - NetworkClass is accepted only after required installation prerequisites are
   available.
 - `cudn_evpn` is not selected as Default Networking's default manager when
   required manual prerequisites are absent.
-- In a combined NetworkClass, NATGateway is accepted through the configured
-  Fabric Manager when that manager advertises NAT support; `cudn_evpn` does
-  not need to advertise the NATGateway operation itself.
+- NATGateway is dispatched to every configured manager target. Its provider
+  operation may be a successful no-op while EVPN-specific NAT integration is
+  unfinished.
 
 #### TC-R1-02: Incomplete or tenant-controlled registration is rejected
 
@@ -76,16 +92,44 @@
 - IPv6/dual-stack capability;
 - missing VTEP/FRR/BGP prerequisite;
 - tenant tries to select manager, VNI, VTEP, gateway MAC, or skip annotation;
-- NATGateway request in K8s-only mode;
-- NATGateway request in combined mode when the Fabric Manager does not
-  advertise NATGateway support.
+- a partial manager registration that omits any required resource, policy, or
+  VMaaS/BMaaS/CaaS service from the complete contract;
+- a tenant-controlled attempt to select a manager-specific implementation,
+  resource target, service target, or dispatch strategy.
 
 ##### Expected results
 
 - Provider misconfiguration or unsupported tenant input fails before backend
   provisioning.
-- K8s-only NATGateway requests and combined-manager requests without Fabric
-  NATGateway support are rejected before persistence or dispatch.
+- Partial manager registration and tenant-controlled routing are rejected as
+  provider configuration or authorization errors. A tenant resource or
+  workload request is never rejected because a manager lacks a resource,
+  policy, scope, or service implementation declaration; an unfinished operation is
+  represented by its normal successful no-op AAP result.
+
+#### TC-R1-03: Subnet admission requires a Ready VirtualNetwork
+
+| Interface | Test type | Priority | Automation |
+|---|---|---|---|
+| IC-2, IC-3 | Unit, integration, E2E rejection | critical | automated |
+
+##### Cases
+
+- Hold the parent VirtualNetwork in `Pending`, `Failed`, and `Deleting` and
+  submit the first CUDN-EVPN Subnet through the public API.
+- Repeat through the direct hub-CR admission path.
+- Advance the VirtualNetwork to `Ready` and retry the same request.
+
+##### Expected results
+
+- Each non-Ready parent returns `FailedPrecondition` identifying the Subnet's
+  `spec.virtual_network` field, the VirtualNetwork identity, observed state,
+  required `Ready` state, and wait-and-retry remediation.
+- No Subnet, hub CR, CUDN, namespace, ConfigMap, manager job, or AAP job is
+  created for the rejected request.
+- After the VirtualNetwork is Ready, Subnet admission succeeds exactly once;
+  the Subnet may then remain Pending while its own fabric-to-CUDN sequence
+  runs.
 
 ### R2: Sequential fabric-to-CUDN provisioning
 
@@ -98,11 +142,12 @@
 ##### Steps
 
 1. Create a VirtualNetwork; verify no fabric or CUDN provisioning occurs.
-2. Create its first Subnet.
-3. Observe fabric VPC/VNet job completion.
-4. Read the documented VNI ConfigMap output.
-5. Observe K8s manager CUDN/namespace/IPAddressPool creation.
-6. Wait for CUDN and Subnet readiness.
+2. Wait until the VirtualNetwork is `Ready`.
+3. Create its first Subnet.
+4. Observe fabric VPC/VNet job completion.
+5. Read the documented VNI ConfigMap output.
+6. Observe K8s manager CUDN/namespace/IPAddressPool creation.
+7. Wait for CUDN and Subnet readiness.
 
 ##### Expected results
 
@@ -177,7 +222,8 @@
 ##### Expected results
 
 - API accepts the second Subnet.
-- Only the fabric manager is dispatched for the second Subnet.
+- Both configured managers are dispatched for the second Subnet; the
+  k8s-manager operation completes through the successful no-op path.
 - Second Subnet has no CUDN or namespace.
 - First Subnet's CUDN persists unchanged.
 - VMs are blocked in both Subnets once the VN has multiple Subnets.
@@ -195,7 +241,7 @@
   topology restriction.
 - No second VNet, CUDN, namespace, or job is created.
 
-#### TC-R3-04: Explicit provider skip produces fabric-only Subnet
+#### TC-R3-04: Fabric-only Subnets retain the complete target plan
 
 | Interface | Test type | Priority | Automation |
 |---|---|---|---|
@@ -203,13 +249,14 @@
 
 ##### Expected results
 
-- Provider-only skip annotation produces fabric-only provisioning even for a
-  first/only Subnet.
-- Tenant cannot set or use the annotation as a hidden API input. Test both a
-  tenant-facing API request and a direct CR containing the annotation.
-- A provider-authenticated path with valid provenance may set the annotation;
-  a forged or tenant-owned annotation is rejected or ignored.
-- Deletion skips CUDN cleanup for the fabric-only Subnet.
+- A later Subnet is fabric-only under the Phase 1 topology rule, while the
+  normal fabric and k8s manager targets are both present in the dispatch plan.
+- The k8s-manager create operation is a successful no-op and creates no CUDN,
+  namespace, or other k8s resource for that Subnet.
+- No tenant or provider annotation can remove a manager target or select a
+  subset of the shared API.
+- Deletion records the normal k8s-manager successful no-op before fabric
+  cleanup.
 
 #### TC-R3-05: Persisted Subnet identity determines first-Subnet behavior
 
@@ -229,8 +276,9 @@
 
 - The first Subnet is selected by stable persisted creation sequence, never by
   unordered list position or reconciliation order.
-- Exactly that Subnet receives the CUDN; later Subnets are fabric-only unless
-  the explicit provider skip rule applies.
+- Exactly that Subnet receives the CUDN; later Subnets are fabric-only, while
+  their normal k8s-manager operations complete through the successful no-op
+  path.
 - Restart and retry preserve the same identity without duplicate CUDNs, VNIs,
   namespaces, or backend jobs.
 
@@ -307,10 +355,17 @@
 ##### Expected results
 
 - First Subnet: VMs → CUDN → namespace → fabric VNet.
-- Fabric-only Subnet: fabric VNet only; no CUDN call.
-- VirtualNetwork/VPC is deleted only after every child VNet/Subnet is gone.
+- Fabric-only Subnet: fabric VNet plus a successful k8s-manager no-op; no CUDN
+  object is created or deleted.
+- VirtualNetwork/VPC is deleted only after every direct shared-network blocker is
+  gone: child Subnets, SecurityGroups, NetworkACLs, and NATGateways where those
+  resources are provided by the combined NetworkClass. The CUDN-specific
+  controller additionally waits for its provider-owned CUDN/namespace state.
 - CUDN deletion failure prevents fabric deletion and leaves a visible failed
   deletion state.
+- Attempting to delete a VirtualNetwork while a Subnet remains is rejected;
+  the CUDN, namespace, Subnet, and fabric state remain unchanged. CUDN cleanup
+  occurs only from the admitted owning Subnet deletion path.
 
 ### R6: Concurrency, isolation, and unsupported Phase 1 features
 
@@ -346,17 +401,17 @@
 - automatic VTEP provisioning;
 - automatic gateway-MAC coordination;
 - tenant setting provider-only topology controls;
-- CaaS private-worker EVPN port-move integration while transport support is
-  TBD;
+- CaaS cluster creation and private-worker provisioning through the shared
+  manager contract, including a temporary successful no-op provider path;
 - update/patch/replace of network-owned fields;
-- NATGateway in a K8s-only NetworkClass whose only manager is `cudn_evpn`, or
-  an attempt to dispatch NATGateway directly to `cudn_evpn` instead of through
-  a capable Fabric Manager.
+- a tenant-controlled attempt to select a manager-specific implementation or
+  dispatch target.
 
 ##### Expected results
 
-- Capability is not advertised or request is rejected.
-- No unsupported manager/job/backend operation is dispatched.
+- Invalid tenant-controlled routing is rejected before persistence or dispatch.
+- The normal manager job is dispatched for every canonical operation; an
+  unfinished provider operation may complete as a successful no-op.
 
 ## Graduation gate
 

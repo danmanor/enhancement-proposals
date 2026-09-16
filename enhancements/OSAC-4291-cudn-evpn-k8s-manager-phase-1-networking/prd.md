@@ -8,6 +8,20 @@
 
 ## Problem Statement
 
+The shared Unified Networking strict dependency-ready creation contract
+applies to this manager as well:
+dependent resources are admitted only after their references are Ready, with
+field-specific `FailedPrecondition` errors and no partial persistence. The
+Subnet's own fabric-to-CUDN provisioning may be asynchronous after successful
+admission; it is not a forward-reference exception. The only Pending
+dependency exception is the shared OSAC-owned automatic ExternalIP and
+ExternalIPAttachment flow.
+
+This manager also inherits the [Unified Networking deployment support
+boundary](../OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+the Phase 1 deployment must be connected, and air-gapped or disconnected
+deployments are not supported.
+
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a pod whose networking is managed by OVN-Kubernetes. By default, VM IP addresses exist only within the OVN overlay and are not visible on the physical fabric. This prevents VMs from being first-class fabric participants — they cannot share the same L2 subnet with bare-metal servers, cannot be reached directly from the fabric, and cannot leverage the fabric's multi-tenancy and routing capabilities.
 
 Without a k8s manager that bridges VMs to the fabric, tenants cannot deploy workloads that span VMs and bare-metal hosts in the same subnet. The CUDN LocalNet approach (OSAC-1511) has been frozen in favor of OVN EVPN, which provides better scalability and multi-cluster support. [Clarify: R1.Q3]
@@ -42,7 +56,12 @@ The following are out of scope for Phase 1:
 - **IPv6 and dual-stack support** — IPv4 only. IPv6 and dual-stack networking
   are not supported. [Clarify: R2.Q4]
 - **Standardized route-target format** — deferred until fabric manager implements it [Clarify: R1.Q3, D3, D7] [User]
-- **MetalLB IPAddressPool creation** — handled separately in OSAC-1436 (CaaS Networking) [Clarify: R3.Q3, D9]
+- **MetalLB implementation details** — the shared Subnet lifecycle owns the
+  manager dispatch and readiness contract; the selected K8s manager creates
+  its MetalLB IPAddressPool for the CaaS/VIP path. CaaS consumes the resulting
+  pool and VIPs but does not create a second competing pool. If this provider
+  operation is unfinished during development, its normal AAP job may complete
+  as a successful no-op.
 - **Physical infrastructure automation** — manual prerequisites remain manual for Phase 1 [Clarify: R2.Q1, R2.Q3, D5, D6]
 - **Automatic gateway MAC coordination** — Cloud Infrastructure Admin must manually coordinate gateway MAC addresses (moved to prerequisites above) [Clarify: R1.Q5]
 
@@ -80,12 +99,17 @@ The following are out of scope for Phase 1:
   to fabric-bridged VM traffic. NetworkACL evaluation remains stateless and
   follows the shared specificity and deployment-baseline semantics; an
   opposite-direction tenant rule is required for tenant-specific return-path
-  control, otherwise the provider-owned baseline applies.
+  control, otherwise the provider-owned baseline applies. The manager is a
+  complete target for the shared NetworkACL contract and does not substitute
+  Kubernetes NetworkPolicy for that contract. During development, its normal
+  AAP operation may complete as a successful no-op until the provider-side
+  adapter is implemented.
 
-- When the resolved NetworkClass includes a NAT-capable fabric manager, its
-  fabric-level NATGateway (SNAT via softgate) applies to fabric-bridged VM
-  egress traffic. The `cudn_evpn` K8s manager does not provide NATGateway;
-  K8s-only OVN deployments reject NATGateway creation.
+- NATGateway is part of the manager's complete shared resource contract and
+  is dispatched through the same manager target. Its normal AAP operation may
+  complete as a successful no-op while the EVPN-specific implementation is
+  being completed; no manager-specific support flag or tenant-visible unsupported
+  NAT path is introduced.
 
 ## Acceptance Criteria
 
