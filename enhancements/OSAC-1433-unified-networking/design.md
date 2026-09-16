@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -125,9 +125,6 @@ metadata:
 spec:
   fabricManager: netris
   k8sManager: cudn_localnet
-status:
-  capabilities:
-    addressFamily: dualStack
 ```
 
 **Neutron + CUDN (VMs and BM):**
@@ -140,9 +137,6 @@ metadata:
 spec:
   fabricManager: neutron
   k8sManager: cudn_localnet
-status:
-  capabilities:
-    addressFamily: ipv4
 ```
 
 **BM-only deployment (no VMs):**
@@ -154,45 +148,14 @@ metadata:
   name: gpu-region-1
 spec:
   fabricManager: netris
-status:
-  capabilities:
-    addressFamily: ipv4
 ```
-
-#### Capabilities
-
-Capabilities are **inferred from the assigned managers** and published in
-the NetworkClass status — the provider does not set them manually. The
-operator computes the intersection of capabilities declared by the fabric
-manager and k8sManager ConfigMaps and populates `status.capabilities`
-automatically.
-
-If the provider needs to restrict a capability that the managers support
-(e.g., disable IPv6 in a deployment even though the fabric manager supports
-it), they can set `spec.disableCapabilities`:
-
-```yaml
-spec:
-  fabricManager: netris
-  k8sManager: cudn_localnet
-  disableCapabilities:
-    - ipv6
-```
-
-| Capability | Type | Meaning |
-|-----------|------|---------|
-| `addressFamily` | enum | `ipv4`, `ipv6`, or `dualStack` |
-| `dpuSupport` | bool | DPU-accelerated networking available |
-
-The set of capabilities is defined by the operator and is fixed — adding a
-new capability requires an operator update. Managers declare which
-capabilities they support; they cannot define custom capabilities.
 
 #### Manager Registration (ConfigMap)
 
-Each manager ships a ConfigMap declaring its type and capabilities. These
+Each manager ships a ConfigMap declaring its type, name, and description. These
 ConfigMaps are deployed as part of the OSAC installation alongside the
-manager's Ansible roles.
+manager's Ansible roles. They register routing targets only; they do not
+advertise feature metadata.
 
 **Fabric managers:**
 
@@ -203,11 +166,10 @@ metadata:
   name: fabric-manager-netris
   namespace: osac
   labels:
-    osac.openshift.io/network/fabric-manager: "true"
+    osac.openshift.io/network-fabric-manager: "true"
 data:
   name: netris
   description: "Netris SDN — tenant isolation, ACL, IPAM, DNAT, SNAT"
-  capabilities: "addressFamily:ipv4"
 ```
 
 ```yaml
@@ -217,11 +179,10 @@ metadata:
   name: fabric-manager-neutron
   namespace: osac
   labels:
-    osac.openshift.io/network/fabric-manager: "true"
+    osac.openshift.io/network-fabric-manager: "true"
 data:
   name: neutron
   description: "OpenStack Neutron — tenant isolation, IPAM, floating IPs"
-  capabilities: "addressFamily:ipv4"
 ```
 
 **K8s managers:**
@@ -233,18 +194,36 @@ metadata:
   name: k8s-manager-cudn-localnet
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"
+    osac.openshift.io/network-k8s-manager: "true"
 data:
   name: cudn_localnet
   description: "CUDN with LocalNet — bridges OVN overlay to physical fabric"
-  capabilities: "addressFamily:dualStack"
 ```
 
 The operator discovers managers by listing ConfigMaps with the appropriate
 labels. When a NetworkClass is created, the operator validates each manager
 assignment against the corresponding ConfigMap. Adding a new manager means
 deploying a new ConfigMap and Ansible role — no API or operator changes
-needed.
+needed. The fulfillment API remains the authority for validating address
+families, resource relationships, and other supported networking constraints;
+no manager or NetworkClass feature metadata is consulted.
+
+#### API Validation and NetworkClass Schema
+
+NetworkClass remains the provider-level routing resource and retains the
+`fabric_manager` and `k8s_manager` references used by discovery and dispatch.
+Its API contract does not define `NetworkClassCapabilities`,
+`spec.disable_capabilities`, or any derived capability output such as
+`status.capabilities`. Manager ConfigMaps contain registration metadata only:
+role labels, `name`, and `description`; they do not contain `data.capabilities`.
+
+The fulfillment API validates address families, resource relationships, and
+feature-specific constraints directly. The operator uses manager registrations
+to resolve routing targets, not to negotiate whether an API request is
+supported. Removing these fields requires the implementation to reserve their
+old proto names/numbers and handle version skew before the revised contract is
+deployed; this design does not introduce a second manager-side validation
+contract.
 
 ### How VMs Join the Fabric
 

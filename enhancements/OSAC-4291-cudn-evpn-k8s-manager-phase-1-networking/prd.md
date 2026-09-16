@@ -21,7 +21,7 @@ The OVN EVPN spike (OSAC-1717) validated the technical approach: VMs can join th
 
 ## In Scope
 
-- **K8s manager registration** for EVPN fabric bridging (IPv4 address family only) [Clarify: R2.Q4]
+- **K8s manager registration** for EVPN fabric bridging. The fulfillment API enforces the IPv4-only Phase 1 contract [Clarify: R2.Q4]
 - **Fabric-to-k8s manager data dependency** — subnet provisioning must ensure the fabric manager completes and provides network segment identifiers before the k8s manager begins, using a manager-agnostic interface [Clarify: R1.Q3, R2.Q5, D7] [User]
 - **Automatic overlay network provisioning** on hosting clusters that bridges VMs to the physical fabric when a VirtualNetwork/Subnet is created [Clarify: R2.Q1]
 - **VM-to-fabric connectivity** — VMs are discoverable and directly reachable from bare-metal servers on the physical fabric (both L2 same-subnet and L3 cross-subnet scenarios)

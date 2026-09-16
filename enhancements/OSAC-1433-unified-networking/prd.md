@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -143,19 +143,17 @@ API.
 
 NetworkClass is modeled after Kubernetes StorageClass — tenants select it when
 creating a VirtualNetwork. But unlike StorageClass (where "fast" vs "cheap" is
-a meaningful tenant choice about capability), NetworkClass exposes network
+a meaningful tenant choice about network characteristics), NetworkClass exposes network
 backend implementation details ("udn-net" vs "phys-net") that tenants should
 not need to understand. The provider's infrastructure determines the backend,
 not the tenant's preference.
 
-#### Gap #3: No manager capability discovery or registration
+#### Gap #3: API-owned networking constraints
 
-There is no registry of which networking managers are installed or what each
-supports. A K8s manager like `cudn_localnet` handles VM overlay and bridging
-but not IP allocation or ACLs. A fabric manager like Netris handles
-everything on the physical side. The system has no way to know this — there
-is no machine-readable declaration of manager capabilities, and no validation
-that a manager is assigned to a role it can handle.
+Manager registration and dispatch identify which configured manager handles each
+operation. The fulfillment API is the authority for validating supported address
+families, resource relationships, and other networking constraints; manager
+registrations do not declare or negotiate those constraints.
 
 #### Gap #4: ExternalIPAttachment only supports VMs
 

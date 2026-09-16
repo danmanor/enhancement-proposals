@@ -88,11 +88,11 @@ The limit is one subnet per VirtualNetwork. The validation happens when creating
 
 #### Impact
 
-PRD validation requirements: fulfillment-service Subnet creation API must reject a second subnet when the parent VirtualNetwork uses a NetworkClass whose k8s manager has this limitation. Error message should reference OVN Connectors limitation. No operator-side validation needed (API rejection prevents the CR from ever being created).
+PRD validation requirements: fulfillment-service Subnet creation API must reject a second subnet when the parent VirtualNetwork uses a NetworkClass with `k8s_manager: cudn_evpn`. Error message should reference OVN Connectors limitation. No operator-side validation needed (API rejection prevents the CR from ever being created).
 
 #### Decision (D4)
 
-Validation enforced at Subnet API creation time in fulfillment-service, conditional on the NetworkClass's k8s manager. Constraint is one subnet per VirtualNetwork when the k8s manager is `cudn_evpn` (not a universal constraint; other NetworkClasses support multiple subnets). Second subnet creation attempt returns validation error.
+Validation is enforced at Subnet API creation time in fulfillment-service, conditional on the NetworkClass's k8s manager. The API permits one subnet per VirtualNetwork when the k8s manager is `cudn_evpn` (other NetworkClass configurations permit multiple subnets). A second subnet creation attempt returns a validation error.
 
 ---
 
@@ -193,19 +193,23 @@ Underlay configuration (physical link, Netris port setup, BGP session) is a docu
 
 ---
 
-### R2.Q4: NetworkClass ConfigMap Schema
+### R2.Q4: K8s Manager Registration ConfigMap
 
-The Jira mentions "k8s manager registration via ConfigMap with declared capabilities."
+The Jira mentions k8s manager registration via ConfigMap.
 
 What exact fields are in the ConfigMap?
 
 #### Answer
 
-NetworkClass ConfigMap should contain: `name: cudn_evpn` with capabilities `ipv4` or `dualstack` (same structure as other k8s managers, no additional EVPN-specific fields).
+The k8s manager registration ConfigMap should contain `name: cudn_evpn` and its
+description, with the existing manager-registration labels. The IPv4-only
+constraint is part of the fulfillment API contract, not ConfigMap metadata.
 
 #### Impact
 
-PRD documents NetworkClass ConfigMap schema matching existing pattern from OSAC-1433 unified networking. No EVPN-specific ConfigMap fields beyond standard name and capabilities.
+PRD documents the k8s manager registration ConfigMap schema matching the
+existing registration pattern from OSAC-1433 unified networking. No
+EVPN-specific metadata is required.
 
 ---
 

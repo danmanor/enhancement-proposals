@@ -112,7 +112,7 @@ Regardless of how the domain is created:
 ## Dependencies
 
 - **Unified Networking (EP #50):** Networking primitives must be in place as the foundation layer.
-- **Fabric Manager:** API availability for east-west isolation and multi-tenancy capabilities. The fabric manager capability contract will be defined in the design document.
+- **Fabric Manager:** API availability for east-west isolation and multi-tenancy. The fulfillment API validates the supported east-west configuration directly.
 
 ## Risks
 

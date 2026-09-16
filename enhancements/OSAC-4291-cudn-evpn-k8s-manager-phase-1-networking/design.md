@@ -3,7 +3,7 @@ title: cudn-evpn-k8s-manager-phase-1-networking
 authors:
   - Benny Kopilov
 creation-date: 2026-09-03
-last-updated: 2026-09-03
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-4291
 prd:
@@ -95,7 +95,7 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
 | Second+ Subnets | Netris VNet (L2 macVRF) | — | ❌ Fabric-only |
 
 - **One CUDN per VirtualNetwork** (Phase 1 limitation - OVN-K lacks secondary CUDN support)
-- **Multiple VNets per VPC** (Netris fabric capability - all share same IP-VRF)
+- **Multiple VNets per VPC** (Netris fabric behavior — all share the same IP-VRF)
 - **First Subnet CUDN created immediately** (on Subnet provisioning, not VM creation)
 - **CUDN persists when adding subnets** (but VMaaS blocks VMs in all subnets if multiple exist)
 
@@ -189,7 +189,7 @@ sequenceDiagram
 ### API Extensions
 
 **New:**
-- osac-installer ConfigMap `k8s-manager-cudn-evpn` (declares k8s manager capabilities)
+- osac-installer ConfigMap `k8s-manager-cudn-evpn` (registers the k8s manager)
 - osac-aap fabric manager template role `netris` (creates Netris VPC/VNet, returns VNI)
 - osac-aap k8s manager template role `cudn_evpn` (creates CUDN)
 - **Subnet annotation `osac.openshift.io/skip-k8s-manager: "true"`** — optional annotation to explicitly skip k8s manager (fabric-only). If omitted, operator auto-detects: first subnet gets CUDN, second+ subnets are fabric-only.
@@ -308,7 +308,7 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
                 return nil, status.Errorf(codes.FailedPrecondition,
                     "Cannot create additional subnets under VirtualNetwork %q: "+
                     "first subnet %q has running VMs. "+
-                    "Phase 1 limitation: cudn_evpn supports only one subnet per VirtualNetwork when VMs are present. "+
+                    "Phase 1 API constraint: only one subnet per VirtualNetwork is allowed when VMs are present. "+
                     "To add subnets for bare-metal workloads, delete VMs first or create a new VirtualNetwork.",
                     vnetResp.GetVirtualNetwork().GetMetadata().GetName(),
                     firstSubnet.GetMetadata().GetName())
@@ -405,7 +405,7 @@ When a tenant attempts to add a second subnet while VMs exist:
 ```
 Error (API): Cannot create additional subnets under VirtualNetwork "vpc-1":
 first subnet "subnet-1" has running VMs.
-Phase 1 limitation: cudn_evpn supports only one subnet per VirtualNetwork when VMs are present.
+Phase 1 API constraint: only one subnet per VirtualNetwork is allowed when VMs are present.
 
 Solution: Delete VMs first or create a new VirtualNetwork for bare-metal workloads.
 ```
@@ -622,15 +622,12 @@ collections/ansible_collections/osac/templates/roles/netris/tasks/
 └── delete_subnet.yaml               # NEW: Delete Netris VNet
 ```
 
-The existing `meta/osac.yaml` already declares `fabric_manager: netris` with capabilities — no changes needed there. For reference, the existing schema:
+The existing `meta/osac.yaml` already declares `fabric_manager: netris`; no
+feature metadata is required there. For reference, the existing schema is:
 
 ```yaml
 ---
 fabric_manager: netris
-capabilities:
-  supports_ipv4: true
-  supports_ipv6: false
-  supports_dual_stack: false
 ```
 
 **tasks/create_subnet.yaml:**
@@ -736,7 +733,7 @@ capabilities:
 ```
 collections/ansible_collections/osac/templates/roles/cudn_evpn/
 ├── meta/
-│   └── osac.yaml                    # Capability declaration
+│   └── osac.yaml                    # Manager registration metadata
 ├── tasks/
 │   ├── create_subnet.yaml           # Create CUDN + FRRConfiguration
 │   └── delete_subnet.yaml           # Delete VMs → wait → delete CUDN → delete namespace (ordered cleanup)
@@ -749,11 +746,6 @@ collections/ansible_collections/osac/templates/roles/cudn_evpn/
 ```yaml
 ---
 k8s_manager: cudn_evpn
-capabilities:
-  supports_ipv4: true
-  supports_ipv6: false
-  supports_dual_stack: false
-  dpu_support: false
 ```
 
 **tasks/create_subnet.yaml:**
@@ -1092,21 +1084,16 @@ metadata:
   name: k8s-manager-cudn-evpn
   namespace: osac
   labels:
-    osac.openshift.io/network/k8s-manager: "true"  # Matches OSAC-1433 label path
+    osac.openshift.io/network-k8s-manager: "true"  # Matches OSAC-1433 label
 data:
   name: cudn_evpn  # Field name 'name' per OSAC-1433 schema (not 'manager')
-  description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
-  capabilities: "supports_ipv4:true,supports_ipv6:false,single_subnet_per_vn:true"  # Comma-separated string per OSAC-1433
+  description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging"
   # template_role field removed - not in OSAC-1433 spec, dispatcher resolves role name from k8s_manager field
 ```
 
-**Capability Fields:**
-- `supports_ipv4:true` — IPv4 address family supported
-- `supports_ipv6:false` — IPv6 not supported in Phase 1
-- `single_subnet_per_vn:true` — NEW capability: enforces single-subnet-per-VirtualNetwork constraint (checked by fulfillment-service validation)
-
-The `single_subnet_per_vn` capability is checked by fulfillment-service Subnet validation (see Subnet Validation section above) to make the constraint pluggable for future k8s managers.
-```
+The fulfillment API enforces the IPv4-only and single-subnet-per-
+VirtualNetwork constraints directly. The manager registration supplies the
+routing identity only; it does not declare supported features.
 
 **RBAC:**
 

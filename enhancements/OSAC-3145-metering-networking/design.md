@@ -3,7 +3,7 @@ title: metering-for-networking-resources
 authors:
   - masayag@redhat.com
 creation-date: 2026-09-08
-last-updated: 2026-09-09
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3145
 prd: "prd.md"
@@ -188,7 +188,7 @@ This changes fulfillment transaction boundaries and removes convenient operator 
 - Put NATGateway in the attachment oneof: contradicts the current API and PRD target set.
 - Keep operator parent writes: they race fulfillment and are not authoritative.
 - Meter attachments: they consume no separate allocation.
-- Use NetworkClass as locality: it is a provider capability resource, not the installation identity required by the PRD.
+- Use NetworkClass as locality: it is provider routing configuration, not the installation identity required by the PRD.
 - Add a new service/configurable registry here: Part 1 owns CAP-6 and shared infrastructure.
 
 ## Test Plan

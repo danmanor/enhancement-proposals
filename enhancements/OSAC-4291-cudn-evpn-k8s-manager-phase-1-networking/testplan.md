@@ -10,7 +10,7 @@
 
 ## Test Cases
 
-### R1: K8s manager registration for EVPN fabric bridging (IPv4 only)
+### R1: K8s manager registration for EVPN fabric bridging
 
 #### TC-R1-01: Register cudn_evpn k8s manager via ConfigMap
 
@@ -27,14 +27,13 @@
 
 1. Apply osac-installer Helm chart with cudn_evpn manager enabled
 2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
-3. Verify ConfigMap data.manager = "cudn_evpn"
-4. Verify ConfigMap data.capabilities includes "supports_ipv4: true"
-5. Verify ConfigMap data.capabilities includes "supports_ipv6: false"
+3. Verify ConfigMap data.name = "cudn_evpn"
+4. Verify ConfigMap data.description identifies the EVPN manager
 
 ##### Expected Results
 
-- ConfigMap created with label `osac.openshift.io/k8s-manager: "true"`
-- Capabilities reflect IPv4-only support
+- ConfigMap created with label `osac.openshift.io/network-k8s-manager: "true"`
+- The manager registration contains no feature declaration
 - NetworkClass controller loads cudn_evpn as available k8s manager
 
 ### R2: Fabric-to-k8s manager data dependency
@@ -202,7 +201,7 @@
 
 - API returns HTTP 400 Bad Request
 - Response code = `FailedPrecondition`
-- Error message includes: "NetworkClass with k8s_manager 'cudn_evpn' supports only one subnet per VirtualNetwork"
+- Error message includes: "only one subnet per VirtualNetwork is allowed when VMs are present"
 - Error message includes: "OVN Connectors limitation"
 - Error message includes name of existing subnet
 

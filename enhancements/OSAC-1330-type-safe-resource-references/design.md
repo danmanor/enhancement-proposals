@@ -3,7 +3,7 @@ title: type-safe-resource-references
 authors:
   - Haim Tayrie
 creation-date: 2026-07-15
-last-updated: 2026-07-15
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1330
 prd:
@@ -191,7 +191,7 @@ Starting state: A Cloud Infrastructure Admin has created a NetworkClass named
    up without tenant filtering.
 
 3. The interceptor validates that `high-perf` exists. The server handler
-   validates CIDR format and NetworkClass capabilities (IPv4 support).
+   validates CIDR format and the API's IPv4 input rules.
 
 #### Creating a catalog item referencing a template in another tenant (Cloud Provider Admin)
 
