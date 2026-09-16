@@ -629,8 +629,9 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control BM inbound traffic (tenant-configurable via explicit SG or default SG)
-- Multi-NIC BM servers on different subnets share the same SecurityGroup enforcement (fabric-level ACL rules apply to all interfaces)
+- SecurityGroup rules control BM traffic (tenant-configurable via explicit SG or default SG)
+- Each BM network attachment carries its own SecurityGroup membership; the
+  effective NetworkACL is inherited independently from that attachment's Subnet.
 
 ### Failure Handling and Recovery
 

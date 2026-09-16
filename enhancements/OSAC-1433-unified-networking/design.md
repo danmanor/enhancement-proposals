@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -48,8 +48,22 @@ The design introduces:
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
   external to the VirtualNetwork, not necessarily internet-routable
 - **Uniform API** where the same networking resources (VirtualNetwork,
-  Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway)
-  serve VMaaS, CaaS, and BMaaS identically
+  Subnet, SecurityGroup, NetworkACL, ExternalIP, ExternalIPAttachment,
+  NATGateway) serve VMaaS, CaaS, and BMaaS identically
+
+SecurityGroup and NetworkACL are complementary policy layers, not interchangeable
+names for the same resource. A SecurityGroup is a stateful, VirtualNetwork-scoped
+policy selected by a workload network attachment and applied to that attachment's
+NIC or port. A NetworkACL is a stateless, Subnet-associated policy inherited by
+workloads through the Subnet they select. A packet must be permitted by both
+applicable layers.
+
+SecurityGroup rules are allow-only and unmatched traffic is denied. Multiple
+SecurityGroups attached to the same workload interface aggregate their allow
+rules, and connection tracking permits return traffic for an accepted flow.
+NetworkACL rules carry an explicit `allow` or `deny` action and are evaluated
+independently for every ingress and egress packet; the ACL does not infer or add
+an opposite-direction rule.
 
 The BMaaS integration is based on the `BaremetalInstance` resource defined in
 the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-instance-api),
@@ -297,6 +311,55 @@ servers and cluster nodes are placed directly on the fabric segment. The
 fabric is the single source of truth for multi-tenancy and routing — all
 resources, regardless of type, are on the fabric.
 
+### Policy Resources: SecurityGroup and NetworkACL
+
+The two policy resources operate at different attachment boundaries:
+
+| Resource | Boundary | Association | Rule model | Connection state |
+|---|---|---|---|---|
+| `SecurityGroup` | Workload interface | Selected in a workload network attachment; for VM and BM attachments this is the corresponding virtual NIC or physical port | Allow-only rules; multiple groups aggregate; unmatched traffic is denied | Stateful; return traffic for an accepted flow is permitted automatically |
+| `NetworkACL` | Subnet | Explicitly associated with one or more Subnets in one VirtualNetwork; each Subnet has at most one effective ACL | Explicit `allow`/`deny` rules evaluated independently for ingress and egress | Stateless; every packet is evaluated independently |
+
+The effective dataplane decision is the intersection of the applicable layers:
+the packet must be allowed by the workload's SecurityGroups and by the
+effective NetworkACL of its Subnet. A workload attachment contains Subnet and
+SecurityGroup references only; it never contains a NetworkACL reference.
+
+#### SecurityGroup semantics
+
+SecurityGroups are stateful, VirtualNetwork-scoped policy collections. They are
+selected per workload network attachment, so a multi-interface resource may
+use different SecurityGroup sets on different NICs or ports. A SecurityGroup
+rule describes traffic to allow by direction, protocol, optional port, and
+source or destination CIDR. It has no deny action. If no attached group
+allows a packet, the SecurityGroup layer denies it. If a packet is allowed,
+connection tracking permits the reverse traffic for that established flow.
+
+SecurityGroup membership is not a Subnet association and does not define the
+policy for every workload on a Subnet.
+
+#### NetworkACL semantics
+
+NetworkACLs are stateless, Subnet-associated policies. A NetworkACL belongs to
+one VirtualNetwork and may be associated with multiple explicit Subnets from
+that VirtualNetwork. A Subnet cannot have more than one effective NetworkACL.
+The association is managed by the NetworkACL resource, not by workload
+attachments.
+
+Each NetworkACL rule contains an action (`allow` or `deny`), direction
+(`ingress` or `egress`), protocol (`tcp`, `udp`, `icmp`, or `any`), an optional
+single TCP/UDP port, and a direction-specific canonical CIDR. Rules are
+evaluated independently for each packet and each direction. Tenant rules take
+precedence over the provider-owned deployment baseline; within tenant rules,
+the most-specific matching rule wins by remote CIDR prefix, exact protocol,
+then exact port. Conflicting equal-specificity rules are rejected.
+
+The tenant default NetworkACL is associated with the tenant default Subnet and
+contains explicit deny-all ingress and allow-all egress rules. Separately, the
+provider-owned deployment baseline is the least-specific fallback when no
+tenant rule matches and is currently hard-coded to permit all traffic. The
+baseline is not serialized in or configurable through a tenant NetworkACL.
+
 ### Dispatcher (Operator Composition Logic)
 
 The osac-operator acts as a **dispatcher**: when reconciling any networking
@@ -309,7 +372,8 @@ context as the event payload.
 |-----------|----------------|
 | VN create/delete | `fabricManager` |
 | Subnet create/delete | `fabricManager` + `k8sManager` (per hosting cluster) |
-| SecurityGroup create/delete | `fabricManager` |
+| SecurityGroup create/delete | `fabricManager` — installs/removes attachment-level stateful policy |
+| NetworkACL create/delete | `fabricManager` — installs/removes Subnet-level stateless policy |
 | ExternalIP alloc/release | `fabricManager` |
 | ExternalIPAttachment create/delete | `fabricManager` |
 | NATGateway create/delete | `fabricManager` |
@@ -333,7 +397,9 @@ NetworkClass (per deployment, provider-only)
 
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
   ├── Subnet              → fabricManager + k8sManager
-  ├── SecurityGroup       → fabricManager
+  │    └── one effective NetworkACL association
+  ├── SecurityGroup       → fabricManager; selected per workload attachment
+  ├── NetworkACL          → fabricManager; associated with one or more Subnets
   └── NATGateway          → fabricManager
 
 ExternalIPPool (deployment-scoped, provider-managed)
@@ -413,7 +479,21 @@ osac create security-group --virtual-network my-net --name my-sg \
   --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
 ```
 
-The fabric manager creates ACL rules on the fabric.
+The SecurityGroup is a stateful allow policy selected by a workload's network
+attachment. The fabric manager translates it to the backend policy for the
+selected NIC or port; it is not associated with the Subnet.
+
+**Create NetworkACL:**
+
+```bash
+osac create network-acl --virtual-network my-net --subnet my-subnet \
+  --name my-acl \
+  --rule "action:allow,direction:ingress,protocol:tcp,port:443,source-cidr:0.0.0.0/0"
+```
+
+The NetworkACL is associated with the Subnet and applies to every workload
+traffic path on that Subnet. The fabric manager evaluates it statelessly and
+independently for ingress and egress.
 
 #### Resource Creation (Differs by Type)
 
@@ -763,6 +843,57 @@ message VirtualNetworkSpec {
 
 No scope or service field — subnets are infrastructure-agnostic.
 
+#### NetworkACL
+
+```protobuf
+message NetworkACL {
+  string id = 1;
+  Metadata metadata = 2;
+  NetworkACLSpec spec = 3;
+  NetworkACLStatus status = 4;
+}
+
+enum NetworkACLRuleAction { NETWORK_ACL_RULE_ACTION_UNSPECIFIED = 0; NETWORK_ACL_RULE_ACTION_ALLOW = 1; NETWORK_ACL_RULE_ACTION_DENY = 2; }
+enum NetworkACLRuleDirection { NETWORK_ACL_RULE_DIRECTION_UNSPECIFIED = 0; NETWORK_ACL_RULE_DIRECTION_INGRESS = 1; NETWORK_ACL_RULE_DIRECTION_EGRESS = 2; }
+enum NetworkACLRuleProtocol { NETWORK_ACL_RULE_PROTOCOL_UNSPECIFIED = 0; NETWORK_ACL_RULE_PROTOCOL_TCP = 1; NETWORK_ACL_RULE_PROTOCOL_UDP = 2; NETWORK_ACL_RULE_PROTOCOL_ICMP = 3; NETWORK_ACL_RULE_PROTOCOL_ANY = 4; }
+
+message NetworkACLRule {
+  NetworkACLRuleAction action = 1; // required: ALLOW or DENY
+  NetworkACLRuleDirection direction = 2; // required: INGRESS or EGRESS
+  NetworkACLRuleProtocol protocol = 3; // required: TCP, UDP, ICMP, or ANY
+  optional int32 port = 4; // TCP/UDP: omitted means all ports; otherwise 1..65535; no ranges
+  oneof remote_cidr {
+    string source_cidr = 5;      // required for ingress
+    string destination_cidr = 6; // required for egress
+  }
+}
+
+message NetworkACLSpec {
+  VirtualNetworkLocalReference virtual_network = 1; // required, immutable
+  repeated SubnetLocalReference subnets = 2;         // one or more, immutable
+  repeated NetworkACLRule rules = 3;                 // immutable
+}
+
+enum NetworkACLState {
+  NETWORK_ACL_STATE_UNSPECIFIED = 0;
+  NETWORK_ACL_STATE_PENDING = 1;
+  NETWORK_ACL_STATE_READY = 2;
+  NETWORK_ACL_STATE_FAILED = 3;
+  NETWORK_ACL_STATE_DELETING = 4;
+}
+
+message NetworkACLStatus {
+  NetworkACLState state = 1;
+  optional string message = 2;
+}
+```
+
+Each tenant default NetworkACL is associated with the tenant default Subnet
+and contains explicit deny-all ingress and allow-all egress rules. A
+user-created NetworkACL requires at least one rule and one or more explicit
+Subnet associations. A Subnet cannot be associated with more than one effective
+NetworkACL.
+
 #### HostType and BareMetalInstanceType
 
 **HostType** is a generic system-level resource that describes the network
@@ -834,9 +965,11 @@ BareMetalInstanceType (they describe the same physical NICs).
 
 Each resource type has its own network attachment message. The core fields
 (`subnet`, `security_groups`) are shared, but each type adds
-resource-specific fields. `network_attachments` are immutable after
-resource creation — changing network attachment requires recreating the
-resource.
+resource-specific fields. `network_attachments` are immutable after resource
+creation — changing network attachment requires recreating the resource. The
+`security_groups` field selects stateful policy for that attachment;
+NetworkACL membership is resolved from the selected Subnet and is never
+embedded in the attachment.
 
 **ComputeNetworkAttachment** (for ComputeInstance):
 
@@ -1081,8 +1214,9 @@ of their own deletion state), the controller requeues with a short interval
 
 | Controller | Gate deprovision on |
 |---|---|
-| VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
-| Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
+| VirtualNetwork | No Subnet, SecurityGroup, NetworkACL, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
+| Subnet | No ComputeInstance or BareMetalInstance network attachments referencing this Subnet, and no NetworkACL association referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
+| NetworkACL | No Subnet association references this NetworkACL |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
@@ -1101,7 +1235,10 @@ NATGateway
   must be gone before --> VirtualNetwork
 
 SecurityGroup
-  must be gone before --> VirtualNetwork
+  must be gone before --> workload attachments and VirtualNetwork
+
+NetworkACL
+  must be gone before --> Subnet and VirtualNetwork
 
 Subnet
   must be gone before --> VirtualNetwork
@@ -1181,7 +1318,7 @@ via the fabric.
 #### Hub Selection (CR Placement)
 
 The fulfillment-controller creates K8s CRs on a registered hub cluster.
-All networking resources (VirtualNetwork, Subnet, SecurityGroup,
+All networking resources (VirtualNetwork, Subnet, SecurityGroup, NetworkACL,
 ExternalIPPool, ExternalIP, ExternalIPAttachment, NATGateway) select a
 hub randomly from the available hubs. Hub selection is sticky — once a
 resource is assigned to a hub via `status.hub`, subsequent reconciliations
@@ -1255,9 +1392,10 @@ and splitting it into per-action drivers does not reflect how physical
 networking works. Also creates complexity in the dispatcher and validation.
 
 **Separate k8s ACL driver.** A dedicated k8s.acl driver (e.g.,
-NetworkPolicy) alongside fabric ACLs. Redundant — when VMs are on the
-fabric, the fabric enforces security for all traffic including VM traffic.
-Adding a k8s ACL layer creates dual enforcement with no clear benefit.
+NetworkPolicy) alongside the OSAC SecurityGroup and NetworkACL policies.
+Redundant — when VMs are on the fabric, the fabric enforces both OSAC policy
+layers for all traffic including VM traffic. Adding a separate k8s ACL layer
+creates dual enforcement with no clear benefit.
 
 **VN scope field (vm/bm).** Require tenants to declare what a network is
 for at creation time. Makes subnets service-specific, prevents mixed
@@ -1298,9 +1436,10 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    after resource creation. Changing network attachment requires recreating
    the resource.
 
-10. **Security enforcement.** The fabric is the single enforcement point
-    for SecurityGroups. No separate K8s-level ACL needed — VMs are on the
-    fabric.
+10. **Security enforcement.** The fabric is the single enforcement point for
+    both stateful SecurityGroups selected by workload attachments and stateless
+    NetworkACLs associated with Subnets. No separate K8s-level ACL is needed —
+    VMs are on the fabric.
 
 11. **Per-resource NetworkAttachment types.** Separate proto messages
     (`ComputeNetworkAttachment`, `BareMetalNetworkAttachment`,

@@ -198,7 +198,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Delete ExternalIPAttachments → fabric manager removes DNAT rules
     - Delete NATGateway → fabric manager removes SNAT rule
     - Delete ExternalIPs → fabric manager releases IPs
-    - Delete SecurityGroup → fabric manager removes ACL rules
+    - Delete SecurityGroup → fabric manager removes attachment-level SecurityGroup policy
     - Delete Subnet → dispatcher calls both managers: fabric manager removes network segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
     - Delete VirtualNetwork → fabric manager removes tenant segment
 
@@ -396,7 +396,7 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
-- SecurityGroup rules control cluster node inbound traffic (tenant-configurable via explicit SG or default SG)
+- SecurityGroup rules control cluster node traffic (tenant-configurable via explicit SG or default SG)
 
 ### Failure Handling and Recovery
 

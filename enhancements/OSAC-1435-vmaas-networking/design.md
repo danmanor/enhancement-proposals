@@ -96,7 +96,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
    ```
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
-   - Fabric manager creates ACL rules on the fabric
+   - Fabric manager installs the attachment-level SecurityGroup policy on the fabric
 
 #### VM Creation
 
@@ -290,8 +290,9 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control VM inbound traffic (tenant-configurable via explicit SG or default SG)
-- Multi-NIC VMs on different subnets share the same SecurityGroup enforcement (pod labels apply to all interfaces)
+- SecurityGroup rules control VM traffic (tenant-configurable via explicit SG or default SG)
+- Each VM network attachment carries its own SecurityGroup membership; the
+  effective NetworkACL is inherited independently from that attachment's Subnet.
 
 ### Failure Handling and Recovery
 
