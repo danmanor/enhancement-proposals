@@ -96,7 +96,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
    ```
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
-   - Fabric manager creates ACL rules on the fabric
+   - Fabric manager installs the attachment-level SecurityGroup policy on the fabric
 
 #### VM Creation
 
@@ -113,7 +113,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    ```
    - fulfillment-service:
      - If `compute_network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see Default Networking PRD)
-     - Validates: subnets exist, are Ready, same VN, primary rules
+     - Validates: subnets exist, are Ready, have an available effective Subnet policy (tenant NetworkACL or provider baseline), belong to the same VN, and satisfy primary rules
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `compute_network_attachments`
 
@@ -132,7 +132,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Reads `compute_network_attachments`:
      - Single attachment (today's behavior): creates VM with one `l2bridge` interface in the subnet's CUDN namespace
      - Multiple attachments (NEW — multi-NIC): creates VM with multiple KubeVirt network/interface definitions, each referencing a different CUDN NAD. The `primary: true` attachment gets the default gateway.
-   - Reads `securityGroupRefs` → adds as pod labels
+   - Reads each attachment's `securityGroupRefs` and applies the corresponding SecurityGroup set to that VM interface; groups from separate attachments are never flattened into a pod-wide policy
    - Creates DataVolume + KubeVirt VirtualMachine
    - VM gets IP from each CUDN (via DHCP)
    - VM is on the fabric (overlay bridged at subnet creation)
@@ -290,8 +290,9 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control VM inbound traffic (tenant-configurable via explicit SG or default SG)
-- Multi-NIC VMs on different subnets share the same SecurityGroup enforcement (pod labels apply to all interfaces)
+- SecurityGroup rules control VM traffic (tenant-configurable via explicit SG or default SG)
+- Each VM network attachment carries its own SecurityGroup membership; the
+  effective NetworkACL is inherited independently from that attachment's Subnet.
 
 ### Failure Handling and Recovery
 

@@ -221,7 +221,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 5. **fulfillment-service:**
    - If `network_attachments` omitted: populates with tenant's default Subnet + default SecurityGroup (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)). The system selects the first interface with role `fabric` from the BareMetalInstanceType as the default interface for the single attachment (matching PRD FR-5).
    - Validates:
-     - Each subnet exists, is Ready
+     - Each subnet exists, is Ready, and has an available effective Subnet policy (tenant NetworkACL or provider baseline)
      - All subnets belong to the same VirtualNetwork
      - Each SecurityGroup exists, is Ready, belongs to the same VN
      - Each `interface` references a valid interface name from the BareMetalInstanceType's network ports list
@@ -629,8 +629,9 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control BM inbound traffic (tenant-configurable via explicit SG or default SG)
-- Multi-NIC BM servers on different subnets share the same SecurityGroup enforcement (fabric-level ACL rules apply to all interfaces)
+- SecurityGroup rules control BM traffic (tenant-configurable via explicit SG or default SG)
+- Each BM network attachment carries its own SecurityGroup membership; the
+  effective NetworkACL is inherited independently from that attachment's Subnet.
 
 ### Failure Handling and Recovery
 
