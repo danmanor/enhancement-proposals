@@ -17,6 +17,11 @@ superseded-by:
 
 # Configuration Wizard for Cluster and VM Resources
 
+All wizard networking flows inherit the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+the wizard supports connected deployments only and does not support or expose
+air-gapped or disconnected networking deployments.
+
 ## 1. Goals and Non-Goals
 
 ### 1.1 Goals

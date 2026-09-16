@@ -1,5 +1,10 @@
 # Testplan — OSAC-3538 Catalog Items v2 Networking Governance
 
+Networking governance inherits the [Unified Networking deployment support
+boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
+these tests cover connected deployments only, with air-gapped and disconnected
+networking deployments treated as unsupported.
+
 ## Overview
 
 - **Feature:** OSAC-3538 — Catalog Items v2 typed provisioning governance

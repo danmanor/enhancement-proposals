@@ -944,6 +944,11 @@ and the applicable VMaaS, CaaS, or BMaaS design remain authoritative. The
 Catalog Item authoring and materialization paths must
 apply the following rules:
 
+Catalog-based networking also inherits the [Unified Networking deployment
+support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
+catalog authoring and materialization support connected deployments only and
+must not advertise or create air-gapped or disconnected networking.
+
 - A Catalog Item policy value must be structurally valid for the governed
   resource field. A malformed wrapper, missing required policy `oneof`, wrong
   typed reference, malformed IPv4/CIDR, unknown enum, or unsupported list

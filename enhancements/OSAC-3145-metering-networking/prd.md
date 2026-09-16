@@ -8,7 +8,7 @@
 
 ## Glossary
 
-Terms defined in the [Part 1 PRD](/enhancements/metering-and-usage-tracking/prd.md) apply here. Additional terms:
+Terms defined in the [Part 1 PRD](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) apply here. Additional terms:
 
 | Term | Definition |
 |------|-----------|
@@ -52,7 +52,7 @@ VirtualNetwork, Subnet, SecurityGroup, and NetworkACL are available on all three
 - Billing-bound reporting — metering reports only networking resources that can incur cost; it is not a quota feed and not a complete inventory of the networking objects a tenant or user holds
 - Networking resource allocation metering — metering for ExternalIPs and NATGateways from READY/ALLOCATED state to deletion
 - Unattached IP metering — ExternalIPs generate usage data regardless of attachment status, with attachment status as a queryable dimension
-- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that ExternalIPs attached to a parent resource can be attributed to it in a unified usage view: ExternalIPs to ComputeInstances, Clusters, and BareMetalInstances
+- Parent-child attribution — extending [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that ExternalIPs attached to a parent resource can be attributed to it in a unified usage view: ExternalIPs to ComputeInstances, Clusters, and BareMetalInstances
 
 ## 3. Out of Scope
 
@@ -101,7 +101,7 @@ VirtualNetwork, Subnet, SecurityGroup, and NetworkACL are available on all three
 
 ## 6. Usage Measurement Model
 
-This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
+This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
 
 Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, deployment, tenant, and project; ExternalIPs additionally use attachment status (see CAP-2 and CAP-3).
 
@@ -127,7 +127,7 @@ Each metered networking resource type has a flat allocation meter. Usage is quer
 
 ## 9. Dependencies
 
-- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/metering-and-usage-tracking/prd.md) is a prerequisite. Part 2c extends but does not replace it.
+- **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/OSAC-985-metering-and-usage-tracking/prd.md) is a prerequisite. Part 2c extends but does not replace it.
 
 ## 10. Risks
 
