@@ -3,7 +3,7 @@ title: expose-baremetalinstance-nic-mac-addresses
 authors:
   - agentil@redhat.com
 creation-date: 2026-08-11
-last-updated: 2026-08-11
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3254
 prd:
@@ -26,7 +26,7 @@ superseded-by: N/A
 
 ## Summary
 
-This design extends `BareMetalInstance` status with physical network interface MAC addresses (`status.hardware.nics`) sourced from the bare metal inventory backend at allocation time. The primary driver is CaaS cluster installation: the Assisted Installer agent identifies itself by boot MAC address, and without that MAC on the `BareMetalInstance`, CaaS cannot programmatically correlate the agent to the provisioned host. MAC addresses are exposed via the fulfillment-service API, CLI, and OSAC web console. Both the Metal3 and OpenStack/Ironic inventory backends are supported. See [PRD](prd.md) for detailed requirements.
+This design extends `BareMetalInstance` status with physical network interface MAC addresses (`status.hardware.nics`) sourced from the bare metal inventory backend at allocation time. The primary driver is CaaS cluster installation: the Assisted Installer agent identifies itself by boot MAC address, and without that MAC on the `BareMetalInstance`, CaaS cannot programmatically correlate the agent to the provisioned host. MAC addresses are exposed via the fulfillment-service API, CLI, and OSAC web console. Both the Metal3 and OpenStack/Ironic inventory backends are supported. See [PRD](prd.md) for product requirements.
 
 ## Motivation
 

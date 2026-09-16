@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-08-11
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -13,6 +13,8 @@ see-also:
 ---
 
 # Multi-Fabric East-West Networking
+
+For product scope and user outcomes, see the companion [PRD](prd.md).
 
 ## Summary
 

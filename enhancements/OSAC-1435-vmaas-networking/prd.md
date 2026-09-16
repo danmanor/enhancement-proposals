@@ -6,7 +6,7 @@
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1435 |
 | Date        | 2026-07-08 |
 
-> This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements; this document defines the service-specific requirements and user stories.
+> This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines shared product outcomes; the companion designs define shared and service-specific technical behavior; this document defines the service-specific product requirements and user stories.
 
 ## 1. Problem Statement
 
@@ -17,7 +17,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 ### 2.1 Goals
 
 - A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary
-- A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
+- A tenant can create a VM with external access enabled and have the system allocate and attach an external IP for inbound access
 - A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and security group
 - The platform prevents VM creation in deployments that do not support virtualization
 
@@ -32,7 +32,7 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 - As a Tenant User, I want to create a VM with multiple network interfaces, so that the VM can communicate on multiple subnets
 - As a Tenant User, I want to designate one network interface as primary, so that it provides the VM's default gateway and DNS configuration
-- As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
+- As a Tenant User, I want to create a VM with external access enabled, so that the VM is externally reachable without manually allocating an IP
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and security group and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
 
@@ -49,85 +49,37 @@ Tenants cannot create VMs with multiple network interfaces or designate which in
 
 - As a Cloud Provider Admin, I want visibility into auto-provisioned networking resources (external IPs), so I can monitor capacity and troubleshoot connectivity issues
 
-## 4. Requirements
+## Design Boundary
 
-### 4.1 Functional Requirements
+The companion [VMaaS Networking Design](design.md) is the normative home for attachment behavior, primary
+interface behavior, address discovery, compatibility handling, provisioning
+validation, cleanup, failure handling, and test strategy.
 
-#### Multi-Interface VMs
+The product requirements above are implemented according to the companion
+design; this PRD does not duplicate the technical contract.
 
-- **FR-1:** A tenant can create a VM with multiple network interfaces on different subnets, designating one as primary. The primary interface provides the default gateway, DNS, and is the target for inbound external access and outbound NAT. Non-primary interfaces receive IP addresses but do not provide a default gateway. [User]
-- **FR-2:** When a VM has multiple network interfaces, exactly one must be designated as primary. When a VM has only one network interface, it is implicitly primary. [User]
+## Product Acceptance Criteria
 
-#### Optional Network Configuration with Defaults
+- [ ] A tenant can create a VM with multiple network connections and designate the primary connection.
+- [ ] A tenant can create an externally reachable VM without manually allocating an external address.
+- [ ] A VM created without explicit networking uses the tenant's default network.
+- [ ] VM status exposes the network connections and addresses needed to use and troubleshoot the VM.
+- [ ] Existing VM clients and configurations continue to work when the networking enhancement is enabled.
+- [ ] Unsupported VM provisioning returns a clear, user-understandable error.
 
-- **FR-3:** Network configuration is optional when creating a VM. When omitted, the system uses the tenant's default subnet and default security group (see Default Networking PRD). The resolved configuration is stored with the VM so the VM is self-describing after creation. [User]
-
-#### Auto External IP
-
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, security groups, NATGateway) are not cleaned up as they are tenant-scoped and shared across resources. [User]
-
-#### IP Address Discovery
-
-- **FR-5:** The allocated IP address for each network attachment is visible in the VM status after provisioning completes. When an external IP is attached to a VM, inbound traffic to the external IP is routed to the VM's primary attachment IP. [User]
-
-#### Deployment Validation
-
-- **FR-6:** When a VM is created, the platform validates that the target deployment supports virtualization. If the deployment only supports bare-metal servers, the create request fails with a clear error message explaining the limitation. [User]
-
-#### Backward Compatibility
-
-- **FR-7:** Existing VMs continue to work without changes. The platform accepts both old and new network configuration formats during a transition period. If both formats are provided, the create request fails with an error. If the old format is provided alone, it is converted to the new format automatically. [User]
-
-### 4.2 Non-Functional Requirements
-
-- **NFR-1:** Auto external IP allocation completes synchronously within the create request. If no pool has available capacity, the create request fails with a clear error. [User]
-
-## 5. Acceptance Criteria
-
-- [ ] A Tenant User can create a VM with multiple `--network-attachment` flags and designate one as `--primary`
-- [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
-- [ ] Creating a VM in a bare-metal-only deployment returns an error with a clear message
-- [ ] A multi-interface VM is provisioned with all interfaces operational, with the primary interface providing the default gateway
-- [ ] VM status shows the allocated IP address for each network attachment after provisioning completes
-- [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
-- [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
-- [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
-- [ ] Creating a VM using the old network configuration format succeeds and is internally converted to the new format
-- [ ] Creating a VM with both old and new configuration formats returns an error
-
-## 6. Assumptions
+## Assumptions
 
 - The tenant has default networking resources (virtual network, subnet, security group) pre-created by the platform (see Default Networking PRD). If defaults are not configured, creating a VM without explicit network configuration fails with a clear error.
 - The target deployment supports virtualization. Bare-metal-only deployments do not support VMs.
 
-## 7. Dependencies
+## Dependencies
 
-- **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
-- **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the pool with the most available capacity matching the IP family
-- **OSAC-1511 or OSAC-1717** — a virtualization platform integration must exist for the platform to provision overlay networks on hosting clusters
-- **OSAC-1457, OSAC-1458, OSAC-1460** — core provisioning infrastructure (in progress)
-- **OSAC-1459** — multi-job tracking (new, required for subnet provisioning to trigger multiple backend jobs)
+- **Unified Networking Design** — shared networking resource model and provider behavior defined in the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md)
+- **Default Networking Design** — default subnet and security group behavior defined in the [Default Networking Design](/enhancements/OSAC-1433-default-networking/design.md)
+- **Virtualization platform integration** — required for the platform to provision
+  VMs and connect them to tenant networking
 
-## 8. Risks
+## Design Notes
 
-### 8.1 Virtualization platform integration blocked or delayed
-
-- **Owner:** Engineering / Product
-- **Mitigation:** OSAC-1511 and OSAC-1717 are both in spike/blocked state. If neither lands, VM networking cannot function. Prioritize unblocking one of these dependencies or accept that VMs remain unavailable until a virtualization platform integration exists.
-
-### 8.2 Multi-job tracking not implemented
-
-- **Owner:** Platform team
-- **Mitigation:** OSAC-1459 is a prerequisite for subnet provisioning to trigger multiple backend jobs. If not implemented, subnet provisioning can only call one backend system — defer multi-backend support or accept single-backend-only subnet provisioning.
-
-### 8.3 External IP pool exhaustion
-
-- **Owner:** Cloud Provider Admin
-- **Mitigation:** Pool capacity visible in status; clear error directs tenant to explicit allocation from another pool
-
-## 9. Open Questions
-
-### ~~9.1 Should capacity exhaustion return an API error or create a failed resource?~~ — Resolved
-
-Resolved: Return error, no resource persisted.
+Technical risks, resolution behavior, and test scenarios are defined in the
+companion design.

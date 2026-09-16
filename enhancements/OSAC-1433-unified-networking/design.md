@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-06-10
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -26,8 +26,8 @@ superseded-by:
 ## Summary
 
 This document describes the technical design for the OSAC unified
-networking architecture. For the problem statement and requirements,
-see the companion [Requirements Document (PRD)](prd.md).
+networking architecture. For the problem statement and product requirements,
+see the companion [Product Requirements (PRD)](prd.md).
 
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
@@ -56,7 +56,7 @@ the [BareMetal Instance API enhancement](/enhancements/OSAC-1118-baremetal-insta
 which provides a per-server resource aligned with ComputeInstance.
 
 For user stories, goals, and non-goals, see the
-[Requirements Document (PRD)](prd.md).
+[Product Requirements (PRD)](prd.md).
 
 ## Proposal
 

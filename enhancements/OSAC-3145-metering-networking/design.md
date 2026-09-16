@@ -3,7 +3,7 @@ title: metering-for-networking-resources
 authors:
   - masayag@redhat.com
 creation-date: 2026-09-08
-last-updated: 2026-09-09
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3145
 prd: "prd.md"
@@ -21,7 +21,7 @@ superseded-by:
 # Metering for networking resources
 
 ## Summary
-Meter ExternalIP and NATGateway allocation time through the existing pipeline. The current code has no networking mapper, no initial quantity/correction consumer, no resource-level gate, and no M360 networking contract; those are required changes, not delivered behavior. See [PRD](prd.md) for detailed requirements.
+Meter ExternalIP and NATGateway allocation time through the existing pipeline. The current code has no networking mapper, no initial quantity/correction consumer, no resource-level gate, and no M360 networking contract; those are required changes, not delivered behavior. See [PRD](prd.md) for product requirements.
 
 ## Motivation
 The event proto carries ExternalIP, ExternalIPAttachment, and NATGateway, but `BuildFilter` and `MapperForEvent` do not consume them. Fulfillment and the operator both currently write `ExternalIP.status.attached` (`fulfillment-service/internal/servers/private_external_ip_attachments_server.go:225-287`, `osac-operator/internal/controller/externalipattachment_controller.go:675-718`), so attribution can precede READY and race.
