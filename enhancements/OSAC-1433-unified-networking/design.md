@@ -322,9 +322,12 @@ The two policy resources operate at different attachment boundaries:
 The effective dataplane decision is the intersection of the applicable layers:
 the packet must be allowed by the workload's SecurityGroups and by the
 effective Subnet policy. That policy is the associated tenant NetworkACL when
-one exists and is Ready; otherwise it is the provider-owned baseline. A
-workload attachment contains Subnet and SecurityGroup references only; it
-never contains a NetworkACL reference.
+one exists and is Ready; if no tenant ACL is associated, it is the
+provider-owned baseline. A Pending or Failed tenant ACL association does not
+fall back to the baseline: the Subnet is not Ready for new or updated workload
+attachments until the association becomes Ready or is removed. A workload
+attachment contains Subnet and SecurityGroup references only; it never
+contains a NetworkACL reference.
 
 #### SecurityGroup semantics
 
@@ -354,7 +357,10 @@ single TCP/UDP port, and a direction-specific canonical CIDR. Rules are
 evaluated independently for each packet and each direction. Tenant rules take
 precedence over the provider-owned deployment baseline; within tenant rules,
 the most-specific matching rule wins by remote CIDR prefix, exact protocol,
-then exact port. Conflicting equal-specificity rules are rejected.
+then exact port. Conflicting equal-specificity rules are rejected. If a Ready
+tenant ACL is associated, unmatched packets use the provider baseline only as
+the least-specific packet rule; the baseline is never used to replace a
+Pending or Failed tenant ACL association.
 
 The tenant default NetworkACL is associated with the tenant's default Subnets
 and contains explicit allow-all ingress and allow-all egress rules for each

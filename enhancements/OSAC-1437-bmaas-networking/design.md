@@ -409,7 +409,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 
 #### Server Validation Rules
 
-- All referenced subnets must belong to the same VirtualNetwork
+- All referenced subnets must exist, be Ready, have an available effective Subnet policy, and belong to the same VirtualNetwork. A Pending or Failed tenant NetworkACL association is rejected rather than replaced by the provider baseline.
 - The same interface cannot appear in multiple attachments
 - The `interface` must reference a valid port name from the BareMetalInstanceType (its network ports list defines available ports)
 - Interfaces with role `lifecycle` are rejected in `network_attachments` — lifecycle interfaces (PXE boot, BMC) are reserved for the provisioning system and are not tenant-attachable
@@ -592,9 +592,13 @@ bare-metal-fulfillment-operator BareMetalInstance controller phases:
    Sets condition: ProvisionTemplateComplete=True
 
 3. reconcileNetworking → move fabric port provisioning network → tenant network
+   and reconcile the attachment's SecurityGroup set on the selected port
    (dispatcher, switch-side only; waits for network segment active after attach)
    Requires: ProvisionTemplateComplete=True
    Sets condition: NetworkAttachmentsReady=True
+
+   The same per-port policy reconciliation runs when mutable SecurityGroup
+   membership changes and removes the policy before the attachment is deleted.
 
 4. reconcileReboot → reboot server (BMH annotation) so OS re-DHCPs on tenant network
    Requires: NetworkAttachmentsReady=True

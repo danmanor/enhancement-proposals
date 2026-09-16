@@ -123,7 +123,7 @@ ComputeInstance already participates in the networking API. Today's flow:
       - `PrimarySubnetRef()` → returns the primary attachment's subnet (explicit `primary: true`, or implicit if only one attachment)
       - `resolveSubnetTargetNamespace()` → looks up Subnet CR → namespace (same as today)
       - Stamps `osac.openshift.io/subnet-target-namespace` annotation
-      - **No dispatcher call for network attachments** — VMs don't need switch port configuration. The k8sManager's work was done at subnet creation (step 2). The overlay already exists.
+      - Calls the fabric manager's attachment-policy operation once per attachment to reconcile its SecurityGroup set. This is policy reconciliation, not switch-port configuration; the k8sManager's overlay work was done at subnet creation (step 2).
 
    b. Triggers AAP job: `osac-create-compute-instance`
 
@@ -132,7 +132,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Reads `compute_network_attachments`:
      - Single attachment (today's behavior): creates VM with one `l2bridge` interface in the subnet's CUDN namespace
      - Multiple attachments (NEW — multi-NIC): creates VM with multiple KubeVirt network/interface definitions, each referencing a different CUDN NAD. The `primary: true` attachment gets the default gateway.
-   - Reads each attachment's `securityGroupRefs` and applies the corresponding SecurityGroup set to that VM interface; groups from separate attachments are never flattened into a pod-wide policy
+   - Reads `compute_network_attachments` only for the per-interface VM network definitions. The controller/fabric-manager policy path applies each attachment's SecurityGroup set; groups from separate attachments are never flattened into a pod-wide policy.
    - Creates DataVolume + KubeVirt VirtualMachine
    - VM gets IP from each CUDN (via DHCP)
    - VM is on the fabric (overlay bridged at subnet creation)
@@ -241,6 +241,7 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 
 - During migration: accept both old field (14) and new field (18). If both set, reject. If old set, convert internally.
 - Primary validation: if multiple attachments, exactly one primary
+- Every resolved attachment references a Ready Subnet with an available effective Subnet policy; a Pending or Failed tenant NetworkACL association is rejected rather than replaced by the provider baseline
 - BM-only deployment check: if the NetworkClass has no k8sManager, reject ComputeInstance creation
 
 #### Template Changes (osac-aap)
