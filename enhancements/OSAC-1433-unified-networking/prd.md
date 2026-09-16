@@ -113,8 +113,9 @@ across deployments.
 ## Design Boundary
 
 The companion [Unified Networking Design](design.md) is the normative home for
-resource definitions, provider behavior, attachment and address assignment
-rules, lifecycle behavior, validation, and test strategy.
+the shared [API specification](design.md#api-specification), resource
+definitions, provider behavior, attachment and address assignment rules,
+lifecycle behavior, validation, and test strategy.
 
 ## Product Acceptance Criteria
 

@@ -58,6 +58,80 @@ which provides a per-server resource aligned with ComputeInstance.
 For user stories, goals, and non-goals, see the
 [Product Requirements (PRD)](prd.md).
 
+## API Specification
+
+This section is the normative API contract for the shared networking surface.
+The VMaaS, CaaS, and BMaaS networking designs inherit it and add only their
+workload-specific placement and lifecycle rules. The field-level protobuf
+schemas and status extensions are defined in the [API Extensions](#api-extensions)
+section below.
+
+### Resource model
+
+The API provides one resource model across VMaaS, CaaS, and BMaaS:
+
+| Resource | Contract |
+|---|---|
+| `NetworkClass` | Provider-scoped configuration that selects the networking managers and their capabilities. Tenants do not select a backend. |
+| `VirtualNetwork` | Tenant-isolated address space that can contain workloads from all three services. |
+| `Subnet` | L2/L3 connectivity domain within a VirtualNetwork; it is not tied to a workload type. |
+| `SecurityGroup` | Traffic policy applied uniformly to supported workload types. |
+| `ExternalIPPool` and `ExternalIP` | Provider-managed address allocation external to the VirtualNetwork. “External” does not imply Internet reachability. |
+| `ExternalIPAttachment` | Inbound access (DNAT) from an ExternalIP to a ComputeInstance, Cluster endpoint, or BaremetalInstance. |
+| `NATGateway` | Optional outbound access (SNAT) from a VirtualNetwork to an ExternalIP. |
+
+Resources in different VirtualNetworks are isolated. Resources in the same
+Subnet share L2 connectivity, and resources in different Subnets in the same
+VirtualNetwork use L3 routing. SecurityGroup policy applies consistently to
+VMs, cluster nodes, and bare-metal servers.
+
+### API operations and field lifecycle
+
+The networking API is declarative: network resources are created, read, and
+deleted subject to dependency guards. Fields marked immutable in the schemas
+cannot be changed after creation; changing them requires deleting the resource
+and creating a replacement. Controllers may update status, conditions,
+readiness, discovered addresses, and finalizers during reconciliation; those
+controller-owned changes are not user API updates.
+
+Workload network attachments are set at workload creation time. The
+attachment list and topology fields (`subnet`, `interface`, and `primary`) are
+immutable after creation. Security-group membership remains mutable where the
+service-specific design permits it.
+
+### Provider behavior
+
+Providers configure the networking managers used for network operations, and
+the system selects them without exposing implementation choices to tenants.
+Manager capabilities are validated from provider configuration and the API
+surface remains unchanged when a new backend is added. The same tenant
+workflow applies whether the provider uses a fabric manager, a Kubernetes
+manager, or both.
+
+### External access
+
+“External” means external to the VirtualNetwork, not necessarily Internet-
+routable. The API and workflow are the same for Internet-connected,
+intranet-only, and air-gapped deployments when the provider supplies
+routable address infrastructure. `ExternalIPAttachment` handles inbound
+traffic only; `NATGateway` handles outbound traffic only. An ExternalIP cannot
+be consumed by both at the same time.
+
+### Workload attachment contract
+
+Each workload uses a resource-specific attachment shape while sharing the
+same `Subnet` and `SecurityGroup` references:
+
+- VMaaS uses `ComputeNetworkAttachment` entries on `ComputeInstance`.
+- CaaS uses one `ClusterNetworkAttachment` for the cluster's node sets.
+- BMaaS uses `BareMetalNetworkAttachment` entries that map physical
+  interfaces to Subnets; duplicate interfaces are rejected.
+
+`ExternalIPAttachment` supports ComputeInstance, Cluster, and
+BaremetalInstance targets. Cluster targets additionally select either the API
+server or ingress endpoint. The detailed field types, validation rules, and
+status behavior are specified in the API Extensions section below.
+
 ## Proposal
 
 ### NetworkClass

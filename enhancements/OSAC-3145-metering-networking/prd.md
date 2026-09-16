@@ -34,16 +34,16 @@ Metered networking resources are service-agnostic — an ExternalIP or NATGatewa
 | NATGateway | Yes | Yes | Yes |
 | ExternalIP | Yes | Yes | Yes |
 
-ExternalIP resources support all three services and can be attached to ComputeInstances, Clusters, and BareMetalInstances. Usage reporting distinguishes whether an ExternalIP is attached, without metering the attachment as a separate resource.
+ExternalIP resources support all three services and can be attached to ComputeInstances, Clusters, and BareMetalInstances. Attachment status is tracked as a queryable dimension on the ExternalIP meter, not as a separately metered resource.
 
 VirtualNetwork, Subnet, and SecurityGroup are available on all three services but are not metered — they are configuration metadata that will not incur cost, so metering does not report them.
 
 ### 2.2 Capabilities
 
 - Billing-bound reporting — metering reports only networking resources that can incur cost; it is not a quota feed and not a complete inventory of the networking objects a tenant or user holds
-- Networking resource allocation metering — metering for ExternalIPs and NATGateways from allocation to deletion
-- Unattached IP metering — ExternalIPs generate usage data regardless of whether they are attached
-- Parent-child attribution — extending the existing metering attribution model so that ExternalIPs attached to a parent resource can be attributed to it in a unified usage view
+- Networking resource allocation metering — metering for ExternalIPs and NATGateways from READY/ALLOCATED state to deletion
+- Unattached IP metering — ExternalIPs generate usage data regardless of attachment status, with attachment status as a queryable dimension
+- Parent-child attribution — extending [Part 1](/enhancements/metering-and-usage-tracking/prd.md) CAP-11 and CAP-12 so that ExternalIPs attached to a parent resource can be attributed to it in a unified usage view: ExternalIPs to ComputeInstances, Clusters, and BareMetalInstances
 
 ## 3. Out of Scope
 
@@ -74,41 +74,61 @@ VirtualNetwork, Subnet, and SecurityGroup are available on all three services bu
 
 - As a Tenant User, I want networking resource usage data for the projects I belong to — including ExternalIP allocation duration and NATGateway uptime — to be available so that downstream systems can report the networking resource consumption of my deployments.
 
-## 5. Product Capabilities
+## 5. Capabilities
 
-- Usage reporting covers billable ExternalIP and NATGateway resources for all supported services.
-- Usage accrues for the lifetime of an allocated resource, including an ExternalIP that is not attached to a workload.
-- Reports identify resource type, IP family where applicable, attachment status, deployment ownership, tenant, and project.
-- ExternalIP usage can be attributed to its parent workload when attached.
-- Networking usage extends the existing metering service without requiring a separate metering deployment.
-- Usage has per-second granularity and follows the existing metering service's deduplication and retention expectations.
+### 5.1 Networking Resource Allocation Metering
 
-## 6. Design Boundary
+- **CAP-1:** Billable networking resources (ExternalIP, NATGateway) are metered on an allocation basis. Usage accrues from the point the resource reaches READY or ALLOCATED state until deletion.
+- **CAP-2:** Networking usage is queryable by resource type, IP family (IPv4/IPv6 for ExternalIP), deployment, tenant, and project.
 
-The companion [Networking Metering Design](design.md) is the normative home for lifecycle boundaries, measurement and attribution contracts, correction behavior, feature gates, failure recovery, and test strategy.
+### 5.2 Unattached IP Metering
 
-The product capabilities above are implemented according to that design; this PRD does not duplicate the technical contract.
+- **CAP-3:** ExternalIPs are metered regardless of whether they are attached to a resource. An allocated-but-unattached IP consumes address pool space that other tenants cannot use — the provider's pool is finite and each allocation reduces availability. Metering unattached IPs provides visibility into idle address consumption, enabling providers to identify underutilized allocations. The `attached` status is included as a queryable dimension so that downstream systems (e.g., cost management, quota enforcement) can distinguish between active and idle IP usage.
+
+### 5.3 Cross-cutting
+
+- **CAP-4:** Networking meters are additive to the Part 1 metering deployment and require no separate infrastructure. All networking meters use the same per-second granularity, deduplication, and retention requirements as Part 1 (CAP-4, CAP-15, CAP-16).
+
+## 6. Usage Measurement Model
+
+This section defines the metering units and measurement approach for networking resources, extending the usage measurement model from [Part 1](/enhancements/metering-and-usage-tracking/prd.md). Downstream systems (cost management, billing) consume this usage data and apply their own pricing — rate schedules are outside the scope of metering.
+
+Each metered networking resource type has a flat allocation meter. Usage is queryable by resource type, deployment, tenant, and project; ExternalIPs additionally use IP family and attachment status (see CAP-2 and CAP-3).
+
+| Resource | Meter | Unit | Example (30 days) |
+|----------|-------|------|-------------------|
+| ExternalIP (IPv4) | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
+| NATGateway | resource-seconds | seconds of allocation | 2,592,000 resource-seconds |
 
 ## 7. Acceptance Criteria
 
-- [ ] Usage data is available for ExternalIP and NATGateway resources across VMaaS, CaaS, and BMaaS.
-- [ ] Usage includes ExternalIPs that are allocated but not attached to a workload.
-- [ ] Configuration-only networking resources do not produce billable usage data.
-- [ ] Usage can be reported by resource type, IP family where applicable, attachment status, deployment, tenant, project, and attached parent where applicable.
-- [ ] Networking usage has per-second granularity and follows the existing metering service's deduplication, retention, and reliability expectations.
+- [ ] Each billable networking resource (ExternalIP, NATGateway) generates allocation usage data from READY/ALLOCATED state to deletion
+- [ ] An allocated-but-unattached ExternalIP generates usage data
+- [ ] VirtualNetwork, Subnet, and SecurityGroup generate no metering usage data
+- [ ] Networking usage can be broken down by resource type, deployment, tenant, and project; ExternalIPs additionally expose IP family and attachment status
+- [ ] ExternalIPs attached to a parent resource (ComputeInstances/Clusters/BareMetalInstances) can be attributed to the parent in a unified usage view
+- [ ] Networking usage data is available after deploying the metering update without provisioning additional infrastructure
+- [ ] Networking usage data maintains per-second granularity, deduplication, and retention consistent with Part 1 metering
 
 ## 8. Assumptions
 
 - Part 1 metering infrastructure is deployed and operational.
-- The Part 1 metering infrastructure supports duration-based usage for networking resources.
+- Allocation-based metering is supported by the Part 1 metering infrastructure without architectural changes — allocation meters use different start/stop state semantics.
 
 ## 9. Dependencies
 
 - **Part 1 metering infrastructure:** The metering infrastructure established by [Part 1](/enhancements/metering-and-usage-tracking/prd.md) is a prerequisite. Part 2c extends but does not replace it.
 
-## 10. Design Notes
+## 10. Risks
 
-The companion design records implementation risks, rollout prerequisites, lifecycle boundaries, correction behavior, and detailed validation.
+### 10.1 Part 1 metering infrastructure not yet built
+
+- **Owner:** OSAC platform team
+- **Mitigation:** All Part 2c meters depend on the metering infrastructure (event pipeline, provider adapters) established by Part 1 (OSAC-985). Part 2c implementation cannot begin until Part 1 infrastructure is deployed.
+
+## 11. Resolved Decision: Allocation Metering Start Point
+
+ExternalIP usage starts at `ALLOCATED`, and NATGateway usage starts at `READY`, matching CAP-1. Time spent in `PENDING`, including provider capacity reserved before the resource becomes usable, is not metered.
 
 ## Related PRDs
 
