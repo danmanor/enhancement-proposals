@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -412,6 +412,24 @@ This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
 reference this PRD; those proposals inherit it and do not redefine networking
 operations.
 
+#### FR-9: Canonical provider-owned Hub binding (R9)
+
+Networking resources use exactly one active provider-owned Hub per deployment.
+Tenants and providers do not supply the Hub through `NetworkClass.spec`. A
+`NetworkClass` may initially have an empty `status.hub`; the controller
+resolves the sole active Hub and persists its identifier in
+`NetworkClass.status.hub` as controller-owned status.
+
+The persisted identifier is authoritative and sticky. When it is present, the
+controller resolves that exact Hub and does not fall back to discovery or
+select a replacement Hub. If no active Hub or multiple active Hubs exist, the
+NetworkClass remains `PENDING` without a new binding. If the persisted Hub is
+not registered, the NetworkClass is `FAILED` while retaining the identifier.
+If it is registered but temporarily unavailable, the NetworkClass remains
+`PENDING` while retaining the identifier. These status transitions are
+internal reconciliation and do not add an update operation to the networking
+API.
+
 ### 4.2 Non-Functional Requirements
 
 _No non-functional requirements were specified in the original document._
@@ -444,6 +462,10 @@ _No non-functional requirements were specified in the original document._
 - [ ] ExternalIPPool validation accepts exactly one canonical IPv4 CIDR in the
   repeated `cidrs` field and rejects empty or multiple entries
 - [ ] Supported networking deployments use exactly one provider-owned hub; multi-hub networking placement, cross-hub resource coordination, and cross-hub network connectivity are unsupported
+- [ ] A NetworkClass can be created without a Hub in its spec; when exactly one active Hub is available, reconciliation persists that Hub's identifier in `NetworkClass.status.hub`
+- [ ] A persisted `NetworkClass.status.hub` identifier is reused on subsequent reconciliation and is never replaced by fallback Hub discovery
+- [ ] No active Hub or multiple active Hubs leave the NetworkClass `PENDING` without selecting a Hub
+- [ ] An unregistered persisted Hub leaves the NetworkClass `FAILED` with the identifier retained, while a temporarily unavailable persisted Hub leaves it `PENDING` with the identifier retained
 - [ ] CaaS clusters can provision using any routable ExternalIPs for API server and ingress
 - [ ] ExternalIPAttachment handles inbound traffic only
 - [ ] NATGateway handles outbound traffic only — it is optional and provides a dedicated egress identity, not a prerequisite for basic connectivity

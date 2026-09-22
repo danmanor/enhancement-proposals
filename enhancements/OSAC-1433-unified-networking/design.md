@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -1265,6 +1265,46 @@ resource lifecycle and reconciliation.
 This boundary applies only to the networking area and does not define hub
 behavior for other OSAC areas. The fabric can still span multiple hosting
 clusters where the relevant networking feature supports that topology.
+
+##### Canonical Hub resolution
+
+The provider-owned canonical networking Hub is not a tenant-supplied
+`NetworkClass.spec` field. A `NetworkClass` may be created with an empty
+`status.hub`; the fulfillment controller resolves and persists the canonical
+Hub as controller-owned status during reconciliation.
+
+The resolver applies the following contract:
+
+1. It finds exactly one active `NetworkClass` and exactly one active Hub. An
+   active resource is one without a deletion timestamp. Resolution cannot
+   proceed when there is no active `NetworkClass`, or when there are zero or
+   multiple active Hubs. When a single active `NetworkClass` exists, zero or
+   multiple active Hubs leave it in `PENDING` and do not select a Hub.
+2. If `NetworkClass.status.hub` is empty, the resolver selects the sole active
+   Hub, persists its identifier in `status.hub`, and then resolves the Hub's
+   Kubernetes client. The status is `PENDING` while the binding is being
+   resolved and `READY` once the client is available.
+3. If `NetworkClass.status.hub` is already set, that identifier is
+   authoritative. The resolver resolves that exact Hub through the Hub cache;
+   it does not fall back to Hub discovery or silently select another Hub.
+4. If the persisted Hub is not registered, the `NetworkClass` enters `FAILED`
+   while retaining the persisted identifier. If the Hub is registered but its
+   client is unavailable, the `NetworkClass` remains `PENDING`, also retaining
+   the identifier. Both cases are retried without changing the binding.
+
+The status write is internal reconciliation, not a provider or tenant update
+operation. It updates only `status.hub`, `status.state`, and
+`status.message`, and is serialized by the fulfillment-service update lock.
+List requests use a bounded result set and the server-reported total so that
+the resolver can distinguish zero, one, and multiple active resources without
+unbounded discovery. Concurrent resolution attempts share one in-flight
+resolution; successful results are revalidated through the Hub cache and
+transient failures use a short-lived negative cache to avoid retry storms.
+
+OSAC-5387 introduces this resolver contract for the VirtualNetwork
+reconciliation path. Other networking resource controllers must adopt the same
+contract as they are migrated to the canonical Hub resolver; they must not
+reintroduce random Hub selection or fallback from a persisted assignment.
 
 #### Cross-VN Communication
 
