@@ -49,7 +49,7 @@ don't have the ability to add or modify ansible roles.
 
 * As a Cloud Provider Admin, I need to create a catalog item by selecting a resource type and choosing an existing template for that type, so the catalog item is backed by a known, working template.
 
-* As a Cloud Provider Admin, I need to configure which resource fields are pre-set vs. editable when creating a catalog item. The system presents all fields from the resource spec (e.g., ComputeInstanceSpec or ClusterSpec), and I configure each one — I do not need to manually specify field paths. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist.
+* As a Cloud Provider Admin, I need to configure which supported non-network resource fields are pre-set vs. editable when creating a catalog item. The system presents all supported non-network fields from the resource spec (e.g., ComputeInstanceSpec or ClusterSpec), and I configure each one — I do not need to manually specify field paths. By default, fields are non-editable except for `ssh_public_key` and `pull_secret`, which default to editable. Default values are pre-populated from the selected template when they exist.
 
 * As a Cloud Provider Admin, for each editable field I need to optionally provide a default value and define validation constraints, so I can guide tenant input while enforcing guardrails. Validation constraints are specified as a JSON Schema (draft 2020-12) object stored in the field definition's `validation_schema` field. Constraint types and examples:
 
@@ -152,7 +152,7 @@ created. Both will have similar properties, so we'll use Cluster as an example:
 
 ClusterCatalogItem
 * references an existing ClusterTemplate by ID
-* includes a list of field definitions, each of which specifies a field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The UI always includes all fields from the resource spec, but the API accepts partial field lists (e.g., CLI-created items may include only a subset).
+* includes a list of field definitions, each of which specifies a supported non-network field by dot-notation path, whether it is editable by the user, an optional default value, and an optional JSON Schema validation rule. The UI always includes all supported non-network fields from the resource spec, but the API accepts partial field lists (e.g., CLI-created items may include only a subset).
 * includes a new selector field `published` that takes values TRUE and FALSE
 * includes a tenant identifier that defines which tenant this CatalogItem is visible to. Defaults to all tenants if not set.
 * uses the existing `metadata.project` field (available on all OSAC resources) to optionally scope visibility to a specific project within the tenant. When `metadata.project` is empty, the item is visible to all projects within the tenant.
@@ -226,8 +226,8 @@ Two new message types will be added to the proto definitions in
 - `description` (string) - markdown-formatted long description
 - `template` (string) - references a `ClusterTemplate` by ID
 - `fields` (repeated FieldDefinition) - ordered list of field definitions that
-  specify which resource spec fields are pre-defined by the admin and which are
-  editable by the user. The UI includes all resource spec fields; the API
+  specify which supported non-network resource spec fields are pre-defined by the admin and which are
+  editable by the user. The UI includes all supported non-network resource spec fields; the API
   accepts partial lists for CLI and programmatic use
 - `published` (bool) - when false (the default), the item is hidden from Tenant
   Users; Cloud Provider Admins and Tenant Admins can see unpublished items
@@ -302,8 +302,8 @@ Specifically, the server:
 ##### Field definitions
 
 The `fields` list defines the contract between the admin and the user for a
-given catalog item. The UI includes all fields from the resource spec (e.g.,
-all fields in `ComputeInstanceSpec` for a `ComputeInstanceCatalogItem`), but
+given catalog item. The UI includes all supported non-network fields from the resource spec (e.g.,
+all supported non-network fields in `ComputeInstanceSpec` for a `ComputeInstanceCatalogItem`), but
 the API accepts partial field lists — not all fields need to be included.
 Fields not listed in `fields` are not managed by the catalog item. The server
 rejects catalog items that reference fields not defined in the resource spec.
