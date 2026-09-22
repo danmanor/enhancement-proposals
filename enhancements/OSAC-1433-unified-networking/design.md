@@ -1297,6 +1297,10 @@ The resolver applies the following contract:
 The status write is internal reconciliation, not a provider or tenant update
 operation. It updates only `status.hub`, `status.state`, and
 `status.message`, and is serialized by the fulfillment-service update lock.
+Hub lifecycle events requeue the NetworkClass reconciler, and NetworkClass
+status events requeue consumer reconcilers, so a VirtualNetwork that was
+created while the binding was `PENDING` progresses after the canonical Hub
+becomes available without waiting for the periodic sync interval.
 List requests use a bounded result set and the server-reported total so that
 the resolver can distinguish zero, one, and multiple active resources without
 unbounded discovery. Concurrent resolution attempts share one in-flight

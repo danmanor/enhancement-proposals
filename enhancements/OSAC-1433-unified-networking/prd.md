@@ -432,6 +432,10 @@ If it is registered but temporarily unavailable, the NetworkClass remains
 internal reconciliation and do not add an update operation to the networking
 API.
 
+Hub lifecycle events requeue the NetworkClass reconciler, and NetworkClass
+status events requeue consumer resource reconcilers so resources created while
+the binding is `PENDING` can progress as soon as the canonical Hub is ready.
+
 ### 4.2 Non-Functional Requirements
 
 _No non-functional requirements were specified in the original document._
