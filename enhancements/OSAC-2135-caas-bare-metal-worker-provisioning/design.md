@@ -221,7 +221,8 @@ The diagram shows the end-to-end provisioning flow. The controller waits for eac
    | Field | Source | Purpose |
    |---|---|---|
    | `instance_type` | `nodeRequests[i].BareMetalInstanceType` | Hardware profile → host_label_selector → inventory match |
-   | `catalog_item` | System-owned pass-through | Required by private API; CaaS overrides all parameters |
+   | `catalog_item` | System-owned pass-through | CaaS selects the Catalog Item path; Catalog v2 requires exactly one of `catalog_item` or `template` |
+   | `template` | Not set by CaaS | Template-only creates remain valid; requests containing both or neither source are rejected |
    | `image` | `ClusterVersion.disk_image` → DiskImage ID | RHCOS boot image for discovery agent |
    | `user_data` | InfraEnv ignition (inline, ~15KB, max 64KB) | Discovery ignition to register with assisted-service |
    | `network_attachments` | `networkAttachment` + stored node-set `fabric_interface` | The sole attachment from `ClusterNetworkAttachment`; the stored interface was selected from the first `fabric` port during cluster creation, with `primary: true` (see Network Attachment Enrichment); BMaaS rejects additional entries |
@@ -539,13 +540,13 @@ The CLI must support setting the `disk_image` reference on ClusterVersion — th
 
 #### BMI Creation via Private API
 
-For each worker, the controller calls `BareMetalInstances.Create` on the private API. The private API is unchanged — `spec.catalog_item` remains required. CaaS uses a **system-owned `BareMetalInstanceCatalogItem`** with most parameters unlocked, acting as a pass-through. The `BareMetalInstanceType` from the node set determines the hardware profile. The `source_type` value `"disk_image"` on `BareMetalInstanceImage` is introduced by the DiskImage integration (OSAC-1270) — this design consumes it but does not own the proto change:
+For each worker, the controller calls `BareMetalInstances.Create` on the private API. Catalog v2 requires exactly one of `spec.catalog_item` or `spec.template`; the CaaS controller selects the system-owned Catalog Item path. Template-only creates remain valid, while requests containing both or neither source are rejected. CaaS uses a **system-owned `BareMetalInstanceCatalogItem`** with most parameters unlocked, acting as a pass-through. The `BareMetalInstanceType` from the node set determines the hardware profile. The `source_type` value `"disk_image"` on `BareMetalInstanceImage` is introduced by the DiskImage integration (OSAC-1270) — this design consumes it but does not own the proto change:
 
 ```protobuf
 // Existing fields in osac.private.v1.BareMetalInstanceSpec used by CaaS
 // (field numbers omitted for clarity — see baremetal_instance_type.proto for canonical numbering):
 message BareMetalInstanceSpec {
-  BareMetalInstanceCatalogItemReference catalog_item = ...; // system-owned catalog item (pass-through)
+  BareMetalInstanceCatalogItemReference catalog_item = ...; // CaaS selects the Catalog Item path; exactly one source is required
   optional BareMetalInstanceImage image = ...;              // RHCOS DiskImage reference (see RHCOS DiskImage Resolution)
   optional string user_data = ...;                          // inline discovery ignition content (max 64KB)
   repeated BareMetalNetworkAttachment network_attachments = ...; // max 1; plural for API compatibility
