@@ -324,9 +324,8 @@ CatalogItem defines an `additional_disks` array default, seed
 appear in the disks list and are editable/removable. Preserve the
 omitted-vs-empty-array distinction: seeding on first catalog selection = accept
 the default; the user clearing all rows = explicit opt-out (empty array). This
-is specific to `additional_disks`; unlike workload `network_attachments`, an
-explicitly empty `additional_disks` array is not treated as default input.
-[design.md §3]
+uses the same omitted-versus-explicit-empty handling defined for this storage
+field. [design.md §3]
 
 **9. Review + read views.** `computeInstanceAdapter.ts`
 `buildReviewSections`: add a "Storage" review section (title
