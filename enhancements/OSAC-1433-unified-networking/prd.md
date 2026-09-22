@@ -417,7 +417,7 @@ This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
 reference this PRD; those proposals inherit it and do not redefine networking
 operations.
 
-#### FR-8: SecurityGroup semantics (R8)
+#### FR-9: SecurityGroup semantics (R9)
 
 SecurityGroup rules are stateless in the OSAC networking contract. Ingress and
 egress rules are evaluated independently; return traffic requires a matching
@@ -427,10 +427,10 @@ cluster may use stateful Kubernetes NetworkPolicy enforcement. Traffic that
 crosses the fabric is enforced by stateless fabric ACLs, and clients must not
 depend on stateful behavior.
 
-#### FR-9: Attachment-scoped SecurityGroups (R9)
+#### FR-10: Attachment-scoped SecurityGroups (R10)
 
-A SecurityGroup is created in and belongs to a VirtualNetwork, but creating or
-updating it has no standalone data-plane effect. A SecurityGroup becomes
+A SecurityGroup is created in and belongs to a VirtualNetwork, but creating it
+has no standalone data-plane effect. A SecurityGroup becomes
 effective only when referenced by a resource network attachment. Its rules
 apply only to that attachment (a VM virtual NIC, bare-metal physical
 interface, or cluster attachment), not to every resource or attachment in the
@@ -454,9 +454,9 @@ _No non-functional requirements were specified in the original document._
 - [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
 - [ ] The system provisions all necessary networking infrastructure for each subnet automatically
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
--- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup policy is configured through the same API, while enforcement follows the attachment's backend path
+- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup policy is configured through the same API, while enforcement follows the attachment's backend path
 - [ ] SecurityGroup enforcement is attachment-scoped: resources sharing a Subnet may have different effective SecurityGroup policies
-- [ ] SecurityGroup creation or update without an attachment reference does not change traffic
+- [ ] SecurityGroup creation without an attachment reference does not change traffic
 - [ ] Fabric-enforced SecurityGroup traffic is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement
 - [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets

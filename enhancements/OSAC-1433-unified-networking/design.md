@@ -359,7 +359,7 @@ context as the event payload.
 |-----------|----------------|
 | VN create/delete | `fabricManager` |
 | Subnet create/delete | `fabricManager` + `k8sManager` (per hosting cluster) |
-| SecurityGroup create/update/delete | No backend for the standalone policy object; attachment reconciliation invokes the applicable enforcement backend |
+| SecurityGroup create/delete | No backend for the standalone policy object; attachment reconciliation invokes the applicable enforcement backend |
 | ExternalIP alloc/release | `fabricManager` |
 | ExternalIPAttachment create/delete | `fabricManager` |
 | NATGateway create/delete | `fabricManager` |
@@ -1428,7 +1428,7 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 ### SecurityGroup Semantics
 
-- Unit: create or update a SecurityGroup with no attachment references and
+- Unit: create a SecurityGroup with no attachment references and
   verify that no data-plane enforcement is programmed.
 - Unit: validate that a SecurityGroup reference is in the same VirtualNetwork
   as its attachment and that deletion is rejected while any attachment still
@@ -1436,9 +1436,10 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 - Integration: place two attachments in the same Subnet with different
   SecurityGroups and verify each attachment receives only its referenced
   policy.
-- Integration: update a SecurityGroup and verify only its referencing
-  attachments are reconciled; unrelated attachments in the same Subnet are
-  unchanged.
+- Integration: create a replacement SecurityGroup and verify only new
+  attachments referencing the replacement receive its policy; existing
+  attachments remain bound to the original group and unrelated attachments in
+  the same Subnet are unchanged.
 - Integration: verify fabric enforcement is stateless, including that return
   traffic requires a reverse-direction rule. Verify that same-OCP-cluster
   VM-to-VM traffic may use the stateful Kubernetes NetworkPolicy path without

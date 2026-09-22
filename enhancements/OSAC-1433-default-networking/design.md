@@ -552,7 +552,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Impact:** All tenants receive the same default SecurityGroup rules configured by Cloud Infrastructure Admin. If misconfigured, all tenants' resources may be exposed.
 
-**Mitigation:** Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenant Admin can tighten rules after creation.
+**Mitigation:** Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenant Admin creates a replacement SecurityGroup with tighter rules when needed.
 
 **Reviewed by:** Cloud Infrastructure Admin
 
@@ -628,9 +628,9 @@ Resolved: Return error, no resource persisted.
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
 - E2E: verify default networking resources expose create/read/delete only and
   that replacement resources can be created after dependent resources are removed
-- E2E: create two resources on the default Subnet, change the default
-  SecurityGroup, or create a replacement group, and verify only attachments
-  referencing the selected group are affected
+- E2E: create two resources on the default Subnet, replace the default
+  SecurityGroup, and verify existing attachments remain bound to the original
+  group while new attachments use the replacement only after it is Ready
 - E2E: verify default SecurityGroup fabric enforcement is stateless and that
   same-OCP-cluster VM-to-VM traffic uses the documented local-backend exception
 

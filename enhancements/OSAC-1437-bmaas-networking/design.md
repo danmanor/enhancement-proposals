@@ -772,8 +772,6 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 - E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
-- E2E: create a multi-interface BM server with different SecurityGroups per
-  attachment and verify policy is isolated to each physical interface
 - E2E: verify fabric SecurityGroup enforcement is stateless and does not
   affect unrelated resources on the same Subnet
 

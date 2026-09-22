@@ -245,7 +245,8 @@ dual-stack networking are not supported.
 
 - **Owner:** Cloud Infrastructure Admin
 - **Mitigation:** Cloud Infrastructure Admin configures default rules on
-  NetworkClass; Tenant Admin can tighten rules after creation
+  NetworkClass; Tenant Admin can create a replacement SecurityGroup with
+  tighter rules when needed
 
 ### 7.3 Auto ExternalIP orphans on partial failure
 
