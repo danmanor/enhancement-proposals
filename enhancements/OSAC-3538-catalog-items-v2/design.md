@@ -123,7 +123,7 @@ A tenant-owned Catalog Item `small-rhel-vm` locks the instance type, offers an e
       "editable": {
         "default_value": {
           "@type": "type.googleapis.com/google.protobuf.StringValue",
-          "value": "22/tcp,443/tcp"
+          "value": "us-east"
         }
       }
     },
