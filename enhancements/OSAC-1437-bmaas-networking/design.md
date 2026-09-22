@@ -197,7 +197,9 @@ Same as VMaaS/CaaS — the networking API is uniform.
    osac create security-group --virtual-network my-net --name my-sg \
      --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
+   Dispatcher persists the SecurityGroup as a VirtualNetwork-scoped policy
+   object; no standalone ACL is created. Enforcement is applied when a
+   BareMetalNetworkAttachment references the group.
 
 #### Phase 2: Tenant Creates BM Server
 
@@ -634,8 +636,10 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control BM inbound traffic (tenant-configurable via explicit SG or default SG)
-- The single BM network attachment uses the same SecurityGroup enforcement as the rest of the fabric
+- SecurityGroup rules control the BM network attachment (tenant-configurable via explicit SG or default SG)
+- Fabric-enforced SecurityGroup traffic is stateless
+- A SecurityGroup reference on the BM attachment does not affect another
+  interface or another resource on the same Subnet
 
 ### Failure Handling and Recovery
 
@@ -768,6 +772,10 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 - E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
+- E2E: create a multi-interface BM server with different SecurityGroups per
+  attachment and verify policy is isolated to each physical interface
+- E2E: verify fabric SecurityGroup enforcement is stateless and does not
+  affect unrelated resources on the same Subnet
 
 ### Tricky Test Cases
 

@@ -110,7 +110,8 @@ ComputeInstance already participates in the networking API. Today's flow:
      --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
    ```
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
-   - Fabric manager creates ACL rules on the fabric
+   - The SecurityGroup is stored as a VirtualNetwork-scoped policy object; no
+     ACL is created until a VM attachment references it
 
 #### VM Creation
 
@@ -146,7 +147,9 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Reads `subnet-target-namespace` → deployment namespace
    - Reads `network_attachments`:
      - With one attachment: creates VM with one `l2bridge` interface in the subnet's CUDN namespace. That attachment gets the default gateway.
-   - Reads `securityGroupRefs` → adds as pod labels
+   - Reads the SecurityGroup references for the sole attachment and passes the
+     binding to the applicable enforcement path. The binding must not be
+     collapsed into a Subnet-wide policy or an unrelated workload.
    - Creates DataVolume + KubeVirt VirtualMachine
    - VM gets IP from each CUDN (via DHCP)
    - VM is on the fabric (overlay bridged at subnet creation)
@@ -269,7 +272,7 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 | osac-operator ComputeInstance feedback controller | Watch KubeVirt VMI network status, discover per-attachment IPs, Signal fulfillment-service |
 | osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
 | AAP template (ocp_virt_vm) | Create single-NIC KubeVirt VM in correct namespace |
-| fabric_manager (Ansible role) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call |
+| fabric_manager (Ansible role) | VN/Subnet/ExternalIP lifecycle plus stateless SecurityGroup enforcement for the referenced VM attachment |
 | k8s_manager (Ansible role) | Create CUDN overlay at subnet creation; no per-VM call |
 
 #### Primary Attachment Resolution
@@ -299,8 +302,11 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- SecurityGroup rules control VM inbound traffic (tenant-configurable via explicit SG or default SG)
-- The sole VM attachment uses the same SecurityGroup enforcement as the rest of the fabric
+- SecurityGroup rules control the VM's network attachment (tenant-configurable via explicit SG or default SG)
+- Fabric-enforced SecurityGroup traffic is stateless; ingress and egress rules are independent
+- VM-to-VM traffic that remains on the same OCP cluster may be enforced by Kubernetes NetworkPolicy and can therefore be stateful
+- A SecurityGroup reference on the VM attachment does not affect another
+  workload or resource on the same Subnet
 
 ### Failure Handling and Recovery
 
@@ -415,6 +421,10 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
 - E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route
+- E2E: create two VMs on the same Subnet with different SecurityGroups and
+  verify policies do not leak between VMs
+- E2E: verify fabric SecurityGroup enforcement is stateless and same-cluster
+  VM-to-VM enforcement may use stateful NetworkPolicy
 
 ### Tricky Test Cases
 

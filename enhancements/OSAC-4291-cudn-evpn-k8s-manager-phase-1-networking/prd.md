@@ -89,7 +89,10 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Fabric-level SecurityGroups (ACL rules) apply to fabric-bridged VM traffic.
+- SecurityGroups referenced by fabric-bridged VM attachments are enforced as
+  stateless fabric ACLs. VM-to-VM traffic that remains on the same OCP cluster
+  may instead be enforced by stateful Kubernetes NetworkPolicy; that behavior
+  is backend-specific and is not a fabric guarantee.
 
 - Fabric-level NATGateways (SNAT via softgate) apply to fabric-bridged VM egress traffic.
 

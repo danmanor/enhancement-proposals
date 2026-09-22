@@ -52,9 +52,14 @@ This section defines key terms used throughout this document.
 - **Subnet**: A subdivision of a VirtualNetwork's IP address space. Resources
   are attached to subnets to receive IP addresses and network connectivity.
 
-- **SecurityGroup**: A stateful firewall controlling inbound and outbound
-  traffic for resources. Rules specify allowed protocols, ports, and
-  source/destination addresses.
+- **SecurityGroup**: A tenant-defined traffic policy scoped to a
+  VirtualNetwork. OSAC SecurityGroups are stateless by contract: ingress and
+  egress rules are evaluated independently, and return traffic is not
+  implicitly allowed. A backend may provide stateful behavior where its
+  enforcement mechanism supports it; specifically, VM-to-VM traffic that
+  remains on the same OCP cluster may be stateful when enforced by Kubernetes
+  NetworkPolicy. This backend-specific behavior is not guaranteed for traffic
+  that crosses the fabric.
 
 - **ExternalIPPool**: A provider-defined pool containing exactly one canonical
   IPv4 CIDR for addresses routable outside the VirtualNetwork. "External"
@@ -412,6 +417,26 @@ This is the normative contract for the VMaaS, CaaS, and BMaaS proposals that
 reference this PRD; those proposals inherit it and do not redefine networking
 operations.
 
+#### FR-8: SecurityGroup semantics (R8)
+
+SecurityGroup rules are stateless in the OSAC networking contract. Ingress and
+egress rules are evaluated independently; return traffic requires a matching
+rule in the reverse direction unless the selected local enforcement backend
+provides stateful behavior. VM-to-VM traffic that remains on the same OCP
+cluster may use stateful Kubernetes NetworkPolicy enforcement. Traffic that
+crosses the fabric is enforced by stateless fabric ACLs, and clients must not
+depend on stateful behavior.
+
+#### FR-9: Attachment-scoped SecurityGroups (R9)
+
+A SecurityGroup is created in and belongs to a VirtualNetwork, but creating or
+updating it has no standalone data-plane effect. A SecurityGroup becomes
+effective only when referenced by a resource network attachment. Its rules
+apply only to that attachment (a VM virtual NIC, bare-metal physical
+interface, or cluster attachment), not to every resource or attachment in the
+same Subnet. Different attachments in one Subnet may reference different
+SecurityGroups.
+
 ### 4.2 Non-Functional Requirements
 
 _No non-functional requirements were specified in the original document._
@@ -423,14 +448,16 @@ _No non-functional requirements were specified in the original document._
 - [ ] Resources in different VirtualNetworks cannot communicate (full isolation)
 - [ ] Resources in the same Subnet are in the same L2 broadcast domain
 - [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
-- [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced uniformly for all resource types
+- [ ] SecurityGroups control which traffic is permitted within these boundaries, with rules applied to the attachments that reference them
 - [ ] Bare-metal servers in the same Subnet are in the same broadcast domain regardless of their physical location (rack, switch)
 - [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
 - [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
 - [ ] The system provisions all necessary networking infrastructure for each subnet automatically
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
-- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
-- [ ] SecurityGroup enforcement is uniform across all resource types
+-- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup policy is configured through the same API, while enforcement follows the attachment's backend path
+- [ ] SecurityGroup enforcement is attachment-scoped: resources sharing a Subnet may have different effective SecurityGroup policies
+- [ ] SecurityGroup creation or update without an attachment reference does not change traffic
+- [ ] Fabric-enforced SecurityGroup traffic is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement
 - [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type

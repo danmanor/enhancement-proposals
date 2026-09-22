@@ -618,7 +618,7 @@ func getNetworkClassID(subnet *osacv1.Subnet) string {
 
 #### osac-aap: netris Fabric Manager Role
 
-This design **extends the existing netris role** (`collections/ansible_collections/osac/templates/roles/netris/`) by adding VirtualNetwork and Subnet provisioning tasks. The existing role already handles SecurityGroup, ExternalIP, and NATGateway provisioning — those task files remain unchanged.
+This design **extends the existing netris role** (`collections/ansible_collections/osac/templates/roles/netris/`) by adding VirtualNetwork and Subnet provisioning tasks. SecurityGroup semantics follow the [Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#securitygroup-semantics-and-attachment-scope): the group is a VirtualNetwork-scoped policy object and fabric ACL enforcement is stateless and attachment-scoped. The current netris SecurityGroup tasks still fan out across Subnet CIDRs; correcting that implementation is a follow-up code/Jira decomposition item and is not implemented by this documentation-only update.
 
 **New Task Files:**
 
@@ -1227,7 +1227,10 @@ VNI values from fabric manager are integers (validated by CUDN CRD schema). Rout
 
 - fulfillment-service API: OPA policies filter Subnet list/get by `osac.openshift.io/tenant` annotation
 - CUDN and namespace: labeled with `osac.openshift.io/tenant` for traceability (not enforced by K8s RBAC — cluster-scoped CRDs are admin-only)
-- VMs: deployed into tenant namespace, NetworkPolicy can further restrict (out of scope)
+- VMs: deployed into tenant namespace. VM-to-VM traffic that remains on the
+  same OCP cluster may be enforced by Kubernetes NetworkPolicy and can be
+  stateful; this local backend behavior is distinct from the stateless fabric
+  SecurityGroup contract.
 
 **No RBAC Changes:**
 

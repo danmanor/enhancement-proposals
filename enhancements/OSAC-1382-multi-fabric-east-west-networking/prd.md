@@ -82,7 +82,7 @@ Regardless of how the domain is created:
 
 - As a Tenant Admin, I want confidence that my tenant's east-west network isolation is enforced at the fabric level so that other tenants cannot access my data or traffic.
 
-- As a Tenant Admin, I want to define SecurityGroup rules that control which resources can communicate east-west within my tenant's networks, and have those rules enforced as fabric-level ACLs.
+- As a Tenant Admin, I want to define SecurityGroup rules that control which attachments can communicate east-west within my tenant's networks, and have those rules enforced as stateless fabric-level ACLs.
 
 ### Tenant User
 
@@ -106,7 +106,8 @@ Regardless of how the domain is created:
 - [ ] Hosts in different isolation domains cannot exchange traffic on the east-west fabric
 - [ ] Hosts in the same isolation domain and same subnet have L2 connectivity on the east-west fabric
 - [ ] Hosts in the same isolation domain but different subnets route at L3 within the domain
-- [ ] SecurityGroup rules translate to fabric-level ACLs, and traffic denied by those rules is dropped on the east-west fabric
+- [ ] SecurityGroup rules attached to resource interfaces translate to stateless fabric-level ACLs, and traffic denied by those rules is dropped on the east-west fabric
+- [ ] SecurityGroup rules do not apply to unrelated resources or interfaces that share a Subnet
 
 **East-West Connectivity**
 - [ ] Bare metal instances and VMs in the same isolation domain can communicate over the east-west fabric without additional network configuration

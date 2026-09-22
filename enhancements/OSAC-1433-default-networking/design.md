@@ -33,7 +33,7 @@ primary concept.
 
 ## Summary
 
-This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. It inherits the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary): default networking supports connected deployments only and does not support air-gapped or disconnected networking. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit their resource-specific network attachment field and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
+This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing default networking automation and simplified resource creation. It inherits the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary): default networking supports connected deployments only and does not support air-gapped or disconnected networking. When a tenant is created, the system provisions a default VirtualNetwork, IPv4 Subnet, SecurityGroup, and NATGateway based on NetworkClass configuration. The default SecurityGroup is a VirtualNetwork-scoped policy object with no standalone enforcement; when resolved onto a resource attachment, it applies only to that attachment. Resources (ComputeInstance, Cluster, BaremetalInstance) can omit their resource-specific network attachment field and use tenant defaults. Auto ExternalIP modes enable fully connected resources in a single API call. See [PRD](prd.md) for detailed requirements.
 
 Default networking also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
@@ -146,6 +146,8 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
      - Queries tenant's default Subnet and default SecurityGroup (labeled `osac.openshift.io/default: "true"`)
      - Populates the resource-specific network attachment field with default Subnet + default SecurityGroup
      - For a supplied single attachment, defaults only missing fields; a missing or empty security-group list receives the default only when the resolved Subnet belongs to the tenant's default VirtualNetwork, and supplied values are preserved
+     - A resolved default SecurityGroup reference is bound to that attachment
+       only; it does not apply to all resources on the default Subnet
      - Stores resolved attachments in spec
    - Creates ComputeInstance CR with resolved network_attachments
    - osac-operator reconciles normally (VM provisioned on default subnet)
@@ -256,6 +258,10 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
       configuration error. Default-based creates remain paused until the
       replacement VirtualNetwork, Subnet, SecurityGroup, and NATGateway are
       READY.
+    - Default SecurityGroup rules are evaluated only for attachments that
+      reference the group; they are not Subnet-wide. Fabric enforcement is
+      stateless, while same-OCP-cluster VM-to-VM traffic may be stateful when
+      the Kubernetes NetworkPolicy path is used.
 
 ### API Extensions
 
@@ -473,9 +479,13 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent resource
 - Default resources (VN, Subnet, SG, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
-- Default SecurityGroup rules configured by Cloud Infrastructure Admin (applies to all tenants)
+- Default SecurityGroup rules configured by Cloud Infrastructure Admin (applies to each tenant's default SecurityGroup)
 - Tenant Admin can create replacement SecurityGroup resources with customized
   rules after dependencies on the defaults have been removed
+- Default SecurityGroup rules apply only to attachments that reference the
+  group; they are not Subnet-wide. Fabric enforcement is stateless, while
+  same-OCP-cluster VM-to-VM traffic may use stateful Kubernetes NetworkPolicy
+  enforcement.
 
 **Risk: Default SecurityGroup too permissive**
 - Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenants that need different rules create replacement SecurityGroup resources and use them for subsequently created workloads.
@@ -618,6 +628,11 @@ Resolved: Return error, no resource persisted.
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
 - E2E: verify default networking resources expose create/read/delete only and
   that replacement resources can be created after dependent resources are removed
+- E2E: create two resources on the default Subnet, change the default
+  SecurityGroup, or create a replacement group, and verify only attachments
+  referencing the selected group are affected
+- E2E: verify default SecurityGroup fabric enforcement is stateless and that
+  same-OCP-cluster VM-to-VM traffic uses the documented local-backend exception
 
 ### Tricky Test Cases
 

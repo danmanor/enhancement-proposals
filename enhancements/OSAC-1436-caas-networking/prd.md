@@ -122,6 +122,10 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 - **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
+#### SecurityGroup Attachment Scope
+
+- **FR-12:** The cluster's `ClusterNetworkAttachment` is the SecurityGroup enforcement scope. SecurityGroup rules apply to that cluster attachment only, not to every resource sharing the Subnet. Fabric enforcement is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement. [User]
+
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Automatic external IP allocation and endpoint discovery complete synchronously within the cluster creation flow. Endpoint addresses are available in cluster status during provisioning, not minutes later.
@@ -137,6 +141,8 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
+- [ ] SecurityGroup rules on a cluster attachment do not affect unrelated resources sharing the same Subnet
+- [ ] Fabric-enforced cluster SecurityGroup traffic is stateless, with the documented same-OCP-cluster Kubernetes NetworkPolicy exception
 
 ## 6. Assumptions
 

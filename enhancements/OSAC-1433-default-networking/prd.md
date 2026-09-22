@@ -173,6 +173,15 @@ dual-stack networking are not supported.
   allocated ExternalIP. The NATGateway provides outbound connectivity
   for all resources on the default VirtualNetwork. [User]
 
+#### Default SecurityGroup Attachment Scope
+
+- **FR-13:** The default SecurityGroup is a policy object in the default
+  VirtualNetwork. When defaults are resolved onto a resource's network
+  attachment, its rules apply only to that attachment; the default
+  SecurityGroup does not independently affect every resource on the default
+  Subnet. Fabric enforcement is stateless, while same-OCP-cluster VM-to-VM
+  traffic may use stateful Kubernetes NetworkPolicy enforcement. [User]
+
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a ComputeInstance with
@@ -193,6 +202,11 @@ dual-stack networking are not supported.
 - [ ] Default networking resources expose only create/read/delete operations;
   a Tenant Admin can create replacement resources with customized settings once
   dependencies on the defaults have been removed
+- [ ] Default SecurityGroup rules apply only to attachments that reference the
+  group, without changing unrelated resources or attachments on the same
+  default Subnet
+- [ ] Default SecurityGroup behavior documents stateless fabric enforcement
+  and the same-OCP-cluster Kubernetes NetworkPolicy stateful exception
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
   auto-created ExternalIP and ExternalIPAttachment to be cleaned up
   automatically

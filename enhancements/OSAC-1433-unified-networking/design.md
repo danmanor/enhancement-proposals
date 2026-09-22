@@ -342,8 +342,10 @@ At subnet creation, the dispatcher runs:
 
 VMs are placed in the K8s overlay (which is bridged to the fabric), BM
 servers and cluster nodes are placed directly on the fabric segment. The
-fabric is the single source of truth for multi-tenancy and routing — all
-resources, regardless of type, are on the fabric.
+fabric is the source of truth for multi-tenancy and routing when traffic
+crosses the fabric. It is not the only possible SecurityGroup enforcement
+point: VM-to-VM traffic that remains on the same OCP cluster may be enforced
+by the K8s manager through NetworkPolicy.
 
 ### Dispatcher (Operator Composition Logic)
 
@@ -357,15 +359,16 @@ context as the event payload.
 |-----------|----------------|
 | VN create/delete | `fabricManager` |
 | Subnet create/delete | `fabricManager` + `k8sManager` (per hosting cluster) |
-| SecurityGroup create/delete | `fabricManager` |
+| SecurityGroup create/update/delete | No backend for the standalone policy object; attachment reconciliation invokes the applicable enforcement backend |
 | ExternalIP alloc/release | `fabricManager` |
 | ExternalIPAttachment create/delete | `fabricManager` |
 | NATGateway create/delete | `fabricManager` |
 
-Everything except subnet creation is handled by the fabric manager alone.
-The k8sManager is only involved at subnet creation (to bridge the overlay)
-— after that, VMs are on the fabric and the fabric manager handles them
-like any other resource.
+VirtualNetwork, Subnet, and standalone policy-object lifecycle is handled by
+the networking controllers. The fabric manager handles enforcement for
+attachments whose traffic crosses the fabric. The k8sManager may additionally
+enforce the policy for local VM-to-VM traffic that remains on the same OCP
+cluster. Backend selection is transparent to tenants.
 
 The dispatch table above covers **networking resources only**. Compute
 resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
@@ -381,7 +384,8 @@ NetworkClass (per deployment, provider-only)
 
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
   ├── Subnet              → fabricManager + k8sManager
-  ├── SecurityGroup       → fabricManager
+  ├── SecurityGroup       → policy object scoped to this VN; no standalone enforcement
+  │                         └── referenced by resource network attachments
   └── NATGateway          → fabricManager
 
 ExternalIPPool (deployment-scoped, provider-managed)
@@ -479,7 +483,33 @@ osac create security-group --virtual-network my-net --name my-sg \
   --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
 ```
 
-The fabric manager creates ACL rules on the fabric.
+The SecurityGroup is stored as a policy object in the VirtualNetwork. Creating
+the group does not create fabric ACLs or otherwise change traffic. When a
+resource attachment references the group, the applicable backend reconciles
+rules for that attachment only.
+
+#### SecurityGroup Semantics and Attachment Scope
+
+SecurityGroups are attachment policies, not Subnet policies:
+
+- The SecurityGroup resource is scoped to its VirtualNetwork and has no
+  standalone data-plane functionality.
+- A SecurityGroup reference is carried by a resource network attachment. The
+  attachment is the enforcement target: one VM virtual NIC, one bare-metal
+  physical interface, or the cluster's shared attachment.
+- A group reference must not cause rules to be applied to every resource in
+  the attachment's Subnet. Two attachments in the same Subnet may reference
+  different groups or no group.
+- OSAC semantics are stateless. Ingress and egress rules are independent, so
+  return traffic requires a reverse-direction rule unless the selected local
+  backend provides stateful behavior.
+- Fabric ACL enforcement is stateless. VM-to-VM traffic that remains on the
+  same OCP cluster may instead be enforced by Kubernetes NetworkPolicy and can
+  therefore be stateful. This is an implementation-path exception, not a
+  cross-fabric guarantee.
+- Updating a group reconciles only the attachments that reference it. Removing
+  a reference removes enforcement from that attachment without changing other
+  attachments in the same Subnet.
 
 #### Resource Creation (Differs by Type)
 
@@ -891,6 +921,8 @@ resource-specific fields. `network_attachments` are immutable after
 resource creation — changing network attachment requires recreating the
 resource. VMaaS and BMaaS keep repeated fields for wire/API compatibility but
 enforce a maximum of one entry. CaaS uses its existing singular field.
+SecurityGroup references are evaluated per attachment; the Subnet field
+identifies connectivity and does not widen the SecurityGroup scope.
 
 **ComputeNetworkAttachment** (for ComputeInstance):
 
@@ -1157,6 +1189,7 @@ of their own deletion state), the controller requeues with a short interval
 |---|---|
 | VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
 | Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
+| SecurityGroup | No ComputeInstance, BaremetalInstance, or Cluster network attachment references to this SecurityGroup |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
@@ -1328,9 +1361,9 @@ and splitting it into per-action drivers does not reflect how physical
 networking works. Also creates complexity in the dispatcher and validation.
 
 **Separate k8s ACL driver.** A dedicated k8s.acl driver (e.g.,
-NetworkPolicy) alongside fabric ACLs. Redundant — when VMs are on the
-fabric, the fabric enforces security for all traffic including VM traffic.
-Adding a k8s ACL layer creates dual enforcement with no clear benefit.
+NetworkPolicy) alongside fabric ACLs is required for traffic that remains
+inside an OCP cluster and does not cross the fabric. Its stateful behavior is
+backend-specific; it does not change the stateless contract for fabric traffic.
 
 **VN scope field (vm/bm).** Require tenants to declare what a network is
 for at creation time. Makes subnets service-specific, prevents mixed
@@ -1372,9 +1405,12 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    entry even though the fields remain repeated for compatibility. Changing
    network attachment requires recreating the resource.
 
-10. **Security enforcement.** The fabric is the single enforcement point
-    for SecurityGroups. No separate K8s-level ACL needed — VMs are on the
-    fabric.
+10. **Security enforcement.** SecurityGroups are scoped to resource
+    attachments, not Subnets. Fabric ACLs enforce them statelessly for traffic
+    crossing the fabric. The K8s manager may enforce the same attachment policy
+    for VM-to-VM traffic that remains on one OCP cluster; that path may be
+    stateful. Creating a SecurityGroup without an attachment reference has no
+    data-plane effect.
 
 11. **Per-resource NetworkAttachment types.** Separate proto messages
     (`ComputeNetworkAttachment`, `BareMetalNetworkAttachment`,
@@ -1390,7 +1426,23 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 ## Test Plan
 
-*Section to be completed when targeted at a release.*
+### SecurityGroup Semantics
+
+- Unit: create or update a SecurityGroup with no attachment references and
+  verify that no data-plane enforcement is programmed.
+- Unit: validate that a SecurityGroup reference is in the same VirtualNetwork
+  as its attachment and that deletion is rejected while any attachment still
+  references it.
+- Integration: place two attachments in the same Subnet with different
+  SecurityGroups and verify each attachment receives only its referenced
+  policy.
+- Integration: update a SecurityGroup and verify only its referencing
+  attachments are reconciled; unrelated attachments in the same Subnet are
+  unchanged.
+- Integration: verify fabric enforcement is stateless, including that return
+  traffic requires a reverse-direction rule. Verify that same-OCP-cluster
+  VM-to-VM traffic may use the stateful Kubernetes NetworkPolicy path without
+  presenting that behavior as a fabric guarantee.
 
 ## Graduation Criteria
 

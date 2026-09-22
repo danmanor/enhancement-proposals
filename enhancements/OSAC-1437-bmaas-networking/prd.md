@@ -125,6 +125,10 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 - **FR-12:** During bare-metal server deletion, the system deconfigures network connectivity for the selected interface and releases the allocated IP address. [User]
 
+#### SecurityGroup Attachment Scope
+
+- **FR-13:** SecurityGroup references on a bare-metal network attachment apply only to the corresponding physical interface. A SecurityGroup reference on one interface does not affect another interface or other resources sharing the same Subnet. Fabric enforcement is stateless. [User]
+
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Auto external IP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [User]
@@ -144,6 +148,8 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] Creating a bare-metal server with more than one network attachment returns a maximum-one error
 - [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
 - [ ] External IP attachment with bare-metal server target routes inbound traffic to the server's primary attachment IP
+- [ ] SecurityGroup rules are applied per physical-interface attachment, and a group on one interface does not affect another interface or unrelated resources on the same Subnet
+- [ ] Bare-metal SecurityGroup enforcement through the fabric is stateless
 
 ## 6. Assumptions
 

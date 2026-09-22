@@ -90,6 +90,10 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 - **FR-7:** The existing repeated `network_attachments` field remains the only VM network-configuration field. No singular replacement field, parallel legacy field, or dual-field conversion period is introduced. [User]
 
+#### SecurityGroup Attachment Scope
+
+- **FR-8:** SecurityGroup references on a VM apply independently to each network attachment. A SecurityGroup reference on one virtual NIC does not affect another NIC or other resources sharing the same Subnet. Fabric enforcement is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement. [User]
+
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Auto external IP allocation completes synchronously within the create request. If no pool has available capacity, the create request fails with a clear error. [User]
@@ -106,6 +110,11 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
 - [ ] Creating a VM with an omitted or empty attachment list receives the tenant defaults
 - [ ] Creating a VM with a partial single attachment defaults only its missing subnet or security-group fields
+- [ ] SecurityGroup rules on the VM attachment do not affect unrelated
+  resources on the same Subnet
+- [ ] Fabric-enforced VM SecurityGroup traffic is stateless, while
+  same-OCP-cluster VM-to-VM traffic may use stateful Kubernetes NetworkPolicy
+  enforcement
 
 ## 6. Assumptions
 

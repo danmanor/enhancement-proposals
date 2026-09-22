@@ -103,7 +103,9 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
    osac create security-group --virtual-network my-net --name my-sg \
      --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
    ```
-   Dispatcher → `osac.templates.{{ fabric_manager }}.create_security_group`
+   Dispatcher persists the SecurityGroup as a VirtualNetwork-scoped policy
+   object; no standalone ACL is created. Enforcement is applied when the
+   cluster's network attachment references the group.
 
 #### Phase 2: Tenant Creates Cluster
 
@@ -211,7 +213,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - Delete ExternalIPAttachments → fabric manager removes DNAT rules
     - Delete NATGateway → fabric manager removes SNAT rule
     - Delete ExternalIPs → fabric manager releases IPs
-    - Delete SecurityGroup → fabric manager removes ACL rules
+    - Delete SecurityGroup → allowed only after all attachment references are
+      removed; backend enforcement is removed from those attachments
     - Delete Subnet → dispatcher calls both managers: fabric manager removes network segment, k8s_manager removes CUDN overlay + MetalLB IPAddressPool from hosting clusters
     - Delete VirtualNetwork → fabric manager removes tenant segment
 
@@ -412,7 +415,8 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
-- SecurityGroup rules control cluster node inbound traffic (tenant-configurable via explicit SG or default SG)
+- SecurityGroup rules control the cluster's network attachment only (tenant-configurable via explicit SG or default SG)
+- Fabric-enforced SecurityGroup traffic is stateless; VM-to-VM traffic that remains on the same OCP cluster may be stateful when enforced by Kubernetes NetworkPolicy
 
 ### Failure Handling and Recovery
 
@@ -562,6 +566,12 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
 - E2E: create Cluster with omitted network_attachment, verify default Subnet + SecurityGroup populated
 - E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
+- E2E: create a cluster and another resource on the same Subnet with different
+  SecurityGroups, and verify cluster attachment policy does not affect the
+  unrelated resource
+- E2E: verify fabric SecurityGroup enforcement is stateless and local
+  same-OCP-cluster VM-to-VM enforcement follows the documented NetworkPolicy
+  exception
 
 ### Tricky Test Cases
 
