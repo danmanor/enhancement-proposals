@@ -508,9 +508,11 @@ SecurityGroups are attachment policies, not Subnet policies:
   same OCP cluster may instead be enforced by Kubernetes NetworkPolicy and can
   therefore be stateful. This is an implementation-path exception, not a
   cross-fabric guarantee.
-- Updating a group reconciles only the attachments that reference it. Removing
-  a reference removes enforcement from that attachment without changing other
-  attachments in the same Subnet.
+- Creating a replacement SecurityGroup does not alter existing attachment
+  bindings. New attachment references are reconciled to the replacement group.
+  Replacing an attached resource without the reference removes enforcement from
+  the replacement attachment without changing other attachments in the same
+  Subnet.
 
 #### Resource Creation (Differs by Type)
 
