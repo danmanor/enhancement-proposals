@@ -23,7 +23,7 @@ superseded-by:
 
 - Tenants provision VMs and clusters by selecting a catalog offering and completing a guided wizard with a **fixed field set per resource type** ([§2.1.1](#211-static-wizard-fields)).
 - Both resource types use the same five steps: **Catalog Item → General → Configuration → Networking → Review** (submit from Review). **General** collects name and credentials; **Configuration** collects image/release, sizing, and platform parameters — not networking placement. The Networking step collects ordinary resource inputs and is not governed by the selected Catalog Item.
-- Catalog `field_definitions` overlay matching static paths on **Configuration** and **General basics** fields (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) for **display name**, **editability**, and **validation_schema**. Networking fields are not Catalog Item fields and never receive an overlay or Catalog default.
+- Catalog `field_definitions` overlay matching static **non-picker, non-network Configuration** paths and **General basics** fields (`spec.ssh_key`, `spec.ssh_public_key`, `spec.pull_secret`) for **display name**, **editability**, and **validation_schema**. Networking fields are not Catalog Item fields and never receive an overlay or Catalog default.
 
 ### 1.2 Non-Goals
 
@@ -40,7 +40,7 @@ superseded-by:
 
 #### 2.1.1 Static wizard fields
 
-Fields are hardcoded per resource type, not discovered from `field_definitions`. **General** step always shows the static paths below; catalog `field_definitions` overlay **basics** fields only (`ssh_key` / `ssh_public_key` / `pull_secret`) for label, editability, and validation — not networking paths ([§2.1.2](#212-catalog-overlay-and-defaults)). **Required** column: **?** = resolved in [§5](#5-open-decisions) where noted.
+Fields are hardcoded per resource type, not discovered from `field_definitions`. **General** step always shows the static paths below; catalog `field_definitions` overlay **General basics** fields (`ssh_key` / `ssh_public_key` / `pull_secret`) and **non-picker, non-network Configuration** fields for label, editability, and validation — not networking paths ([§2.1.2](#212-catalog-overlay-and-defaults)). **Required** column: **?** = resolved in [§5](#5-open-decisions) where noted.
 
 **ComputeInstance**
 
@@ -97,7 +97,7 @@ For each static **non-picker** field, match `field_definitions` by `path` (spec-
 | Aspect     | Matching entry (non-picker fields, including General basics)                | No matching entry     |
 | ---------- | --------------------------------------------------------------------------- | --------------------- |
 | Label      | `display_name` or wizard default                                            | Wizard default        |
-| Editable   | `editable: false` → read-only on wizard step; blank when no catalog `default` | `true`                |
+| Editable   | `editable: false` → read-only on the Configuration or General step; blank when no catalog `default` | `true`                |
 | Default    | Catalog `default` if set; else blank                                        | Blank                 |
 | Validation | `validation_schema` maps to integer/enum/text widgets; inline errors on blur; full step validation on Next (see [§2.2](#22-wizard-behavior)) | API/wizard validation |
 
