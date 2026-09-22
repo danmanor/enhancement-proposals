@@ -788,7 +788,7 @@ The UI feature will be considered complete when:
 - Role-gated navigation is working for all three roles
 - All per-kind step components render the correct static fields with shared field definition primitives
 - All E2E tests pass (scenarios listed in the Test Plan)
-- Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and network attachments auto-inclusion
+- Unit tests pass for Yup schemas, FieldMask construction, JSON Schema assembly, and Catalog Item exclusion of resource networking
 - Component-level tests pass for per-kind step components and field definition primitives
 - The "Provisioned Resources" tab on the detail page shows related resources (dependent on Open Question 3)
 - Admin user guide is published to the docs repo
