@@ -416,14 +416,15 @@ operations.
 
 Networking resources use exactly one active provider-owned Hub per deployment.
 Tenants and providers do not supply the Hub through `NetworkClass.spec`. A
-`NetworkClass` may initially have an empty `status.hub`; the controller
-resolves the sole active Hub and persists its identifier in
-`NetworkClass.status.hub` as controller-owned status.
+`NetworkClass` may initially have an empty `status.hub`; the dedicated
+NetworkClass reconciler resolves the sole active Hub and persists its
+identifier in `NetworkClass.status.hub` as controller-owned status. Consumer
+resource reconcilers read that binding and do not update NetworkClass status.
 
 The persisted identifier is authoritative and sticky. When it is present, the
-controller resolves that exact Hub and does not fall back to discovery or
-select a replacement Hub. If no active Hub or multiple active Hubs exist, the
-NetworkClass remains `PENDING` without a new binding. If the persisted Hub is
+NetworkClass reconciler resolves that exact Hub and does not fall back to
+discovery or select a replacement Hub. If no active Hub or multiple active
+Hubs exist, the NetworkClass remains `PENDING` without a new binding. If the persisted Hub is
 not registered, the NetworkClass is `FAILED` while retaining the identifier.
 If it is registered but temporarily unavailable, the NetworkClass remains
 `PENDING` while retaining the identifier. These status transitions are

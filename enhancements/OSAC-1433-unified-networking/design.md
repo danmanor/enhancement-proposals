@@ -1270,8 +1270,10 @@ clusters where the relevant networking feature supports that topology.
 
 The provider-owned canonical networking Hub is not a tenant-supplied
 `NetworkClass.spec` field. A `NetworkClass` may be created with an empty
-`status.hub`; the fulfillment controller resolves and persists the canonical
-Hub as controller-owned status during reconciliation.
+`status.hub`; the dedicated NetworkClass reconciler resolves and persists the
+canonical Hub as controller-owned status during reconciliation. Consumer
+reconcilers, including VirtualNetwork reconciliation, only read
+`NetworkClass.status.hub` and never update NetworkClass status.
 
 The resolver applies the following contract:
 
@@ -1301,10 +1303,11 @@ unbounded discovery. Concurrent resolution attempts share one in-flight
 resolution; successful results are revalidated through the Hub cache and
 transient failures use a short-lived negative cache to avoid retry storms.
 
-OSAC-5387 introduces this resolver contract for the VirtualNetwork
-reconciliation path. Other networking resource controllers must adopt the same
-contract as they are migrated to the canonical Hub resolver; they must not
-reintroduce random Hub selection or fallback from a persisted assignment.
+OSAC-5387 introduces the dedicated NetworkClass reconciler and this read-only
+consumer contract for the VirtualNetwork reconciliation path. Other networking
+resource controllers must adopt the same contract as they are migrated to the
+canonical Hub resolver; they must not reintroduce random Hub selection or
+fallback from a persisted assignment.
 
 #### Cross-VN Communication
 
