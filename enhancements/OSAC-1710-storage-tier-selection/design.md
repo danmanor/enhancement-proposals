@@ -182,13 +182,17 @@ Add `storage_tier` as field 2 to `ComputeInstanceDisk` in both private and publi
 // In both private and public compute_instance_type.proto
 message ComputeInstanceDisk {
   // Disk size in GiB.
-  int32 size_gib = 1;
+  optional int32 size_gib = 1;
   // Storage tier name. Must reference an existing StorageTier resource.
   optional string storage_tier = 2;
 }
 ```
 
-The `optional` qualifier enables explicit presence: the generated code provides `HasStorageTier()` to distinguish "not provided" from "set to empty string". Defaults merging uses `HasStorageTier()` to decide whether to apply a default; validation checks presence after the full resolution chain.
+The `optional` qualifiers enable explicit presence: the generated code provides
+`HasSizeGib()` and `HasStorageTier()` to distinguish omitted values from explicit
+values. Defaults merging uses these presence checks to apply a default only when
+the corresponding value was omitted; validation checks the resolved values after
+the full resolution chain.
 
 `ComputeInstanceTemplateSpecDefaults` inherits the new field through its existing `optional ComputeInstanceDisk boot_disk = 4` reference. No change to the template proto is needed. [Codebase: fulfillment-service/proto/private/osac/private/v1/compute_instance_template_type.proto]
 
@@ -207,7 +211,7 @@ func mergeBootDiskDefaults(spec *privatev1.ComputeInstanceSpec, defaults *privat
     }
     disk := spec.GetBootDisk()
     defDisk := defaults.GetBootDisk()
-    if disk.GetSizeGib() <= 0 && defDisk.GetSizeGib() > 0 {
+    if !disk.HasSizeGib() && defDisk.HasSizeGib() {
         disk.SetSizeGib(defDisk.GetSizeGib())
     }
     // Merge storage_tier: apply template default only if user did not provide one
