@@ -359,7 +359,7 @@ context as the event payload.
 |-----------|----------------|
 | VN create/delete | `fabricManager` |
 | Subnet create/delete | `fabricManager` + `k8sManager` (per hosting cluster) |
-| SecurityGroup create/delete | No backend for the standalone policy object; attachment reconciliation invokes the applicable enforcement backend |
+| SecurityGroup create/delete | No standalone backend call; attachment reconciliation applies the referenced policy through `fabricManager` for fabric traffic and may use `k8sManager` for same-cluster VM-to-VM traffic |
 | ExternalIP alloc/release | `fabricManager` |
 | ExternalIPAttachment create/delete | `fabricManager` |
 | NATGateway create/delete | `fabricManager` |
@@ -385,7 +385,8 @@ NetworkClass (per deployment, provider-only)
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
   ├── Subnet              → fabricManager + k8sManager
   ├── SecurityGroup       → policy object scoped to this VN; no standalone enforcement
-  │                         └── referenced by resource network attachments
+  │                         └── referenced by resource network attachments → fabricManager
+  │                           (fabric traffic) or k8sManager (same-cluster VM-to-VM)
   └── NATGateway          → fabricManager
 
 ExternalIPPool (deployment-scoped, provider-managed)
