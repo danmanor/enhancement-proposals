@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -367,10 +367,13 @@ The k8sManager is only involved at subnet creation (to bridge the overlay)
 — after that, VMs are on the fabric and the fabric manager handles them
 like any other resource.
 
-The dispatch table above covers **networking resources only**. Compute
-resources (ComputeInstance, BaremetalInstance, Cluster) handle per-instance
-network attachment through their provisioning operators — see per-service
-designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
+The dispatch table above lists networking-resource operations. Per-instance
+attachment operations also use the shared networking dispatch path where the
+service design assigns them to an OSAC networking controller. For BMaaS,
+osac-operator watches the existing BaremetalInstance CR and owns the fabric
+port move and DHCP lease query; BMF retains host provisioning, reboot, and
+lifecycle sequencing. VMaaS and CaaS attachment ownership remains as described
+in their per-service designs: [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 [CaaS](/enhancements/OSAC-1436-caas-networking),
 [BMaaS](/enhancements/OSAC-1437-bmaas-networking).
 
@@ -524,7 +527,9 @@ the corresponding fabric segment and the interface gets an IP from the
 subnet's CIDR.
 
 Validation rules:
-- At most one attachment is accepted
+- The API and BaremetalInstance CRD must reject more than one attachment. This
+  maximum-one contract is defined here; validation enforcement is a release
+  prerequisite where implementation is not yet present.
 - All referenced subnets must belong to the same VirtualNetwork
 - The `interface` must reference a valid port name from the BareMetalInstanceType's
   network ports list
@@ -679,7 +684,7 @@ precondition checks and requeue:
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to CR status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | osac-operator's networking controller waits for BMF's `NetworkHandoffComplete`, then queries fabric manager DHCP via the shared dispatcher (`query_dhcp_lease` role), matches the port MAC from the BareMetalHost `osac.openshift.io/interface-macs` annotation, and writes the IP to BMI status |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -706,7 +711,7 @@ IP discovery mechanism per service type:
 |---------|-----------------|-------------------|-------------|
 | VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
 | CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| BMaaS | After BMF sets `NetworkHandoffComplete`, osac-operator queries fabric DHCP via the shared dispatcher (`query_dhcp_lease` role); matches the BareMetalHost interface MAC to the lease, falling back to server name only for named fabric servers (see [BMaaS networking design](/enhancements/OSAC-1437-bmaas-networking/design.md#ip-discovery)) | osac-operator networking controller writes the existing BMI status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
 The fabric manager's `move_network_attachment` role is switch-side
 only — it moves a host's fabric port from one network segment to another
@@ -728,7 +733,7 @@ move differs per service:
   network → move to tenant network → reboot so the OS re-DHCPs on the tenant
   network). This achieves isolation-until-ready: the tenant cannot reach the
   server during imaging/first-boot.
-- **CaaS:** BMaaS moves the port **POST-OS-provisioning** (the host is provisioned
+- **CaaS:** CaaS moves the port **POST-OS-provisioning** (the host is provisioned
   on the provisioning network, then the port moves to the tenant network and the
   host reboots before it joins the cluster installation flow).
 
@@ -738,15 +743,29 @@ automatically. A single AAP job template serves both directions, deriving onboar
 the resource's `deletionTimestamp`. See [BMaaS — Provisioning Network and Port
 Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#provisioning-network-and-port-moves).
 
-IP discovery for BMaaS is a separate dispatcher call. After
-`reconcileProvisioning` completes and the host has received a DHCP
-lease, the operator dispatches `query_dhcp_lease` — this role queries
-the fabric manager's DHCP lease API for the subnet and matches the
-server's port MAC address to find the corresponding DHCP-assigned IP.
-Bare-metal hosts are not named fabric servers, so the lease is matched
-by NIC MAC, which the operator supplies from the host's
-`osac.openshift.io/interface-macs` BareMetalHost annotation; named
-fabric servers such as CaaS agents fall back to matching by server name.
+For BMaaS, osac-operator's networking controller watches the existing
+BaremetalInstance CR. After BMF reports `ProvisionTemplateComplete=True`, the
+controller resolves the attachment's Subnet, VirtualNetwork, and NetworkClass
+through the existing private APIs, dispatches the shared
+`move_network_attachment` operation, and sets `NetworkAttachmentsReady=True`
+after the fabric manager reports the target segment ready. BMF owns the handoff
+reboot and sets `NetworkHandoffComplete=True`; only then does the networking
+controller dispatch `query_dhcp_lease` and write the primary IP and
+`IPDiscoveryComplete=True` to the same CR. The controller matches the lease by
+NIC MAC from the associated BareMetalHost's
+`osac.openshift.io/interface-macs` annotation. It does not create a child
+attachment CR or a second desired-state API.
+
+During deletion, BMF powers the host off and sets
+`NetworkOffboardShutdownComplete=True`. The networking controller returns the
+port to the provisioning network, sets `NetworkOffboardComplete=True`, and
+removes `osac.openshift.io/baremetalinstance-networking`. BMF waits for this
+cleanup before deprovisioning and releasing the host. The networking controller
+owns its conditions, `NetworkAttachmentStatuses`, `NetworkingJobs`,
+`IPDiscoveryJobs`, and networking finalizer; BMF owns host lifecycle conditions
+including `NetworkHandoffComplete` and `NetworkOffboardShutdownComplete`.
+Both controllers merge updates against the latest BMI status and merge
+conditions by type so concurrent writes do not erase fields owned by the other.
 
 *NATGateway controller preconditions:*
 
@@ -917,7 +936,9 @@ message BareMetalNetworkAttachment {
 ```
 
 The repeated field is retained for compatibility, but at most one entry is
-accepted. The `interface` field, when supplied, references a port name from
+allowed by the contract; fulfillment-service and CRD validation must reject
+additional entries before rollout. The `interface` field, when supplied,
+references a port name from
 the BareMetalInstanceType's network ports list; if omitted, the system picks
 the default fabric interface. Omitted or empty attachment lists receive
 defaults, and a supplied entry receives defaults only for missing fields. The
@@ -1057,7 +1078,7 @@ and fires Signal RPC to fulfillment-service.
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;                 // Physical interface name (echoed from spec)
   string subnet_ref = 2;               // Subnet ID (echoed from spec)
-  string ip_address = 3;               // Discovered via query_dhcp_lease role after provisioning (matches port MAC to DHCP lease)
+  string ip_address = 3;               // Discovered by osac-operator after BMF handoff via query_dhcp_lease (matches port MAC to DHCP lease)
   bool primary = 4;                     // true for the sole resolved attachment; normalized from spec
 }
 
@@ -1067,13 +1088,23 @@ message BareMetalInstanceStatus {
 }
 ```
 
-IP discovered after DHCP assignment on the tenant network. After
-`reconcileProvisioning` completes, the operator dispatches
-`query_dhcp_lease` to the fabric manager's DHCP lease API, matching
-the server's port MAC address to find the assigned IP (see
-[BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)).
-The operator writes the discovered IP to CR status, and the feedback
-controller syncs to fulfillment-service.
+The osac-operator networking controller queries DHCP only after BMF sets
+`NetworkHandoffComplete=True`. It matches the server's port MAC to the fabric
+manager's lease, writes the discovered IP to the existing BMI status, and sets
+`IPDiscoveryComplete=True`. The feedback controller then syncs the status to
+fulfillment-service. BMF owns reboot/handoff sequencing; osac-operator owns the
+network operation and discovered-IP status. No separate `NetworkAttachment`
+service or child CR is introduced; see the [BMaaS controller design](/enhancements/OSAC-1437-bmaas-networking/design.md#controller-boundary-and-status-ownership).
+
+For BMaaS, the networking controller owns `NetworkAttachmentsReady`,
+`IPDiscoveryComplete`, `NetworkOffboardComplete`, attachment-status entries,
+networking AAP job histories, and `osac.openshift.io/baremetalinstance-networking`.
+BMF owns host-lifecycle conditions, including `NetworkHandoffComplete` and
+`NetworkOffboardShutdownComplete`. It waits for `NetworkAttachmentsReady`
+before the handoff reboot, for `IPDiscoveryComplete` before reporting Ready,
+and for `NetworkOffboardComplete` plus finalizer removal before deprovisioning.
+Both controllers merge status against the latest object and merge conditions
+by type; neither replaces the entire status object.
 
 **ClusterStatus** does not have per-attachment IP status — CaaS uses
 service-level VIPs (`api_endpoint`, `ingress_endpoint`) rather than
@@ -1160,6 +1191,10 @@ of their own deletion state), the controller requeues with a short interval
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
+For BaremetalInstance, the networking finalizer keeps the CR present until its
+port has returned to the provisioning network, so this guard cannot race the
+network-offboard move.
+
 The full dependency chain (delete order, leaf first):
 
 ```text
@@ -1197,12 +1232,13 @@ Per-subnet NAT association is a future enhancement.
 
 #### Single-NIC Workload Attachment Constraint
 
-VMaaS, BMaaS, and CaaS currently support at most one tenant network
+The target networking contract allows at most one tenant network
 attachment per workload. VMaaS and BMaaS retain repeated attachment fields
 for wire/API compatibility, while CaaS retains its singular field. Requests
-with more than one VM or BM attachment are rejected by API validation and by
-the corresponding operator CRD. Multi-NIC workload networking is future
-scope.
+with more than one VM or BM attachment must be rejected by fulfillment-service
+validation and the corresponding operator CRD. For BMaaS, this validation is
+defined by the contract and remains an implementation prerequisite. Multi-NIC
+workload networking is not supported by this contract.
 
 With exactly one attachment, the attachment is the **primary** attachment by
 default and determines:
@@ -1301,6 +1337,7 @@ VirtualNetwork at creation time.
 | K8s-to-fabric bridge failure | VMs unreachable from fabric | k8sManager validates bridge connectivity at subnet creation; subnet stays Pending until bridge is confirmed |
 | CaaS prerequisite ordering | ExternalIPs may be needed before cluster | Pending state for attachments; template validates its own prerequisites |
 | ExternalIPAttachment target validation | Target may not exist yet (CaaS) or may be deleted | Pending state for forward references; attachment tracks target lifecycle |
+| BM lifecycle and networking controllers update the same CR | A lost status update can erase IP/job history or let host teardown pass before network cleanup | Assign ownership by status field and condition type; merge against the latest BMI and keep the networking finalizer until offboard completes |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
 
 ### Drawbacks
@@ -1411,3 +1448,13 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 ## Infrastructure Needed
 
 No additional infrastructure beyond existing OSAC components and managers.
+
+---
+
+## Provenance
+
+Committed: commit @ design 0.11.3 - 858df2d, workspace design/OSAC-1437 @ 0082064 (dirty)
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"0082064 (dirty)","source_repo_branch":"design/OSAC-1437","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
