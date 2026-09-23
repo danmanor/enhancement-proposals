@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-23
+last-updated: 2026-09-16
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -121,14 +121,6 @@ This section defines key terms used throughout this document.
 
 All networking resources and traffic described by this PRD use IPv4 CIDRs.
 IPv6 and dual-stack networking are not supported.
-
-The existing optional `ipv6_cidr` fields in the public and private networking
-API messages are intentionally retained for wire and generated-API
-compatibility. They are not removed or renumbered, so a future IPv6
-implementation can extend the existing API shape. Retaining these fields does
-not make IPv6 or dual-stack networking supported in this milestone: omitted or
-empty values are accepted, while non-empty IPv6 or dual-stack values are
-rejected before persistence or backend dispatch.
 
 ### Deployment support boundary
 
