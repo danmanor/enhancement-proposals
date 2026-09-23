@@ -637,6 +637,8 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
 - SecurityGroup rules control the BM network attachment (tenant-configurable via explicit SG or default SG)
+- SecurityGroup rules are allow-only; new traffic without a matching allow rule
+  is denied by default and deny rules are not supported
 - Fabric-enforced SecurityGroup traffic is stateless
 - A SecurityGroup reference on the BM attachment does not affect another
   interface or another resource on the same Subnet
@@ -774,6 +776,8 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
 - E2E: verify fabric SecurityGroup enforcement is stateless and does not
   affect unrelated resources on the same Subnet
+- E2E: verify matching BM SecurityGroup allow traffic succeeds, unmatched new
+  traffic is denied by default, and a deny rule cannot be supplied
 
 ### Tricky Test Cases
 

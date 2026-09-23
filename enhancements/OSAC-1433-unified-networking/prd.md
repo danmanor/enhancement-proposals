@@ -53,13 +53,16 @@ This section defines key terms used throughout this document.
   are attached to subnets to receive IP addresses and network connectivity.
 
 - **SecurityGroup**: A tenant-defined traffic policy scoped to a
-  VirtualNetwork. OSAC SecurityGroups are stateless by contract: ingress and
-  egress rules are evaluated independently, and return traffic is not
-  implicitly allowed. A backend may provide stateful behavior where its
-  enforcement mechanism supports it; specifically, VM-to-VM traffic that
-  remains on the same OCP cluster may be stateful when enforced by Kubernetes
-  NetworkPolicy. This backend-specific behavior is not guaranteed for traffic
-  that crosses the fabric.
+  VirtualNetwork. SecurityGroup rules are allow rules only; OSAC does not
+  expose a user-specified deny action. New flows are denied by default, so
+  ingress and egress are permitted only when a matching allow rule exists.
+  OSAC SecurityGroups are stateless by contract: ingress and egress rules are
+  evaluated independently, and return traffic is not implicitly allowed. A
+  backend may provide stateful behavior where its enforcement mechanism
+  supports it; specifically, VM-to-VM traffic that remains on the same OCP
+  cluster may be stateful when enforced by Kubernetes NetworkPolicy. This
+  backend-specific behavior is not guaranteed for traffic that crosses the
+  fabric.
 
 - **ExternalIPPool**: A provider-defined pool containing exactly one canonical
   IPv4 CIDR for addresses routable outside the VirtualNetwork. "External"
@@ -420,12 +423,15 @@ operations.
 #### FR-9: SecurityGroup semantics (R9)
 
 SecurityGroup rules are stateless in the OSAC networking contract. Ingress and
-egress rules are evaluated independently; return traffic requires a matching
-rule in the reverse direction unless the selected local enforcement backend
-provides stateful behavior. VM-to-VM traffic that remains on the same OCP
-cluster may use stateful Kubernetes NetworkPolicy enforcement. Traffic that
-crosses the fabric is enforced by stateless fabric ACLs, and clients must not
-depend on stateful behavior.
+egress rules are allow-only and are evaluated independently. New traffic
+without a matching allow rule is denied by default, including when a
+SecurityGroup has no rules. Return traffic requires a matching allow rule in
+the reverse direction unless the selected local enforcement backend provides
+stateful behavior for an established flow.
+VM-to-VM traffic that remains on the same OCP cluster may use stateful
+Kubernetes NetworkPolicy enforcement. Traffic that crosses the fabric is
+enforced by stateless fabric ACLs, and clients must not depend on stateful
+behavior.
 
 #### FR-10: Attachment-scoped SecurityGroups (R10)
 
@@ -457,6 +463,7 @@ _No non-functional requirements were specified in the original document._
 - [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup policy is configured through the same API, while enforcement follows the attachment's backend path
 - [ ] SecurityGroup enforcement is attachment-scoped: resources sharing a Subnet may have different effective SecurityGroup policies
 - [ ] SecurityGroup creation without an attachment reference does not change traffic
+- [ ] SecurityGroup rules are allow-only; new traffic without a matching allow rule is denied by default, and users cannot specify deny rules
 - [ ] Fabric-enforced SecurityGroup traffic is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement
 - [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets

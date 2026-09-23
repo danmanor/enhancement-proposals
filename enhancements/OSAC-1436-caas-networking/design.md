@@ -416,6 +416,8 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
 - SecurityGroup rules control the cluster's network attachment only (tenant-configurable via explicit SG or default SG)
+- SecurityGroup rules are allow-only; new traffic without a matching allow rule
+  is denied by default and deny rules are not supported
 - Fabric-enforced SecurityGroup traffic is stateless; VM-to-VM traffic that remains on the same OCP cluster may be stateful when enforced by Kubernetes NetworkPolicy
 
 ### Failure Handling and Recovery
@@ -569,6 +571,8 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - E2E: create a cluster and another resource on the same Subnet with different
   SecurityGroups, and verify cluster attachment policy does not affect the
   unrelated resource
+- E2E: verify matching cluster SecurityGroup allow traffic succeeds, unmatched
+  new traffic is denied by default, and a deny rule cannot be supplied
 - E2E: verify fabric SecurityGroup enforcement is stateless and local
   same-OCP-cluster VM-to-VM enforcement follows the documented NetworkPolicy
   exception

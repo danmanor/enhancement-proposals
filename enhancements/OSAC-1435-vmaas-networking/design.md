@@ -303,6 +303,8 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
 - SecurityGroup rules control the VM's network attachment (tenant-configurable via explicit SG or default SG)
+- SecurityGroup rules are allow-only; new traffic without a matching allow rule
+  is denied by default and deny rules are not supported
 - Fabric-enforced SecurityGroup traffic is stateless; ingress and egress rules are independent
 - VM-to-VM traffic that remains on the same OCP cluster may be enforced by Kubernetes NetworkPolicy and can therefore be stateful
 - A SecurityGroup reference on the VM attachment does not affect another
@@ -423,6 +425,8 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route
 - E2E: create two VMs on the same Subnet with different SecurityGroups and
   verify policies do not leak between VMs
+- E2E: verify matching VM SecurityGroup allow traffic succeeds, unmatched new
+  traffic is denied by default, and a deny rule cannot be supplied
 - E2E: verify fabric SecurityGroup enforcement is stateless and same-cluster
   VM-to-VM enforcement may use stateful NetworkPolicy
 

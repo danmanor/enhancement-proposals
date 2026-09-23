@@ -92,7 +92,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### SecurityGroup Attachment Scope
 
-- **FR-8:** SecurityGroup references on a VM apply independently to each network attachment. A SecurityGroup reference on one virtual NIC does not affect another NIC or other resources sharing the same Subnet. Fabric enforcement is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement. [User]
+- **FR-8:** SecurityGroup references on a VM apply independently to each network attachment. A SecurityGroup reference on one virtual NIC does not affect another NIC or other resources sharing the same Subnet. SecurityGroup rules are allow-only: new traffic without a matching allow rule is denied by default, and users cannot specify deny rules. Fabric enforcement is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement for established flows. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -112,6 +112,8 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] Creating a VM with a partial single attachment defaults only its missing subnet or security-group fields
 - [ ] SecurityGroup rules on the VM attachment do not affect unrelated
   resources on the same Subnet
+- [ ] VM SecurityGroup rules are allow-only and new traffic without a matching allow
+  rule is denied by default; deny rules cannot be specified
 - [ ] Fabric-enforced VM SecurityGroup traffic is stateless, while
   same-OCP-cluster VM-to-VM traffic may use stateful Kubernetes NetworkPolicy
   enforcement

@@ -487,7 +487,9 @@ osac create security-group --virtual-network my-net --name my-sg \
 The SecurityGroup is stored as a policy object in the VirtualNetwork. Creating
 the group does not create fabric ACLs or otherwise change traffic. When a
 resource attachment references the group, the applicable backend reconciles
-rules for that attachment only.
+allow rules for that attachment only. SecurityGroup rules are allow-only; there
+is no user-specified deny action, and new traffic that does not match an allow
+rule is denied by default.
 
 #### SecurityGroup Semantics and Attachment Scope
 
@@ -501,9 +503,12 @@ SecurityGroups are attachment policies, not Subnet policies:
 - A group reference must not cause rules to be applied to every resource in
   the attachment's Subnet. Two attachments in the same Subnet may reference
   different groups or no group.
-- OSAC semantics are stateless. Ingress and egress rules are independent, so
-  return traffic requires a reverse-direction rule unless the selected local
-  backend provides stateful behavior.
+- OSAC semantics are stateless. Ingress and egress are evaluated independently;
+  new traffic in either direction is permitted only by a matching allow rule.
+  Traffic without a matching allow rule is denied by default, including when
+  the group has no rules. A user cannot specify a deny rule.
+- Fabric return traffic requires a reverse-direction allow rule unless the
+  selected local backend provides stateful behavior for an established flow.
 - Fabric ACL enforcement is stateless. VM-to-VM traffic that remains on the
   same OCP cluster may instead be enforced by Kubernetes NetworkPolicy and can
   therefore be stateful. This is an implementation-path exception, not a
@@ -1444,9 +1449,10 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
   attachments remain bound to the original group and unrelated attachments in
   the same Subnet are unchanged.
 - Integration: verify fabric enforcement is stateless, including that return
-  traffic requires a reverse-direction rule. Verify that same-OCP-cluster
-  VM-to-VM traffic may use the stateful Kubernetes NetworkPolicy path without
-  presenting that behavior as a fabric guarantee.
+  traffic requires a reverse-direction allow rule and unmatched new traffic is
+  denied. Verify that a deny action cannot be supplied.
+  Verify that same-OCP-cluster VM-to-VM traffic may use the stateful Kubernetes
+  NetworkPolicy path without presenting that behavior as a fabric guarantee.
 
 ## Graduation Criteria
 

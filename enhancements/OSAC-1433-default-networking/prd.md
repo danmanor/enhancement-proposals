@@ -179,8 +179,10 @@ dual-stack networking are not supported.
   VirtualNetwork. When defaults are resolved onto a resource's network
   attachment, its rules apply only to that attachment; the default
   SecurityGroup does not independently affect every resource on the default
-  Subnet. Fabric enforcement is stateless, while same-OCP-cluster VM-to-VM
-  traffic may use stateful Kubernetes NetworkPolicy enforcement. [User]
+  Subnet. Its rules are allow-only, with new traffic denied by default when no
+  matching allow rule exists; tenants cannot specify deny rules. Fabric
+  enforcement is stateless, while same-OCP-cluster VM-to-VM traffic may use
+  stateful Kubernetes NetworkPolicy enforcement for established flows. [User]
 
 ## 5. Acceptance Criteria
 
@@ -205,6 +207,8 @@ dual-stack networking are not supported.
 - [ ] Default SecurityGroup rules apply only to attachments that reference the
   group, without changing unrelated resources or attachments on the same
   default Subnet
+- [ ] Default SecurityGroup rules are allow-only and new traffic without a matching
+  allow rule is denied by default; deny rules cannot be specified
 - [ ] Default SecurityGroup behavior documents stateless fabric enforcement
   and the same-OCP-cluster Kubernetes NetworkPolicy stateful exception
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the

@@ -283,6 +283,8 @@ message NetworkDefaults {
 }
 
 message SecurityGroupRule {
+  // Every entry is an allow rule; unmatched new traffic is denied by default.
+  // A deny action is not supported.
   string direction = 1;   // "ingress" or "egress"
   string protocol = 2;    // "tcp", "udp", "icmp", etc.
   int32 port = 3;         // port number (0 for ICMP)
@@ -398,6 +400,7 @@ type ClusterSpec struct {
 - `virtual_network_cidr` and `ipv4_subnet_cidr` must use canonical IPv4 CIDR notation with host bits zero
 - `security_group_rules[].direction` must be "ingress" or "egress"
 - `security_group_rules[].protocol` must be valid (tcp, udp, icmp, etc.)
+- `security_group_rules[]` entries are allow rules only; a deny action is not supported
 
 **Resource creation with optional network attachment fields:**
 - For VMaaS and BMaaS, an omitted or explicitly empty `network_attachments` list is resolved using the shared defaulting matrix. For CaaS, an omitted or explicitly empty `network_attachment` is resolved the same way.
@@ -485,7 +488,8 @@ This feature inherits the existing security model:
 - Default SecurityGroup rules apply only to attachments that reference the
   group; they are not Subnet-wide. Fabric enforcement is stateless, while
   same-OCP-cluster VM-to-VM traffic may use stateful Kubernetes NetworkPolicy
-  enforcement.
+  enforcement. Rules are allow-only, new traffic without a matching allow rule
+  is denied by default, and deny rules are not supported.
 
 **Risk: Default SecurityGroup too permissive**
 - Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenants that need different rules create replacement SecurityGroup resources and use them for subsequently created workloads.
@@ -631,6 +635,8 @@ Resolved: Return error, no resource persisted.
 - E2E: create two resources on the default Subnet, replace the default
   SecurityGroup, and verify existing attachments remain bound to the original
   group while new attachments use the replacement only after it is Ready
+- E2E: verify default SecurityGroup allow rules permit matching traffic,
+  unmatched new traffic is denied by default, and a deny rule cannot be supplied
 - E2E: verify default SecurityGroup fabric enforcement is stateless and that
   same-OCP-cluster VM-to-VM traffic uses the documented local-backend exception
 

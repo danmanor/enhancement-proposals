@@ -127,7 +127,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### SecurityGroup Attachment Scope
 
-- **FR-13:** SecurityGroup references on a bare-metal network attachment apply only to the corresponding physical interface. A SecurityGroup reference on one interface does not affect another interface or other resources sharing the same Subnet. Fabric enforcement is stateless. [User]
+- **FR-13:** SecurityGroup references on a bare-metal network attachment apply only to the corresponding physical interface. A SecurityGroup reference on one interface does not affect another interface or other resources sharing the same Subnet. SecurityGroup rules are allow-only: new traffic without a matching allow rule is denied by default, and users cannot specify deny rules. Fabric enforcement is stateless. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -149,6 +149,8 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
 - [ ] External IP attachment with bare-metal server target routes inbound traffic to the server's primary attachment IP
 - [ ] SecurityGroup rules are applied per physical-interface attachment, and a group on one interface does not affect another interface or unrelated resources on the same Subnet
+- [ ] Bare-metal SecurityGroup rules are allow-only and new traffic without a
+  matching allow rule is denied by default; deny rules cannot be specified
 - [ ] Bare-metal SecurityGroup enforcement through the fabric is stateless
 
 ## 6. Assumptions

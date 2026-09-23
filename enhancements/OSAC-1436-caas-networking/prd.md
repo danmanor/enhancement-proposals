@@ -124,7 +124,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### SecurityGroup Attachment Scope
 
-- **FR-12:** The cluster's `ClusterNetworkAttachment` is the SecurityGroup enforcement scope. SecurityGroup rules apply to that cluster attachment only, not to every resource sharing the Subnet. Fabric enforcement is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement. [User]
+- **FR-12:** The cluster's `ClusterNetworkAttachment` is the SecurityGroup enforcement scope. SecurityGroup rules apply to that cluster attachment only, not to every resource sharing the Subnet. SecurityGroup rules are allow-only: new traffic without a matching allow rule is denied by default, and users cannot specify deny rules. Fabric enforcement is stateless; VM-to-VM traffic that remains on the same OCP cluster may use stateful Kubernetes NetworkPolicy enforcement for established flows. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -142,6 +142,8 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
 - [ ] SecurityGroup rules on a cluster attachment do not affect unrelated resources sharing the same Subnet
+- [ ] Cluster SecurityGroup rules are allow-only and new traffic without a matching
+  allow rule is denied by default; deny rules cannot be specified
 - [ ] Fabric-enforced cluster SecurityGroup traffic is stateless, with the documented same-OCP-cluster Kubernetes NetworkPolicy exception
 
 ## 6. Assumptions
