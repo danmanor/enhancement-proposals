@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-16
+last-updated: 2026-09-23
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -38,17 +38,26 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. See [PRD](prd.md) for detailed requirements.
+ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. In the shared target architecture, the ComputeInstance lifecycle controller submits the private `NetworkAttachment` request after defaulting; the networking-owned controller applies the VM attachment, discovers its IP, and reports readiness. See [PRD](prd.md) and the [shared attachment controller design](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller) for details.
 
 ## Motivation
 
-ComputeInstance already participates in the networking API. Today's flow:
+ComputeInstance already participates in the networking API. The current VM
+path applies the attachment while creating the VM. The target design moves
+attachment-specific work behind the shared internal `NetworkAttachment`
+request so the VM lifecycle controller only submits the request and waits for
+network readiness.
 
 1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
 3. Tenant creates ComputeInstance with `network_attachments` (`ComputeNetworkAttachment`, no `primary` field, single-NIC only)
-4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
-5. AAP template (`osac.templates.ocp_virt_vm`) creates KubeVirt VirtualMachine with one `l2bridge` interface in the subnet's CUDN namespace
+4. The ComputeInstance lifecycle controller submits the private
+   `NetworkAttachment` proto request for the normalized attachment.
+5. Fulfillment reconciliation creates one internal `NetworkAttachment` CR;
+   the networking controller resolves the target and prepares its CUDN/NAD
+   attachment.
+6. The ComputeInstance controller creates the VM and waits for the networking
+   controller to set `NetworkAttachmentsReady=True` before reporting Ready.
 
 ### What Already Works
 
@@ -74,6 +83,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 - Optional `network_attachments` field — populate with tenant defaults when omitted
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - BM-only deployment validation to reject VM provisioning when no k8s_manager is available
+- Use the shared private `NetworkAttachment` request and networking controller; keep VM lifecycle and VM provisioning in the ComputeInstance controller
 
 ### Non-Goals
 
@@ -134,32 +144,38 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 5. **osac-operator ComputeInstance controller:**
 
-   a. `resolveNetworking` (existing logic, extended):
-      - `PrimarySubnetRef()` → returns the sole attachment's subnet
-      - `resolveSubnetTargetNamespace()` → looks up Subnet CR → namespace (same as today)
-      - Stamps `osac.openshift.io/subnet-target-namespace` annotation
-      - **No dispatcher call for network attachments** — VMs don't need switch port configuration. The k8sManager's work was done at subnet creation (step 2). The overlay already exists.
+   a. Resolves API defaults and submits the private `NetworkAttachment`
+      request identifying the ComputeInstance. It does not configure the VM's
+      network interface or discover the attachment IP.
 
-   b. Triggers AAP job: `osac-create-compute-instance`
+   b. Triggers AAP job: `osac-create-compute-instance` for VM compute
+      resources. It waits for the NetworkAttachment controller to attach the
+      VM to the CUDN and set `NetworkAttachmentsReady=True` before reporting
+      the ComputeInstance Ready.
 
 6. **AAP template (`osac.templates.ocp_virt_vm`):**
-   - Reads `subnet-target-namespace` → deployment namespace
-   - Reads `network_attachments`:
-     - With one attachment: creates VM with one `l2bridge` interface in the subnet's CUDN namespace. That attachment gets the default gateway.
+   - Creates the VM compute resources without owning attachment
+     reconciliation. The NetworkAttachment controller applies the sole
+     `l2bridge` interface in the subnet's CUDN namespace.
    - Reads `securityGroupRefs` → adds as pod labels
    - Creates DataVolume + KubeVirt VirtualMachine
-   - VM gets IP from each CUDN (via DHCP)
-   - VM is on the fabric (overlay bridged at subnet creation)
-   - **No networking logic** — template does OS/VM provisioning only. VMs join the fabric through the overlay, not through switch ports.
+   - The VM gets its IP from CUDN DHCP after the NetworkAttachment controller
+     configures the interface.
 
 #### IP Discovery (feedback loop)
 
-7. **osac-operator ComputeInstance feedback controller** discovers VM IPs:
+7. **osac-operator NetworkAttachment controller** discovers VM IPs:
+   - Creates `NetworkAttachmentsReady=Unknown` on ComputeInstance status when
+     it first observes the internal request CR; reports False with a reason
+     while attachment work is failing
    - Watches KubeVirt VMI (VirtualMachineInstance) network status
    - Reads the assigned IP from the VM's sole `vmi.status.interfaces[].ipAddress`
    - Maps the interface to the corresponding `compute_network_attachment` by CUDN NAD reference
-   - Fires Signal RPC to fulfillment-service with per-attachment IP data
-   - fulfillment-service writes `compute_network_attachment_statuses` on ComputeInstanceStatus (each entry: `subnet_ref`, `ip_address`)
+   - Writes observed address to the NetworkAttachment CR and projects
+     `compute_network_attachment_statuses` onto ComputeInstanceStatus
+   - Sets `NetworkAttachmentsReady=True` once the interface and address are
+     available; the ComputeInstance controller consumes this condition and the
+     feedback controller syncs its status to fulfillment-service
    - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows the assigned IP for the attachment
 
 #### External Access (optional, auto-provisioned when `auto_external_ip_attachment=true`)
@@ -181,9 +197,12 @@ ComputeInstance already participates in the networking API. Today's flow:
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+   - ComputeInstance lifecycle controller requests attachment cleanup and
+     waits for the NetworkAttachment controller's finalizer to complete
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
-   - No `move_network_attachment` call — the VM lives on the CUDN overlay, not a fabric switch port, so it is never parked or port-moved (the port-move primitive and parking apply only to fabric-attached BM servers and CaaS agents)
+   - No switch-port `move_network_attachment` call — VM attachment uses the
+     CUDN/NAD provider adapter; physical port moves apply to BM endpoints.
 
 10. **Delete networking resources:**
     - Each networking resource controller triggers its delete AAP job
@@ -244,7 +263,11 @@ type ComputeNetworkAttachmentStatus struct {
 }
 ```
 
-The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching the KubeVirt VMI `status.interfaces` and mapping each interface IP to the corresponding attachment by CUDN NAD reference.
+The NetworkAttachment controller populates its observed status by watching the
+KubeVirt VMI `status.interfaces` and mapping the interface IP to the sole
+attachment by CUDN NAD reference. The feedback controller synchronizes the
+network-owned `ComputeNetworkAttachmentStatuses` and readiness condition to
+fulfillment-service.
 
 #### Server Validation (fulfillment-service)
 
@@ -254,9 +277,11 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 
 #### Template Changes (osac-aap)
 
-- `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: create one KubeVirt network/interface definition from `network_attachments`
-- The attachment maps to a KubeVirt interface with `l2bridge` binding referencing the subnet's CUDN NAD
-- The sole attachment receives IP + default gateway + DNS via DHCP
+- The VM template creates compute resources and does not interpret
+  `network_attachments` or add KubeVirt network interfaces.
+- The NetworkAttachment controller uses the resolved Subnet/CUDN NAD to
+  configure the sole `l2bridge` interface and waits for the VM IP/default-route
+  state before marking the request Ready.
 
 ### Implementation Details/Notes/Constraints
 
@@ -264,11 +289,12 @@ The feedback controller populates `ComputeNetworkAttachmentStatuses` by watching
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate network_attachments, create CR, auto-provision ExternalIP, write `compute_network_attachment_statuses` from feedback |
-| osac-operator ComputeInstance controller | Resolve subnet → namespace, trigger AAP, clean up auto-provisioned resources |
-| osac-operator ComputeInstance feedback controller | Watch KubeVirt VMI network status, discover per-attachment IPs, Signal fulfillment-service |
-| osac-operator networking controllers | Dispatch to managers via dispatcher (VN, Subnet, SG, ExternalIP) |
-| AAP template (ocp_virt_vm) | Create single-NIC KubeVirt VM in correct namespace |
+| fulfillment-service | Validate `network_attachments`, persist the private NetworkAttachment request, materialize its internal CR, auto-provision ExternalIP, and sync network-owned status |
+| osac-operator ComputeInstance controller | Resolve defaults, submit the private request, trigger VM compute provisioning, wait for network readiness, clean up auto-provisioned resources |
+| osac-operator NetworkAttachment controller | Configure the KubeVirt attachment, observe the VMI address, own request status/readiness/finalizer, and project attachment IP status |
+| osac-operator ComputeInstance feedback controller | Signal fulfillment-service when network-owned readiness/IP status changes |
+| osac-operator networking controllers | Dispatch networking-resource operations via dispatcher (VN, Subnet, SG, ExternalIP) and reconcile internal NetworkAttachment CRs |
+| AAP template (ocp_virt_vm) | Create VM compute resources; it does not own workload attachment reconciliation |
 | fabric_manager (Ansible role) | VN/Subnet/SG/ExternalIP provisioning; no per-VM call |
 | k8s_manager (Ansible role) | Create CUDN overlay at subnet creation; no per-VM call |
 
@@ -534,3 +560,13 @@ Consequences:
 - AAP execution environment with `osac.templates.ocp_virt_vm` role updated for single-NIC support
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
 - Integration test environment with CUDN or EVPN fabric
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (23 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":23,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

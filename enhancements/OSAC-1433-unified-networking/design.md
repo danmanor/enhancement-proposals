@@ -546,8 +546,9 @@ For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
 are architecturally possible but deferred. The fulfillment-service resolves
 the interface from the BareMetalInstanceType (`fabric_interface` — first port
 with role `fabric`) and stores it on the node set. The worker controller passes
-that stored value to BMaaS; BMaaS handles the host's network attachment as part
-of its provisioning lifecycle.
+that stored value to BMF with the BMI create request. BMF owns the BMI's
+provisioning and handoff sequence; the osac-operator NetworkAttachment
+controller performs the port move and DHCP discovery for that BMI.
 See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
 
 Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
@@ -709,9 +710,69 @@ IP discovery mechanism per service type:
 
 | Service | Discovery source | Who writes status | Status field |
 |---------|-----------------|-------------------|-------------|
-| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
-| CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | After BMF sets `NetworkHandoffComplete`, osac-operator queries fabric DHCP via the shared dispatcher (`query_dhcp_lease` role); matches the BareMetalHost interface MAC to the lease, falling back to server name only for named fabric servers (see [BMaaS networking design](/enhancements/OSAC-1437-bmaas-networking/design.md#ip-discovery)) | osac-operator networking controller writes the existing BMI status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | NetworkAttachment controller records the observed address; feedback projects it to fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
+| CaaS | Fabric DHCP lease for each worker BMI after BMF sets `NetworkHandoffComplete` | NetworkAttachment controller records the address in BMI status; the CaaS worker/ClusterOrder reconciliation path aggregates per-worker status | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
+| BMaaS | After BMF sets `NetworkHandoffComplete`, NetworkAttachment controller queries fabric DHCP via the shared dispatcher (`query_dhcp_lease` role); matches the BareMetalHost interface MAC to the lease, falling back to server name only for named fabric servers (see [BMaaS networking design](/enhancements/OSAC-1437-bmaas-networking/design.md#ip-discovery)) | NetworkAttachment controller records the observed address and projects it to BMI status; feedback syncs it to fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+
+### Shared Workload Attachment Request and Controller
+
+The target architecture uses one networking-owned reconciliation path for
+workload attachments in VMaaS, CaaS, and BMaaS. Only BMaaS currently has the
+port-move and DHCP-query behavior implemented, inside BMF; VMaaS and CaaS
+integrate with the shared controller as their networking work is implemented.
+
+Each workload keeps its existing service-specific attachment field as the
+source of intent. The supported contract is at most one attachment per
+workload, and the fulfillment API and corresponding CRD must validate that
+limit before rollout. For CaaS, the Cluster's single tenant attachment is
+copied into each worker BMI's derived attachment when CaaS creates the BMI.
+The private fulfillment-service
+`NetworkAttachment` proto is an internal request to reconcile that existing
+intent; it does not add another tenant-facing attachment field.
+
+The lifecycle owner for the target workload submits the private request when
+that workload reaches the point where attachment work can proceed. The
+fulfillment-service accepts the private proto request and its reconciliation
+path materializes one internal `NetworkAttachment` CR for each target
+attachment. The CR references the target and reads its attachment from that
+target; it does not copy attachment fields into the CR. For a CaaS worker, BMI
+attachment fields are derived from the Cluster's tenant attachment, which
+remains the CaaS source of intent. The
+`BareMetalWorkerReconciler` passes the Cluster's resolved attachment into each
+BMI create request; BMF owns each BMI's provisioning lifecycle and submits the
+network request when that BMI is ready for network handoff.
+
+| Target workload | Request producer and timing | Networking-owned work |
+|-----------------|----------------------------|-----------------------|
+| VMaaS ComputeInstance | ComputeInstance lifecycle controller submits a request after attachment defaulting and before the instance can become Ready | Configure the KubeVirt attachment, observe the VMI address, and report attachment readiness |
+| BMaaS BaremetalInstance | BMF submits a request after `ProvisionTemplateComplete=True` | Move the fabric port, wait for target-segment readiness, then query DHCP after BMF's handoff reboot |
+| CaaS worker BaremetalInstance | CaaS resolves one Cluster attachment and passes it in each BMI create request; BMF submits that BMI's network request after `ProvisionTemplateComplete=True` | Reuse the BM attachment flow per worker; BMF gates the host handoff while the networking controller moves the port, discovers the IP, and reports status for CaaS aggregation |
+
+Fulfillment-service creates each internal request CR from the private proto.
+The osac-operator NetworkAttachment controller owns reconciliation of those
+CRs and the networking operations, job history, attachment status, and cleanup
+finalizer associated with them. It resolves the target's existing attachment
+through the target reference and uses the shared NetworkClass
+resolver/dispatcher where a provider operation is required. It creates and updates the
+`NetworkAttachmentsReady` condition on the target workload's status: it
+initializes the condition as Unknown/pending when reconciliation begins,
+reports False with a reason while an operation is failing, and sets True only
+after the required attachment operation completes. The request producer does
+not create or set this condition. It waits on the condition (or equivalent
+request status) before advancing workload lifecycle. For BMIs, BMF consumes
+the condition whether the BMI was created directly by BMaaS or on behalf of
+CaaS.
+
+On deletion, the workload lifecycle owner asks for cleanup and waits for the
+networking controller to finish any required detach before tearing down the
+target. The networking controller keeps the target present with its networking
+finalizer until cleanup completes. For BMaaS instances and CaaS worker BMIs,
+BMF first powers the host off and reports `NetworkOffboardShutdownComplete`;
+the networking controller then returns the port to the provisioning network
+and reports `NetworkOffboardComplete`. The CaaS worker reconciler waits for BMI
+deletion to complete before removing the worker. For VMaaS, the
+ComputeInstance lifecycle controller provides the corresponding safe-to-detach
+gate.
 
 The fabric manager's `move_network_attachment` role is switch-side
 only — it moves a host's fabric port from one network segment to another
@@ -726,16 +787,18 @@ named segment, so re-runs and unexpected states are safe.
 
 One role handles both BMaaS (fabric NIC on the provisioning network while the
 server is idle so it has internet during metal3 inspection) and CaaS (agent
-moving from a provisioning network to the tenant network). The **timing** of the
-move differs per service:
+moving from a provisioning network to the tenant network). The networking
+controller runs the role from the target's NetworkAttachment request. The
+**timing** of the move differs per service:
 
 - **BMaaS:** Move happens **POST-provisioning** (provision on the provisioning
   network → move to tenant network → reboot so the OS re-DHCPs on the tenant
   network). This achieves isolation-until-ready: the tenant cannot reach the
   server during imaging/first-boot.
-- **CaaS:** CaaS moves the port **POST-OS-provisioning** (the host is provisioned
-  on the provisioning network, then the port moves to the tenant network and the
-  host reboots before it joins the cluster installation flow).
+- **CaaS:** after the host is provisioned on the provisioning network, the
+  NetworkAttachment controller moves the port to the tenant network and waits
+  for the BMF-owned handoff reboot before CaaS proceeds with cluster
+  installation.
 
 Once on the tenant network, the host receives an IP from the fabric's DHCP server
 automatically. A single AAP job template serves both directions, deriving onboard
@@ -743,29 +806,31 @@ automatically. A single AAP job template serves both directions, deriving onboar
 the resource's `deletionTimestamp`. See [BMaaS — Provisioning Network and Port
 Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#provisioning-network-and-port-moves).
 
-For BMaaS, osac-operator's networking controller watches the existing
-BaremetalInstance CR. After BMF reports `ProvisionTemplateComplete=True`, the
-controller resolves the attachment's Subnet, VirtualNetwork, and NetworkClass
-through the existing private APIs, dispatches the shared
-`move_network_attachment` operation, and sets `NetworkAttachmentsReady=True`
+For BMaaS, BMF submits the private `NetworkAttachment` request after
+`ProvisionTemplateComplete=True`; the fulfillment reconciliation path creates
+the internal CR. The osac-operator NetworkAttachment controller resolves the
+target BMI's attachment, Subnet, VirtualNetwork, and NetworkClass, dispatches
+`move_network_attachment`, and sets `NetworkAttachmentsReady=True` on the BMI
 after the fabric manager reports the target segment ready. BMF owns the handoff
 reboot and sets `NetworkHandoffComplete=True`; only then does the networking
 controller dispatch `query_dhcp_lease` and write the primary IP and
-`IPDiscoveryComplete=True` to the same CR. The controller matches the lease by
+`IPDiscoveryComplete=True` to BMI status. The controller matches the lease by
 NIC MAC from the associated BareMetalHost's
-`osac.openshift.io/interface-macs` annotation. It does not create a child
-attachment CR or a second desired-state API.
+`osac.openshift.io/interface-macs` annotation. The internal CR is the
+networking-owned work record; the nested BMI attachment remains the sole
+desired-state source.
 
 During deletion, BMF powers the host off and sets
-`NetworkOffboardShutdownComplete=True`. The networking controller returns the
-port to the provisioning network, sets `NetworkOffboardComplete=True`, and
-removes `osac.openshift.io/baremetalinstance-networking`. BMF waits for this
-cleanup before deprovisioning and releasing the host. The networking controller
-owns its conditions, `NetworkAttachmentStatuses`, `NetworkingJobs`,
-`IPDiscoveryJobs`, and networking finalizer; BMF owns host lifecycle conditions
-including `NetworkHandoffComplete` and `NetworkOffboardShutdownComplete`.
-Both controllers merge updates against the latest BMI status and merge
-conditions by type so concurrent writes do not erase fields owned by the other.
+`NetworkOffboardShutdownComplete=True`. The networking controller observes
+that gate on the target BMI, returns the port to the provisioning network,
+sets `NetworkOffboardComplete=True`, and removes its target finalizer. BMF
+waits for this cleanup before deprovisioning and releasing the host. The
+networking controller owns the NetworkAttachment CR, network conditions,
+`NetworkAttachmentStatuses`, AAP job history, and networking finalizer; BMF
+owns host lifecycle conditions including `NetworkHandoffComplete` and
+`NetworkOffboardShutdownComplete`. Both controllers merge updates against the
+latest BMI status and merge conditions by type so concurrent writes do not
+erase fields owned by the other.
 
 *NATGateway controller preconditions:*
 
@@ -1088,15 +1153,21 @@ message BareMetalInstanceStatus {
 }
 ```
 
-The osac-operator networking controller queries DHCP only after BMF sets
-`NetworkHandoffComplete=True`. It matches the server's port MAC to the fabric
-manager's lease, writes the discovered IP to the existing BMI status, and sets
-`IPDiscoveryComplete=True`. The feedback controller then syncs the status to
-fulfillment-service. BMF owns reboot/handoff sequencing; osac-operator owns the
-network operation and discovered-IP status. No separate `NetworkAttachment`
-service or child CR is introduced; see the [BMaaS controller design](/enhancements/OSAC-1437-bmaas-networking/design.md#controller-boundary-and-status-ownership).
+After BMF sets `ProvisionTemplateComplete=True`, it submits the private
+`NetworkAttachment` proto request for the BMI. Fulfillment-service
+reconciliation materializes the internal `NetworkAttachment` CR, and the
+osac-operator networking controller starts the port move. It creates or updates
+`NetworkAttachmentsReady` on BMI status; BMF consumes that condition to order
+the handoff reboot and sets `NetworkHandoffComplete=True`. The networking
+controller then queries DHCP, matches the server's port MAC to the fabric
+manager's lease, writes the discovered IP to BMI status, and sets
+`IPDiscoveryComplete=True`. The feedback controller syncs status to
+fulfillment-service. The internal CR is the networking-owned work record; the
+existing BMI attachment remains the sole desired-state source. This flow also
+applies to CaaS worker BMIs, with CaaS passing the resolved cluster attachment
+to BMF when it creates each BMI. See the [BMaaS controller design](/enhancements/OSAC-1437-bmaas-networking/design.md#controller-boundary-and-status-ownership).
 
-For BMaaS, the networking controller owns `NetworkAttachmentsReady`,
+For BMI-targeted attachments created by BMaaS or CaaS, the networking controller owns `NetworkAttachmentsReady`,
 `IPDiscoveryComplete`, `NetworkOffboardComplete`, attachment-status entries,
 networking AAP job histories, and `osac.openshift.io/baremetalinstance-networking`.
 BMF owns host-lifecycle conditions, including `NetworkHandoffComplete` and
@@ -1453,8 +1524,11 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Committed: commit @ design 0.11.3 - 858df2d, workspace design/OSAC-1437 @ 0082064 (dirty)
+Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (22 behind origin/main)
+Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (23 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"0082064 (dirty)","source_repo_branch":"design/OSAC-1437","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":23,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
