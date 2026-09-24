@@ -126,26 +126,34 @@ Subnet used by a positive case has an associated, actively enforced policy.
 
 ##### Preconditions
 
-- In a future implementation that satisfies the mandatory ACL contract,
-  agentless_net is selected in NetworkClass. Its current milestone is ineligible.
+- Run this case only after `agentless_net` implements mandatory NetworkACL
+  enforcement and is eligible for selection in NetworkClass.
 - The test tenant has the required authorization and tenant metadata.
 - A Cloud Infrastructure Admin fixture can create the provider-scoped
   ExternalIPPool; the tenant fixture cannot create or update that pool.
-- Any positive readiness assertion uses Subnets whose NetworkACLs are already
-  Ready and enforced.
+- The test tenant can create tenant-scoped networking resources.
 
 ##### Steps
 
 1. Create an ExternalIPPool with the provider-admin fixture.
-2. Create a VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment, and
-   NATGateway with the tenant fixture through the existing API.
-3. Attempt to create or update the ExternalIPPool with the tenant fixture.
-4. Poll the corresponding CRs and fulfillment-service resources.
+2. Create a VirtualNetwork with the tenant fixture.
+3. Create a NetworkACL scoped to that VirtualNetwork, with explicit ingress
+   and egress rules for the flows under test. Wait until its policy is active
+   and it reaches Ready.
+4. Create a Subnet whose `spec.network_acl` explicitly references that
+   same-VirtualNetwork ACL. Wait until the policy is enforced on the Subnet and
+   the Subnet reaches Ready.
+5. Create an ExternalIP, ExternalIPAttachment, and NATGateway with the tenant
+   fixture through the existing API.
+6. Attempt to create or update the ExternalIPPool with the tenant fixture.
+7. Poll the corresponding CRs and fulfillment-service resources.
 
 ##### Expected Results
 
 - Each request is accepted without an agentless-specific API field.
 - The tenant cannot create or modify the provider-scoped ExternalIPPool.
+- The Subnet references the READY NetworkACL in its VirtualNetwork, and its
+  readiness follows confirmation that the policy is enforced.
 - Each corresponding resource reaches its expected Ready or Allocated state.
 - Each tenant-scoped CR retains both required tenant-isolation annotations.
 
@@ -1046,8 +1054,9 @@ All interface changes are exercised by test cases.
 
 ## Provenance
 
-Committed: commit @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","commit","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
