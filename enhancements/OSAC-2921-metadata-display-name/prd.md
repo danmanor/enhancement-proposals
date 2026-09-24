@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Udi Shkalim |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-2921 |
-| Date        | 2026-07-21 |
+| Date        | 2026-09-24 |
 
 ## Problem Statement
 
@@ -36,7 +36,7 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want all resource types I manage (VMs, virtual networks, public IPs, security groups, etc.) to support a friendly `display_name` and `description` so that I can give resources a natural-language name and description that are not constrained to DNS-label format. `[PR review: mhrivnak]`
+- As a Tenant Admin, I want all resource types I manage (VMs, virtual networks, public IPs, NetworkACLs, etc.) to support a friendly `display_name` and `description` so that I can give resources a natural-language name and description that are not constrained to DNS-label format. `[PR review: mhrivnak]`
 - As a Tenant Admin, I want to update or clear `display_name` and `description` on existing resources so that I can correct labels or remove outdated descriptions as resources evolve. `[Clarify: R3.Q1]`
 
 ### Tenant User
@@ -51,9 +51,9 @@ OSAC resources use `metadata.name` as the primary human-visible identifier, but 
 
 ## Provenance
 
-Authored: draft @ prd 0.5.0 - 92734a2, workspace main @ aac0f8e
-Final: respond @ prd 0.6.1 - 96de078, workspace main @ 7b4fff2
+Authored: revise [manual] @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
-> Context changed between draft and respond.
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.6.1","ai_workflows":"96de078","source_repo":"7b4fff2","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","respond","respond","respond"],"authoring_modes":["skill"],"context_changed":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->

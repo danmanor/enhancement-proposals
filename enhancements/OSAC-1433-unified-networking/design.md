@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-16
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -68,7 +68,7 @@ The design introduces:
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
   external to the VirtualNetwork, not necessarily internet-routable
 - **Uniform API** where the same networking resources (VirtualNetwork,
-  Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, NATGateway)
+  Subnet, NetworkACL, ExternalIP, ExternalIPAttachment, NATGateway)
   serve VMaaS, CaaS, and BMaaS identically
 
 The BMaaS integration is based on the `BaremetalInstance` resource defined in
@@ -87,24 +87,16 @@ For user stories, goals, and non-goals, see the
 
 ### API operation constraint
 
-The unified networking API supports only create, read, and delete operations
-for networking resources. Read means `List` and `Get`; there is no tenant or
-provider `Update`/`Patch` operation for a networking resource's specification
-or metadata. The affected resources are `NetworkClass`, `VirtualNetwork`,
-`Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
-`ExternalIPAttachment`, and `NATGateway`.
-
-All networking resource specification and metadata fields are immutable after
-creation. A change requires deleting the resource and creating a replacement,
-subject to the normal
-dependency guards. The network attachment fields on `ComputeInstance`,
-`Cluster`, and `BaremetalInstance` are create-time-only as well; changing a
-network attachment requires replacing the parent workload. Controllers may
-update status, conditions, readiness, and IP-discovery fields during
-reconciliation, but those internal writes are not additional API operations.
-This is the normative contract for the VMaaS, CaaS, and BMaaS designs that
-reference this document; those designs inherit it and do not redefine
-networking operations.
+Networking resources support create, read, and delete; read includes `List`
+and `Get`. `NetworkACL` also supports rule updates, and `Subnet` supports
+updating only its `spec.network_acl` association. NetworkACL identity,
+VirtualNetwork scope, metadata, and other networking resource fields remain
+immutable after creation. VirtualNetwork and Subnet address configuration and
+workload network attachments are create-time-only. Controllers may update
+status, conditions, readiness, and IP-discovery fields during reconciliation;
+these internal writes are not additional tenant API operations. This is the
+normative contract for the VMaaS, CaaS, and BMaaS designs that reference this
+document.
 
 ## Proposal
 
@@ -118,7 +110,7 @@ NetworkClass per deployment.
 
 OSAC networking is handled by two managers:
 
-- **Fabric Manager** — a single product (e.g., Netris, Neutron) that manages
+- **Fabric Manager** — one configured implementation that manages
   all physical networking: tenant isolation, ACLs, IP allocation, DNAT, SNAT,
   and inter-subnet L3 routing within a VirtualNetwork. The physical fabric is
   one infrastructure — one controller manages it all. When a VN has multiple
@@ -135,9 +127,9 @@ OSAC networking is handled by two managers:
 
 #### Why Two Managers?
 
-The fabric is one product. You cannot have Netris handling isolation and
-Neutron handling ACLs on the same switches — splitting into per-action
-drivers does not reflect how physical networking works. A single
+The physical network is managed as one provider-configured system. Splitting
+its operations among independent per-action drivers creates inconsistent
+ownership and validation. A single
 `fabricManager` field captures this reality.
 
 The K8s side is a separate concern: it bridges the OVN overlay to the
@@ -152,7 +144,7 @@ ExternalIP, DNAT, or SNAT.
 
 #### NetworkClass Examples
 
-**Netris + CUDN (VMs and BM):**
+**Fabric manager + CUDN (VMs and BM):**
 
 ```yaml
 apiVersion: osac.openshift.io/v1alpha1
@@ -160,23 +152,7 @@ kind: NetworkClass
 metadata:
   name: moc-region-1
 spec:
-  fabricManager: netris
-  k8sManager: cudn_localnet
-capabilities:
-  supportsIpv4: true
-  supportsIpv6: false
-  supportsDualStack: false
-```
-
-**Neutron + CUDN (VMs and BM):**
-
-```yaml
-apiVersion: osac.openshift.io/v1alpha1
-kind: NetworkClass
-metadata:
-  name: bos-region-1
-spec:
-  fabricManager: neutron
+  fabricManager: fabric-manager
   k8sManager: cudn_localnet
 capabilities:
   supportsIpv4: true
@@ -192,7 +168,7 @@ kind: NetworkClass
 metadata:
   name: gpu-region-1
 spec:
-  fabricManager: netris
+  fabricManager: fabric-manager
 capabilities:
   supportsIpv4: true
   supportsIpv6: false
@@ -237,27 +213,13 @@ manager's Ansible roles.
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: fabric-manager-netris
+  name: fabric-manager-example
   namespace: osac
   labels:
     osac.openshift.io/network-fabric-manager: "true"
 data:
-  name: netris
-  description: "Netris SDN — tenant isolation, ACL, IPAM, DNAT, SNAT"
-  capabilities: "ipv4"
-```
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: fabric-manager-neutron
-  namespace: osac
-  labels:
-    osac.openshift.io/network-fabric-manager: "true"
-data:
-  name: neutron
-  description: "OpenStack Neutron — tenant isolation, IPAM, floating IPs"
+  name: fabric-manager
+  description: "Tenant isolation, network ACLs, IP allocation, and address translation"
   capabilities: "ipv4"
 ```
 
@@ -357,7 +319,8 @@ context as the event payload.
 |-----------|----------------|
 | VN create/delete | `fabricManager` |
 | Subnet create/delete | `fabricManager` + `k8sManager` (per hosting cluster) |
-| SecurityGroup create/delete | `fabricManager` |
+| NetworkACL create/update/delete | `fabricManager` |
+| Subnet NetworkACL association update | `fabricManager` |
 | ExternalIP alloc/release | `fabricManager` |
 | ExternalIPAttachment create/delete | `fabricManager` |
 | NATGateway create/delete | `fabricManager` |
@@ -380,8 +343,9 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 NetworkClass (per deployment, provider-only)
 
 VirtualNetwork (tenant-managed, infrastructure-agnostic)
+  ├── NetworkACL          → fabricManager
   ├── Subnet              → fabricManager + k8sManager
-  ├── SecurityGroup       → fabricManager
+  │     └── one NetworkACL association
   └── NATGateway          → fabricManager
 
 ExternalIPPool (deployment-scoped, provider-managed)
@@ -391,6 +355,97 @@ ExternalIPAttachment (tenant-managed)
                           → fabricManager
                             references an ExternalIP and a target resource
 ```
+
+### NetworkACL — Stateless Subnet Policy
+
+`NetworkACL` is a tenant-managed resource scoped to one VirtualNetwork. It
+contains ordered ingress and egress rules. A Subnet references exactly one
+NetworkACL in its parent VirtualNetwork; an ACL can be reused by multiple
+Subnets in that VirtualNetwork. The policy is enforced at the Subnet boundary
+and applies uniformly to every workload attached to the Subnet. [PRD: FR-2,
+FR-4]
+
+Each direction is evaluated independently. Rules are sorted by ascending
+priority, where `1` is evaluated first and `32766` last. Priorities must be
+unique within an ingress list or an egress list. The first matching rule
+decides the packet: `ALLOW` permits it and `DENY` drops it. If no rule matches,
+the packet is denied. Because the ACL is stateless, reply packets need their
+own matching rule in the reverse direction. [Locked: D2]
+
+For ingress rules, `ipv4_cidr` matches the packet source address; for egress
+rules it matches the destination address. A rule may match any supported
+protocol or a specific protocol. TCP and UDP rules may include a destination
+port range; when omitted, the rule matches all destination ports for that
+protocol. A port range is invalid for other protocols. CIDRs are canonical
+IPv4. [PRD: FR-2]
+
+Traffic between workloads on the same Subnet is not filtered by that Subnet's
+NetworkACL. Traffic crossing Subnet boundaries is evaluated twice: first by
+the source Subnet's egress rules, then by the destination Subnet's ingress
+rules. Both decisions must allow the packet. [Locked: D4]
+
+```protobuf
+message NetworkACLSpec {
+  VirtualNetworkLocalReference virtual_network = 1; // required, immutable
+  repeated NetworkACLRule ingress = 2;              // mutable
+  repeated NetworkACLRule egress = 3;               // mutable
+}
+
+message NetworkACLRule {
+  NetworkACLAction action = 1;       // ALLOW or DENY
+  uint32 priority = 2;               // unique per direction, 1..32766
+  Protocol protocol = 3;             // ALL, TCP, UDP, or ICMP
+  optional int32 port_from = 4;      // optional; TCP/UDP only
+  optional int32 port_to = 5;        // optional; TCP/UDP only
+  string ipv4_cidr = 6;              // ingress source or egress destination
+}
+
+message SubnetSpec {
+  VirtualNetworkLocalReference virtual_network = 1; // required, immutable
+  string ipv4_cidr = 2;                             // required, immutable
+  NetworkACLLocalReference network_acl = 3;          // required, mutable
+}
+```
+
+The schema sketch shows the tenant-facing resource relationship. The
+`network_acl` reference is required at Subnet creation and is the only mutable
+Subnet specification field. Updating it replaces the active association;
+there is never more than one active ACL association for a Subnet. ACL rule
+updates apply to every associated Subnet. An ACL cannot be deleted while a
+Subnet references it, and the ACL's VirtualNetwork scope cannot be changed.
+
+### NetworkACL API and Validation
+
+The public `NetworkACLs` service provides `List`, `Get`, `Create`, `Update`,
+and `Delete` at `/api/fulfillment/v1/network_acls`; `Update` uses
+`PATCH /api/fulfillment/v1/network_acls/{id}` with an update mask limited to
+`spec.ingress` and `spec.egress`. Identity, metadata, and
+`spec.virtual_network` remain immutable. The public `Subnets` service adds
+`PATCH /api/fulfillment/v1/subnets/{id}`; its field mask accepts only
+`spec.network_acl`. A Subnet update must refer to a READY NetworkACL in the
+same VirtualNetwork. `NetworkACL` creation requires a READY parent
+VirtualNetwork.
+
+Validation rejects duplicate priorities within a direction, priorities
+outside 1..32766, unknown actions or protocols, incomplete or reversed port
+ranges, port ranges with non-TCP/UDP protocols, malformed or non-canonical
+IPv4 CIDRs, and references across VirtualNetworks. Rule priority order is
+direction-local, so the same number can appear once in ingress and once in
+egress. For TCP/UDP, either both port endpoints are supplied or neither is;
+an omitted range matches all destination ports for that protocol. [PRD:
+FR-2, FR-4, FR-5]
+
+Deleting a NetworkACL that is associated with one or more Subnets fails with
+`FAILED_PRECONDITION`. Deleting a VirtualNetwork is blocked until its Subnets,
+NetworkACLs, and NATGateway have been removed. An ACL update is rejected if
+the resource is not in a state that permits reconciliation.
+
+An ACL update remains Pending until the manager reports the new rule set as
+active on its associated Subnets. Reassociation remains Pending until the new
+association is active. The previous effective policy remains in force until
+the replacement is applied; failed updates report an error and do not mark the
+new policy Ready. This preserves enforcement during reconciliation. [PRD:
+FR-5]
 
 ### ExternalIPPool
 
@@ -459,27 +514,29 @@ osac create virtualnetwork --network-class moc-region-1 --cidr 10.0.0.0/16 \
 
 The fabric manager creates an isolated tenant segment on the fabric.
 
-**Create Subnet:**
+**Create NetworkACL:**
 
 ```bash
-osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
-  --name my-subnet
+osac create network-acl --virtual-network my-net --name web-acl \
+  --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=0.0.0.0/0" \
+  --egress-rule "action=ALLOW,priority=100,protocol=ALL,cidr=0.0.0.0/0"
 ```
 
-The fabric manager creates a fabric segment (e.g., VLAN) for the subnet.
-If the NetworkClass has a K8s manager, it also creates a K8s overlay on each
-hosting cluster and bridges it to the fabric segment. After this step, VMs placed in the
-overlay and BM servers with switch ports on the fabric segment are in the
-same L2 domain.
+The broad egress rule explicitly permits response traffic because ACL rules
+are stateless. A tenant that restricts egress must add rules for the return
+traffic it needs.
 
-**Create SecurityGroup:**
+**Create Subnet and associate the ACL:**
 
 ```bash
-osac create security-group --virtual-network my-net --name my-sg \
-  --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
+osac create subnet --virtual-network my-net --network-acl web-acl \
+  --cidr 10.0.1.0/24 --name my-subnet
 ```
 
-The fabric manager creates ACL rules on the fabric.
+The fabric manager creates the network segment and installs the Subnet's ACL
+policy. If the NetworkClass has a K8s manager, it also creates an overlay on
+each hosting cluster and bridges it to the segment. VMs on that overlay and
+bare-metal servers on the segment share the same Subnet policy.
 
 #### Resource Creation (Differs by Type)
 
@@ -490,7 +547,7 @@ differs internally — the tenant CLI experience is the same for all types.
 
 ```bash
 osac create computeinstance --template ocp_virt_vm \
-  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --network-attachment subnet=my-subnet \
   --name my-vm
 ```
 
@@ -514,7 +571,7 @@ Single interface (simple case):
 
 ```bash
 osac create baremetalinstance --template bcm_h100 \
-  --network-attachment interface=data-0,subnet=my-subnet,security-groups=my-sg \
+  --network-attachment interface=data-0,subnet=my-subnet \
   --name my-server
 ```
 
@@ -533,7 +590,7 @@ Validation rules:
 
 ```bash
 osac create cluster --template ocp_4_17_small \
-  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --network-attachment subnet=my-subnet \
   --node-set workers=large,size=3 --name my-cluster
 ```
 
@@ -886,8 +943,9 @@ a port name from that list.
 #### Network Attachment Types
 
 Each resource type has its own network attachment message. The core fields
-(`subnet`, `security_groups`) are shared, but each type adds
-resource-specific fields. `network_attachments` are immutable after
+(`subnet`) are shared, but each type adds resource-specific fields.
+Subnet policy is inherited from the Subnet's NetworkACL association and is
+not copied into a workload attachment. `network_attachments` are immutable after
 resource creation — changing network attachment requires recreating the
 resource. VMaaS and BMaaS keep repeated fields for wire/API compatibility but
 enforce a maximum of one entry. CaaS uses its existing singular field.
@@ -896,8 +954,8 @@ enforce a maximum of one entry. CaaS uses its existing singular field.
 
 ```protobuf
 message ComputeNetworkAttachment {
-  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1; // Optional on input; immutable after resolution
+  reserved 2;
 }
 ```
 
@@ -909,9 +967,9 @@ VMaaS attachment message has no primary field.
 
 ```protobuf
 message BareMetalNetworkAttachment {
-  SubnetLocalReference subnet = 1;                         // Optional on input; immutable after resolution
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
-  string interface = 3;                 // optional, immutable: physical port name from BareMetalInstanceType
+  SubnetLocalReference subnet = 1; // Optional on input; immutable after resolution
+  reserved 2;
+  string interface = 3;            // optional, immutable: physical port name from BareMetalInstanceType
   optional bool primary = 4;            // omitted or true: implicit primary; false is rejected
 }
 ```
@@ -928,8 +986,8 @@ accepted for compatibility and is redundant; `primary: false` is rejected.
 
 ```protobuf
 message ClusterNetworkAttachment {
-  SubnetLocalReference subnet = 1;                         // Required after resolution; immutable after creation
-  repeated SecurityGroupLocalReference security_groups = 2; // Optional on input; immutable after resolution
+  SubnetLocalReference subnet = 1; // Required after resolution; immutable after creation
+  reserved 2;
 }
 ```
 
@@ -947,19 +1005,18 @@ single supplied attachment:
 
 | Input | Resolution |
 |---|---|
-| VMaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup. |
-| BMaaS attachment list omitted or empty | Add the tenant's default Subnet, default SecurityGroup, and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
-| CaaS attachment omitted or empty | Add the tenant's default Subnet and default SecurityGroup; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
-| One attachment with no Subnet | Default only the Subnet; preserve supplied SecurityGroups and, for BMaaS, the supplied interface. |
-| One attachment with no SecurityGroups | Default only the SecurityGroup list, but only when the resolved Subnet belongs to the tenant's default VirtualNetwork. Otherwise the caller must provide SecurityGroups from the resolved Subnet's VirtualNetwork. |
+| VMaaS attachment omitted or empty | Add the tenant's default Subnet. |
+| BMaaS attachment list omitted or empty | Add the tenant's default Subnet and the first `fabric` port from `BareMetalInstanceType.network_ports`. |
+| CaaS attachment omitted or empty | Add the tenant's default Subnet; resolve the first `fabric` port from each node set's `BareMetalInstanceType` for the BM worker handoff. |
+| One attachment with no Subnet | Default only the Subnet and, for BMaaS, preserve the supplied interface. |
 | One BMaaS attachment with no interface | Default only the interface to the first `fabric` port from `BareMetalInstanceType.network_ports`. |
 | One complete attachment | Preserve all supplied values and validate readiness, tenant scope, and VirtualNetwork relationships. |
 
-An explicitly empty `security_groups` list is treated as a missing
-SecurityGroup value for this defaulting rule. If a required default is absent
-or not Ready, creation fails with a validation or precondition error. The
-fully resolved attachment is stored with the workload and is immutable after
-creation.
+Every Subnet already has one NetworkACL association, so resolving a workload
+attachment does not choose or copy an ACL. If the selected Subnet or its ACL
+is absent or not Ready, workload creation fails with a validation or
+precondition error. The fully resolved attachment is stored with the workload
+and is immutable after creation.
 
 #### Resource Specs
 
@@ -1136,6 +1193,40 @@ All fields are immutable after creation.
 
 ### Implementation Details
 
+#### NetworkACL Reconciliation and Readiness
+
+The operator creates, updates, and deletes each NetworkACL through the
+manager assigned to the VirtualNetwork's NetworkClass. A Subnet controller
+reconciles `spec.network_acl` as the single active association. Updating ACL
+rules reapplies the policy to every associated Subnet; changing a Subnet's
+association does not change workload attachments. [PRD: FR-4, FR-5]
+
+A Subnet is READY only after its network segment and its associated ACL are
+active. An ACL or association update remains Pending until the manager
+acknowledges the new policy. During replacement, the previously active policy
+remains in force until the new policy is applied; a failed update reports a
+failure and preserves the last applied policy for retry. The controller must
+not report a Subnet READY with no active ACL. [PRD: FR-5]
+
+The ACL operates at Subnet boundaries. Traffic between resources on the same
+Subnet bypasses that ACL. Traffic between Subnets must pass source egress and
+destination ingress evaluation. Cross-VirtualNetwork traffic remains
+unsupported. [PRD: FR-4]
+
+#### Tenant-Assisted Policy Migration
+
+The workload API no longer carries traffic-policy references. Existing
+per-workload policies cannot always map one-to-one to a subnet-wide stateless
+ACL: workloads on one Subnet may have different policies, and established
+connections previously allowed return traffic without a reverse rule.
+Tenants group workloads by intended policy, create a NetworkACL for each
+policy group, associate the appropriate ACL with each Subnet, and add explicit
+reverse-direction rules where return traffic is needed. If workloads on one
+Subnet require different policies, the tenant moves them to separate Subnets;
+changing a workload's Subnet requires recreating the workload because its
+attachment is immutable. This migration is tenant-assisted and does not
+promise exact automatic policy conversion. [PRD: FR-14]
+
 #### Deletion Dependency Guards
 
 When the API layer (fulfillment-service) soft-deletes networking resources,
@@ -1155,8 +1246,9 @@ of their own deletion state), the controller requeues with a short interval
 
 | Controller | Gate deprovision on |
 |---|---|
-| VirtualNetwork | No Subnet, SecurityGroup, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
+| VirtualNetwork | No Subnet, NetworkACL, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
 | Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
+| NetworkACL | No Subnet CRs with `spec.networkACL` referencing this ACL |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
@@ -1174,8 +1266,11 @@ NATGateway
   must be gone before --> ExternalIP
   must be gone before --> VirtualNetwork
 
-SecurityGroup
+NetworkACL
   must be gone before --> VirtualNetwork
+
+Subnet
+  must be gone before --> NetworkACL
 
 Subnet
   must be gone before --> VirtualNetwork
@@ -1256,7 +1351,7 @@ via the fabric.
 
 The fulfillment-controller creates K8s CRs on the single registered hub
 cluster in a supported networking deployment. All networking resources
-(VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP,
+(VirtualNetwork, Subnet, NetworkACL, ExternalIPPool, ExternalIP,
 ExternalIPAttachment, NATGateway) use that hub. Multi-hub networking
 placement, cross-hub resource coordination, and cross-hub network connectivity
 are unsupported. The hub assignment remains sticky through `status.hub` for
@@ -1372,9 +1467,10 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
    entry even though the fields remain repeated for compatibility. Changing
    network attachment requires recreating the resource.
 
-10. **Security enforcement.** The fabric is the single enforcement point
-    for SecurityGroups. No separate K8s-level ACL needed — VMs are on the
-    fabric.
+10. **Traffic enforcement.** NetworkACL is enforced at the Subnet boundary
+    for all workloads. No separate K8s-level ACL is required because VMs are
+    connected to the same Subnet network as bare-metal servers and cluster
+    nodes.
 
 11. **Per-resource NetworkAttachment types.** Separate proto messages
     (`ComputeNetworkAttachment`, `BareMetalNetworkAttachment`,
@@ -1383,10 +1479,10 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
     node set) — a shared type with optional fields would accumulate
     dead weight per resource type.
 
-12. **Create/read/delete networking API.** Networking resource specifications,
-    metadata, and workload network attachment fields are immutable after
-    creation. The supported change path is delete and recreate; controller
-    status reconciliation is internal and does not expose an update operation.
+12. **Networking API mutability.** NetworkACL rules and the Subnet's
+    `network_acl` association are mutable. VirtualNetwork/Subnet address
+    configuration and workload network attachments remain immutable after
+    creation; status reconciliation remains internal.
 
 ## Test Plan
 
@@ -1411,3 +1507,13 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 ## Infrastructure Needed
 
 No additional infrastructure beyond existing OSAC components and managers.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

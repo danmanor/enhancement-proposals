@@ -3,7 +3,7 @@ title: api-quality
 authors:
   - htayrie@redhat.com
 creation-date: 2026-07-26
-last-updated: 2026-09-16
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1577
 prd:
@@ -254,7 +254,8 @@ Tables requiring `active_` companions (based on existing Pattern A triggers):
 | Table | Reason |
 |-------|--------|
 | `active_subnets` | Referenced by each ComputeInstance network attachment |
-| `active_virtual_networks` | Referenced by subnets, security_groups, nat_gateways |
+| `active_virtual_networks` | Referenced by subnets, network_acls, nat_gateways |
+| `active_network_acls` | Referenced by each Subnet's `network_acl` association |
 | `active_instance_types` | Referenced by compute_instances |
 | `active_cluster_catalog_items` | Referenced by clusters |
 | `active_compute_instance_catalog_items` | Referenced by compute_instances |
@@ -319,15 +320,22 @@ CREATE TABLE compute_instance_subnet_refs (
   subnet_id TEXT NOT NULL REFERENCES active_subnets(id),
   PRIMARY KEY (compute_instance_id, attachment_index)
 );
+
+CREATE TABLE subnet_network_acl_refs (
+  subnet_id TEXT NOT NULL REFERENCES subnets(id) ON DELETE CASCADE,
+  network_acl_id TEXT NOT NULL REFERENCES active_network_acls(id),
+  PRIMARY KEY (subnet_id)
+);
 ```
 
 A trigger on `compute_instances` materializes one row for every entry in the
 ComputeInstance network-attachment array from the JSONB `data` column. The
 `attachment_index` is the zero-based position in that immutable array and is
-the attachment-level identity for this dependency table; it allows multiple
-attachments to reference the same subnet. For ComputeInstance network
-attachments governed by [OSAC-1433](../OSAC-1433-unified-networking/design.md),
-the attachment list and its fields are create-time inputs and cannot be
+the attachment-level identity for this dependency table. Under
+[OSAC-1433](../OSAC-1433-unified-networking/design.md), a ComputeInstance has
+at most one tenant network attachment, and that attachment carries only its
+Subnet reference; the Subnet's NetworkACL association supplies traffic policy.
+The attachment list and its fields are create-time inputs and cannot be
 updated in place:
 
 - **INSERT** (active instance): iterate every network attachment, extract its
@@ -345,6 +353,13 @@ updated in place:
   removes every attachment row.
 
 The FK from `subnet_id` to `active_subnets(id)` enforces that the referenced subnet is active. Migration backfill inserts refs only for currently active compute instances (`deletion_timestamp = 'epoch'`).
+
+Subnet network policy is also a resource reference: each Subnet has exactly
+one active NetworkACL association. Materialize that association in
+`subnet_network_acl_refs` with `network_acl_id` referencing
+`active_network_acls(id)`. Subnet create/update writes this row; Subnet
+soft-delete removes it. The reference prevents deleting an ACL while any
+Subnet remains associated with it.
 
 ##### Migration Strategy
 
@@ -395,6 +410,9 @@ c.relname not in (
     'active_compute_instance_catalog_items',
     'active_storage_backends',
     'compute_instance_subnet_refs',
+    -- OSAC-1433 additions:
+    'active_network_acls',
+    'subnet_network_acl_refs',
     -- ... additional ref tables
 )
 ```
@@ -602,3 +620,14 @@ All three epics modify the fulfillment-service only. Since OSAC does not support
 ## Infrastructure Needed
 
 None. All changes use existing build and test infrastructure. protoc-gen-cleanapi is built from source or installed via `go install` — no new external service dependencies.
+
+---
+
+## Provenance
+
+Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->

@@ -7,6 +7,10 @@
 - **Requirements covered:** 6 of 6 (3 user stories + 3 technical requirements)
 - **Interface changes covered:** 1 of 1
 
+Permission review requests use `spec.service` and `spec.method`; optional tenant
+scope and target resource name are supplied in the review object's top-level
+`metadata.tenant` and `metadata.name` fields.
+
 ## Test Cases
 
 ### US-1: Tenant Admin Management Operations
@@ -26,7 +30,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="VirtualNetwork"`, `spec.verb="create"`, `spec.tenant="org-a"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.VirtualNetworks"`, `spec.method="Create"`, `metadata.tenant="org-a"`
 2. Observe response
 
 ##### Expected Results
@@ -48,7 +52,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="VirtualNetwork"`, `spec.verb="create"`, `spec.tenant="org-b"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.VirtualNetworks"`, `spec.method="Create"`, `metadata.tenant="org-b"`
 2. Observe response
 
 ##### Expected Results
@@ -69,7 +73,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="User"`, `spec.verb="create"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.Users"`, `spec.method="Create"`
 2. Observe response
 
 ##### Expected Results
@@ -79,7 +83,7 @@
 
 ### US-2: Tenant User Infrastructure Operations
 
-**User Story:** As a tenant user, I want to check whether I have permission to create, update, or delete infrastructure resources (ComputeInstance, Subnet, SecurityGroup) in a specific tenant before starting the workflow, so that the UI and CLI can validate permissions upfront and warn me before I invest effort in changes I cannot save
+**User Story:** As a tenant user, I want to check whether I have permission to create or delete infrastructure resources and to perform supported NetworkACL rule or Subnet NetworkACL-association updates in a specific tenant, so that the UI and CLI can validate permissions upfront without implying that address configuration or workload attachments are mutable
 
 #### TC-US2-01: Check permission to create ComputeInstance
 
@@ -94,7 +98,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="ComputeInstance"`, `spec.verb="create"`, `spec.tenant="org-a"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.ComputeInstances"`, `spec.method="Create"`, `metadata.tenant="org-a"`
 2. Observe response
 
 ##### Expected Results
@@ -112,11 +116,11 @@
 
 - Tenant user is authenticated with JWT token
 - User is a member of tenant `org-a`
-- User has previously created a Subnet named `test-subnet` in `org-a`
+- User has previously created READY NetworkACL `test-acl` in VirtualNetwork `prod-net` and Subnet `test-subnet` in `prod-net` with an explicit `network_acl` reference to `test-acl`
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="Subnet"`, `spec.verb="delete"`, `spec.tenant="org-a"`, `spec.resource_name="test-subnet"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.Subnets"`, `spec.method="Delete"`, `metadata.tenant="org-a"`, `metadata.name="test-subnet"`
 2. Observe response
 
 ##### Expected Results
@@ -124,7 +128,7 @@
 - Response `status.allowed` is `true`
 - No `status.reason` field present
 
-#### TC-US2-03: Check permission to update SecurityGroup not owned by user
+#### TC-US2-03: Check permission to update NetworkACL rules and Subnet association
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -134,24 +138,31 @@
 
 - Tenant user is authenticated with JWT token
 - User is a member of tenant `org-a`
-- Another user in `org-a` has created a SecurityGroup named `other-sg`
-- Current user does not own `other-sg`
+- Another user in `org-a` has created READY NetworkACLs named `other-acl` and
+  `replacement-acl` in VirtualNetwork `prod-net`, plus Subnet `other-subnet`
+  in `prod-net` whose `network_acl` association is `other-acl`
+- Current user does not own the ACLs or Subnet
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="SecurityGroup"`, `spec.verb="update"`, `spec.tenant="org-a"`, `spec.resource_name="other-sg"`
-2. Observe response
+1. Send `CreateSelfSubjectAccessReviewRequest` with
+   `spec.service="osac.public.v1.NetworkACLs"`, `spec.method="Update"`,
+   `metadata.tenant="org-a"`, `metadata.name="other-acl"`
+2. Send a second request with `spec.service="osac.public.v1.Subnets"`,
+   `spec.method="Update"`, `metadata.tenant="org-a"`,
+   `metadata.name="other-subnet"`
+3. Observe both responses
 
 ##### Expected Results
 
-- Response `status.allowed` is `false`
-- Response `status.reason` indicates user does not own the specified resource
+- Both responses have `status.allowed` set to `false`
+- Each `status.reason` indicates the user does not own the specified resource
 
 ### US-3: Tenant User Resource-Scoped Permissions
 
 **User Story:** As a tenant user, I want to check resource-scoped permissions (update or delete operations on a specific resource by name) before enabling edit or delete actions, so that I know whether I can modify a particular resource before attempting the operation
 
-#### TC-US3-01: Check permission to update specific VirtualNetwork by name
+#### TC-US3-01: Check permission for supported NetworkACL and Subnet updates by name
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -161,17 +172,20 @@
 
 - Tenant user is authenticated with JWT token
 - User is a member of tenant `org-a`
-- User has created a VirtualNetwork named `prod-net` in `org-a`
+- User has created READY NetworkACLs named `owned-acl` and `replacement-acl`
+  in VirtualNetwork `prod-net`, and Subnet `owned-subnet` in `prod-net` whose
+  `network_acl` association is `owned-acl`
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="VirtualNetwork"`, `spec.verb="update"`, `spec.tenant="org-a"`, `spec.resource_name="prod-net"`
-2. Observe response
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.NetworkACLs"`, `spec.method="Update"`, `metadata.tenant="org-a"`, `metadata.name="owned-acl"`
+2. Send a second request with `spec.service="osac.public.v1.Subnets"`, `spec.method="Update"`, `metadata.tenant="org-a"`, `metadata.name="owned-subnet"`
+3. Observe both responses
 
 ##### Expected Results
 
-- Response `status.allowed` is `true`
-- No `status.reason` field present
+- Both responses have `status.allowed` set to `true`
+- Neither response includes `status.reason`
 
 #### TC-US3-02: Check permission to delete specific VirtualNetwork owned by another user
 
@@ -188,7 +202,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="VirtualNetwork"`, `spec.verb="delete"`, `spec.tenant="org-a"`, `spec.resource_name="other-net"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.VirtualNetworks"`, `spec.method="Delete"`, `metadata.tenant="org-a"`, `metadata.name="other-net"`
 2. Observe response
 
 ##### Expected Results
@@ -212,8 +226,8 @@
 
 ##### Steps
 
-1. For each OSAC resource type (`Cluster`, `ComputeInstance`, `DiskImage`, `ExternalIP`, `ExternalIPAttachment`, `ExternalIPPool`, `NATGateway`, `SecurityGroup`, `Subnet`, `Tenant`, `VirtualNetwork`):
-   - Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type=<type>`, `spec.verb="create"`
+1. For each OSAC service (`osac.public.v1.Clusters`, `osac.public.v1.ComputeInstances`, `osac.public.v1.DiskImages`, `osac.public.v1.ExternalIPs`, `osac.public.v1.ExternalIPAttachments`, `osac.public.v1.ExternalIPPools`, `osac.public.v1.NATGateways`, `osac.public.v1.NetworkACLs`, `osac.public.v1.Subnets`, `osac.public.v1.Tenants`, `osac.public.v1.VirtualNetworks`):
+   - Send `CreateSelfSubjectAccessReviewRequest` with `spec.service=<service>`, `spec.method="Create"`
    - Verify response `status.allowed` is `true` (admin has all permissions)
 2. Observe all responses
 
@@ -234,15 +248,15 @@
 
 ##### Steps
 
-1. For each verb (`create`, `get`, `list`, `update`, `delete`):
-   - Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="Cluster"`, `spec.verb=<verb>`
+1. For each method (`Create`, `Get`, `List`, `Update`, `Delete`):
+   - Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.Clusters"`, `spec.method=<method>`
    - Verify response is returned without error
 2. Observe all responses
 
 ##### Expected Results
 
 - All permission checks return valid responses
-- No `InvalidArgument` errors for any verb
+- No `InvalidArgument` errors for any method
 
 ### TR-2: Authorization Consistency
 
@@ -261,7 +275,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="VirtualNetwork"`, `spec.verb="create"`, `spec.tenant="org-a"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.VirtualNetworks"`, `spec.method="Create"`, `metadata.tenant="org-a"`
 2. Observe permission check response `status.allowed` value
 3. Attempt actual `VirtualNetworks.Create()` call for tenant `org-a`
 4. Observe actual operation result
@@ -284,7 +298,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="Tenant"`, `spec.verb="update"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.Tenants"`, `spec.method="Update"`, `metadata.name="org-a"`
 2. Observe permission check response `status.allowed` value
 3. Attempt actual `Tenants.Update()` call
 4. Observe actual operation result
@@ -311,7 +325,7 @@
 
 ##### Steps
 
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.resource_type="Cluster"`, `spec.verb="create"`
+1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.Clusters"`, `spec.method="Create"`
 2. Observe permission check returns `status.allowed=true`
 3. Administrator revokes user's cluster creation permission via Keycloak (remove from appropriate group or revoke role)
 4. User attempts actual `Clusters.Create()` call
@@ -346,3 +360,13 @@ All interface changes are exercised by test cases.
 | Automated | 14 |
 | Requirements with test cases | 6 / 6 |
 | Interface changes with test cases | 1 / 1 |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

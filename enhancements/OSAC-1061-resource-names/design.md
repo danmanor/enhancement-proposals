@@ -3,7 +3,7 @@ title: enforce-mandatory-unique-immutable-resource-names
 authors:
   - CrystalChun
 creation-date: 2026-07-23
-last-updated: 2026-07-23
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1061
 prd:
@@ -22,7 +22,7 @@ superseded-by:
 
 This design enforces naming discipline across all OSAC resources through three layers: proto validation (mandatory names, RFC 1123 format), PostgreSQL unique indexes (uniqueness within scope boundaries), and PostgreSQL immutability triggers (name cannot change after creation). The changes are concentrated in the proto `Metadata` message and a single database migration — no server or DAO code changes are required for core enforcement. See [PRD](prd.md) for detailed requirements.
 
-Networking resources governed by [OSAC-1433](/enhancements/OSAC-1433-unified-networking/design.md) are an operation exception: they support Create, List/Get, and Delete only. Their name, specification, and metadata changes use delete and recreate; the Update examples below apply only to resource APIs that support Update.
+Networking resources governed by [OSAC-1433](/enhancements/OSAC-1433-unified-networking/design.md) support Create, List/Get, and Delete, with NetworkACL rule updates and Subnet-to-NetworkACL reassociation also supported. This naming feature keeps `metadata.name` immutable on those updates; workload attachments and VirtualNetwork/Subnet address configuration remain immutable under OSAC-1433.
 
 ## Motivation
 
@@ -135,7 +135,7 @@ This feature modifies the shared `Metadata` protobuf message. No new services, C
 
 **Behavioral changes to existing resources:**
 - All `Create*` RPCs reject requests with missing or invalid names (previously accepted empty)
-- All `Update*` RPCs for resource APIs that support Update reject name changes via database trigger (some tables already enforced this; now all do); networking resources do not expose Update
+- All `Update*` RPCs for resource APIs that support Update reject name changes via database trigger (some tables already enforced this; now all do); NetworkACL rule and Subnet association updates also preserve the resource name under OSAC-1433
 - All `Create*` RPCs reject duplicate names within scope boundaries (most resources previously accepted duplicates)
 
 ## UX Alignment
@@ -213,7 +213,7 @@ Tables requiring new `UNIQUE(tenant, project, name)` index and trigger update (~
 
 All remaining resource tables need both a new `UNIQUE(tenant, project, name)` index and `name` added to their `check_immutable_columns` trigger. Two tables (`instance_types`, `objects`) already have `name` in their trigger and need only the index.
 
-The full list: `bare_metal_instances`, `bare_metal_instance_catalog_items`, `bare_metal_instance_templates`, `clusters`, `cluster_templates`, `compute_instances`, `compute_instance_templates`, `external_ip_attachments`, `external_ip_pools`, `external_ips`, `host_types`, `hubs`, `instance_types`, `nat_gateways`, `network_classes`, `objects`, `project_memberships`, `public_ip_attachments`, `public_ip_pools`, `public_ips`, `secrets`, `security_groups`, `subnets`, `virtual_networks`.
+The full list: `bare_metal_instances`, `bare_metal_instance_catalog_items`, `bare_metal_instance_templates`, `clusters`, `cluster_templates`, `compute_instances`, `compute_instance_templates`, `external_ip_attachments`, `external_ip_pools`, `external_ips`, `host_types`, `hubs`, `instance_types`, `nat_gateways`, `network_classes`, `objects`, `project_memberships`, `public_ip_attachments`, `public_ip_pools`, `public_ips`, `secrets`, `network_acls`, `subnets`, `virtual_networks`.
 
 **Scope-specific index rationale:**
 
@@ -253,7 +253,7 @@ var tableToKind = map[string]string{
     "clusters":                          "cluster order",
     "virtual_networks":                  "virtual network",
     "subnets":                           "subnet",
-    "security_groups":                   "security group",
+    "network_acls":                     "network ACL",
     "compute_instances":                 "compute instance",
     "public_ips":                        "public IP",
     "public_ip_pools":                   "public IP pool",
@@ -303,7 +303,7 @@ Input validation is strengthened: the proto `min_len: 1` constraint and updated 
 
 **Uniqueness constraint violation (duplicate name):** The DAO translates the PostgreSQL `UniqueViolation` to `ErrAlreadyExists`. The server returns `AlreadyExists`. No partial state is created. The user chooses a different name and retries.
 
-**Immutability trigger violation (name change on a supported update):** The trigger raises SQLSTATE `Z0001`. The DAO translates to `ErrImmutable`. The server returns `InvalidArgument`. The update is rolled back entirely — the resource retains its original state. Networking resources governed by OSAC-1433 have no Update operation; changing their name requires delete and recreate.
+**Immutability trigger violation (name change on a supported update):** The trigger raises SQLSTATE `Z0001`. The DAO translates to `ErrImmutable`. The server returns `InvalidArgument`. The update is rolled back entirely — the resource retains its original state. OSAC-1433's NetworkACL rule and Subnet association updates do not make `metadata.name` mutable; changing a network resource's name requires delete and recreate.
 
 **Migration failure (existing data violations):** The data cleanup migration runs first in the upgrade sequence, backfilling empty names and deduplicating collisions. If the cleanup migration itself fails (e.g., unexpected data patterns), the entire upgrade is rolled back. No partial enforcement is applied.
 
@@ -435,7 +435,7 @@ Integration tests run against a real PostgreSQL instance via the DAO test infras
 - Update a resource's name → returns `ErrImmutable` with `fields: ["metadata.name"]`
 - Update a resource without changing the name → succeeds
 - Update a resource's other fields (labels, annotations, spec) → succeeds (name not affected)
-- Networking resource changes use delete and recreate because those resources do not expose Update
+- Network-resource name changes use delete and recreate; NetworkACL rule updates and Subnet association updates remain supported under OSAC-1433
 
 **Concurrent creation:**
 - Launch N goroutines that each attempt to create a resource with the same name, tenant, and project → exactly one succeeds, all others return `ErrAlreadyExists`
@@ -448,7 +448,7 @@ E2E tests via `osac-test-infra` pytest framework against the fulfillment-service
 - Create a VirtualNetwork with an invalid name → `InvalidArgument`
 - Create two VirtualNetworks with the same name in the same tenant/project → second returns `AlreadyExists` with resource type in message
 - Create a VirtualNetwork, delete it, create another with the same name before archival → `AlreadyExists`
-- Networking resources do not expose Update; changing a VirtualNetwork name requires delete and recreate
+- OSAC-1433 supports NetworkACL rule and Subnet association updates; changing a VirtualNetwork name still requires delete and recreate
 - Create a platform-scoped NetworkClass with a duplicate name → `AlreadyExists`
 
 ## Graduation Criteria
@@ -488,7 +488,9 @@ None.
 
 ## Provenance
 
-Authored: revise @ design 0.4.0 - 139e6c1, workspace main @ 0987735
-Phases: draft, revise, revise
+Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.4.0","ai_workflows":"139e6c1","source_repo":"0987735","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->
