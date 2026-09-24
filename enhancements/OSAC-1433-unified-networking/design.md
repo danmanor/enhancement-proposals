@@ -545,8 +545,9 @@ osac create cluster --template ocp_4_17_small \
 For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
 are architecturally possible but deferred. The fulfillment-service resolves
 the interface from the BareMetalInstanceType (`fabric_interface` — first port
-with role `fabric`) and stores it on the node set. The worker controller passes
-that stored value to BMF with the BMI create request. BMF owns the BMI's
+with role `fabric`) and stores it on the corresponding
+`ClusterOrder.spec.nodeRequests[]` entry. The worker controller passes that
+stored value to BMF with the BMI create request. BMF owns the BMI's
 provisioning and handoff sequence; the osac-operator NetworkAttachment
 controller performs the port move and DHCP discovery for that BMI.
 See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
@@ -817,11 +818,13 @@ attachment. The CR references the target and reads its attachment from that
 target; it does not copy attachment fields into the CR. For CaaS, the
 fulfillment-service Cluster lifecycle submits one Cluster-target request after
 resolving the attachment and creating the ClusterOrder. The NetworkAttachment
-controller resolves that ClusterOrder from the Cluster ID, watches its worker
-references (including later scale-up), and reconciles each referenced BMI only
-after BMF reports `ProvisionTemplateComplete=True`. The CaaS worker controller
-passes the Cluster's resolved subnet and security groups, plus the node-set
-fabric interface, into each BMI create request. BMF owns each BMI's provisioning
+controller resolves that ClusterOrder by the
+`osac.openshift.io/clusterorder-uuid` label whose value is the Cluster ID,
+watches its worker references (including later scale-up), and reconciles each
+referenced BMI only after BMF reports `ProvisionTemplateComplete=True`. The
+CaaS worker controller passes the Cluster's resolved subnet and security
+groups, plus the node-set fabric interface, into each BMI create request. BMF
+owns each BMI's provisioning
 and handoff lifecycle; it consumes the networking controller's per-BMI
 readiness and performs the handoff reboot. For direct BMaaS instances, BMF
 submits a BMI-target request after provisioning completes.
@@ -834,9 +837,12 @@ submits a BMI-target request after provisioning completes.
 
 Fulfillment-service creates each internal request CR from the private proto.
 The osac-operator NetworkAttachment controller owns reconciliation of those
-CRs and the networking operations, job history, attachment status, and cleanup
-finalizer associated with them. It resolves the target's existing attachment
-through the target reference and uses the shared NetworkClass
+CRs and the networking operations. The workload CRs hold networking
+conditions, attachment-status entries, and AAP job histories; for a Cluster
+target, the request CR also holds aggregate progress while each worker BMI
+holds its per-worker status. The controller owns networking finalizers on the
+affected ComputeInstance and BMI CRs. It resolves the target's existing
+attachment through the target reference and uses the shared NetworkClass
 resolver/dispatcher where a provider operation is required. For ComputeInstance
 and BaremetalInstance targets, it creates and updates
 `NetworkAttachmentsReady` on that target's status: Unknown/pending when
@@ -849,17 +855,22 @@ BMI condition before rebooting. Request producers do not create or set these
 conditions and wait for networking readiness before advancing their workload
 lifecycle.
 
-On deletion, the workload lifecycle owner asks for cleanup and waits for the
-networking controller to finish any required detach before tearing down the
-target. The networking controller keeps the target present with its networking
-finalizer until cleanup completes. For BMaaS instances and CaaS worker BMIs,
-BMF first powers the host off and reports `NetworkOffboardShutdownComplete`;
-the networking controller then returns the port to the provisioning network
-and reports `NetworkOffboardComplete`. A Cluster-target request remains until
-all associated worker BMI operations have completed cleanup; the CaaS worker
-reconciler waits for BMI deletion before removing the worker. For VMaaS, the
-ComputeInstance lifecycle controller provides the corresponding safe-to-detach
-gate.
+On deletion, the workload lifecycle owner initiates cleanup and preserves the
+state needed for networking reconciliation until detach completes. For
+ComputeInstance and direct BMaaS BMI targets, the networking controller holds
+its finalizer on the target CR through cleanup. For BMaaS instances and CaaS
+worker BMIs, BMF first powers the host off and reports
+`NetworkOffboardShutdownComplete`; the networking controller then returns the
+port to the provisioning network and reports `NetworkOffboardComplete`. During
+CaaS cluster deletion, fulfillment-service requests ClusterOrder deletion and
+the ClusterOrder finalizer retains the order and worker references while the
+BMIs are offboarded. The networking controller uses the ClusterOrder's
+`deletionTimestamp` as the end-of-fanout signal, continues cleanup through the
+retained worker references, and keeps the Cluster-target request active until
+all associated BMI operations are complete, even if the Cluster resource has
+already been deleted. The CaaS worker reconciler waits for BMI deletion before
+removing each worker entry. For VMaaS, the ComputeInstance lifecycle controller
+provides the corresponding safe-to-detach gate.
 
 The fabric manager's `move_network_attachment` role is switch-side
 only — it moves a host's fabric port from one network segment to another
@@ -1046,7 +1057,8 @@ should not appear in `network_attachments`.
 
 **CaaS** uses BareMetalInstanceType: the fulfillment-service resolves the
 interface automatically (first `fabric`-role port → stored as immutable
-`fabric_interface` on the node set definition).
+`fabric_interface` on the corresponding `ClusterOrder.spec.nodeRequests[]`
+entry).
 
 **BMaaS** uses BareMetalInstanceType: the tenant discovers interfaces
 from BareMetalInstanceType and specifies port names directly on
@@ -1109,7 +1121,8 @@ message ClusterNetworkAttachment {
 A single attachment applies to the whole cluster — all node sets share the same subnet.
 The `fabric_interface` is resolved by the fulfillment-service at creation time for each
 node set from its BareMetalInstanceType (first port with role `fabric`)
-and stored on the node set definition. The tenant does not set this field.
+and stored on the corresponding `ClusterOrder.spec.nodeRequests[]` entry. The
+tenant does not set this field.
 
 #### Attachment Presence and Defaulting
 
@@ -1622,4 +1635,4 @@ Final: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 06d340f90 (39 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

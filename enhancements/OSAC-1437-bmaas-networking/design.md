@@ -180,10 +180,10 @@ The [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types)
 
 - BMaaS tenants discover available interfaces via the BareMetalInstanceType API (with type + speed info)
 - Interface validation uses BareMetalInstanceType's `network_ports` list
-- CaaS fulfillment resolves the fabric interface from `BareMetalInstanceType.network_ports[].role=fabric` at cluster creation and stores it on the node set
+- CaaS fulfillment resolves the fabric interface from `BareMetalInstanceType.network_ports[].role=fabric` at cluster creation and stores it on the corresponding `ClusterOrder.spec.nodeRequests[]` entry
 - `BareMetalInstanceType.host_label_selector` provides direct inventory matching (OSAC-1201), replacing the former HostType reverse lookup
 
-> **CaaS network attachment source:** For CaaS bare-metal workers, the network attachment originates from the private `ClusterOrder.spec.networkAttachment` (`ClusterNetworkAttachment`) and is enriched per-BMI by the `BareMetalWorkerReconciler` with the immutable `fabric_interface` already resolved and stored on the node set during cluster creation. See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full enrichment flow.
+> **CaaS network attachment source:** For CaaS bare-metal workers, the network attachment originates from the private `ClusterOrder.spec.networkAttachment` (`ClusterNetworkAttachment`) and is enriched per-BMI by the `BareMetalWorkerReconciler` with the immutable `fabric_interface` resolved for that node set and stored on its corresponding `ClusterOrder.spec.nodeRequests[]` entry. See [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full enrichment flow.
 
 #### Interface Role Convention
 
@@ -393,11 +393,13 @@ message BareMetalNetworkAttachmentStatus {
 ```
 
 The existing private `BareMetalNetworkAttachment` message remains nested in
-`BareMetalInstanceSpec`. This design adds no top-level attachment proto/service
-and no standalone attachment CRD. The existing BMI attachment is the sole
-desired-state object; `NetworkAttachmentStatuses`, conditions, and job history
-remain on that CR. The division of responsibility changes between controllers
-without adding another fulfillment-service API surface.
+`BareMetalInstanceSpec` and is the BMI's sole desired-state attachment. The
+shared private `NetworkAttachment` proto/RPC and internal request CR identify
+the BMI target and provide the asynchronous networking handoff; they do not
+duplicate subnet, security-group, or interface intent. The networking
+controller writes `NetworkAttachmentStatuses`, conditions, and job history on
+the BMI CR. No standalone tenant-facing attachment resource or desired-state
+API is introduced.
 
 #### BaremetalInstance CRD (served to both controllers)
 
@@ -1161,4 +1163,4 @@ Final: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 06d340f90 (39 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
