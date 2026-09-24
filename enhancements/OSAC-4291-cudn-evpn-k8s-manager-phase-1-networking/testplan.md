@@ -146,6 +146,7 @@
 
 - The VirtualNetwork has exactly one Subnet and uses the cudn_evpn k8s manager.
 - The Subnet explicitly references a READY NetworkACL scoped to the same VirtualNetwork; policy enforcement completes before the Subnet becomes READY.
+- The associated NetworkACL has priority-1 `DENY` rules for protocol `ALL` in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. These rules match the VM-to-bare-metal flow and its reply.
 - The CUDN is provisioned for the single Subnet.
 - A VirtualMachine runs in the CUDN namespace with IP 200.200.1.3.
 - A bare-metal endpoint is attached to the configured fabric in the same Subnet with IP 200.200.1.10.
@@ -154,14 +155,16 @@
 ##### Steps
 
 1. Verify the VM is running: `oc get vmi -n <namespace>`.
-2. Connect to the VM console: `virtctl console <vm-name>`.
-3. Ping the bare-metal endpoint: `ping 200.200.1.10`.
-4. Verify FRR shows a Type-2 route for the VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`.
-5. Verify the configured fabric learns the VM MAC through EVPN.
+2. Inspect the associated ACL and confirm its active priority-1 ingress and egress `DENY ALL` rules match both the request and reply addresses.
+3. Connect to the VM console: `virtctl console <vm-name>`.
+4. Ping the bare-metal endpoint: `ping 200.200.1.10`.
+5. Verify FRR shows a Type-2 route for the VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`.
+6. Verify the configured fabric learns the VM MAC through EVPN.
 
 ##### Expected Results
 
 - Ping succeeds (RTT <10ms).
+- The same-Subnet ping succeeds even though the associated ACL's active deny rules match the flow and its reply, confirming same-Subnet traffic bypasses that ACL.
 - FRR advertises a Type-2 EVPN route with the VM MAC and IP.
 - The configured fabric EVPN table shows the VM MAC through the OCP VTEP.
 - The Subnet is in a one-Subnet VirtualNetwork; this test does not place VMs in a multi-Subnet VirtualNetwork.
@@ -499,8 +502,8 @@ None identified. All requirements map to test cases, all interface changes exerc
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise, revise
+Phases: revise, revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
