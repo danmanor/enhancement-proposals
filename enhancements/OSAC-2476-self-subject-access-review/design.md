@@ -28,7 +28,7 @@ The fulfillment-service uses OPA for authorization, with policies evaluated in `
 
 - Create an extendable authorization component that can be reused across permission checks and actual operations without duplicating authorization rules
 - Follow Kubernetes SelfSubjectAccessReview API pattern for consistency with established conventions
-- Support checking permissions for the methods each OSAC service exposes (create, get, list, update, delete where present). Networking Update checks cover NetworkACL rule changes and Subnet NetworkACL reassociation; they do not make address configuration or workload attachments mutable.
+- Support checking permissions for the methods each OSAC service exposes (create, get, list, update, delete where present). NetworkACLs and Subnets expose read, create, and delete operations; they do not expose Update.
 - Ensure authorization consistency — permission check results must match what the actual operation's authorization decision would be at the time of the check
 - Design the authorization component with a clear interface to enable testing, alternative implementations, and future extensions
 
@@ -63,7 +63,7 @@ This component-based approach ensures the same OPA policies govern both permissi
 
 1. User constructs a `CreateSelfSubjectAccessReviewRequest` specifying:
    - `spec.service`: The full OSAC service name to check (e.g., `"osac.public.v1.Clusters"`, `"osac.public.v1.ComputeInstances"`, `"osac.public.v1.VirtualNetworks"`, `"osac.public.v1.NetworkACLs"`, `"osac.public.v1.Subnets"`)
-   - `spec.method`: A method exposed by that service (`"Create"`, `"Get"`, `"List"`, `"Update"`, or `"Delete"`); for networking, Update applies to NetworkACL rules and Subnet NetworkACL reassociation
+   - `spec.method`: A method exposed by that service (`"Create"`, `"Get"`, `"List"`, `"Update"`, or `"Delete"`)
    - `metadata.tenant`: Optional tenant context for the hypothetical operation (e.g., `"org-a"`)
    - `metadata.name`: Optional target resource name for a resource-scoped check (e.g., `"edge-acl"` or `"private-subnet"`)
 2. User calls `SelfSubjectAccessReviews.Create` (gRPC)
@@ -112,38 +112,10 @@ if resp.Object.Status.Allowed {
 }
 ```
 
-Resource-scoped networking Update checks use the actual resource service and
-method. For example, checking `osac.public.v1.NetworkACLs` with `Update` and
-`metadata.name="edge-acl"` checks permission to update that ACL's rules.
-Checking `osac.public.v1.Subnets` with `Update` and
-`metadata.name="private-subnet"` checks permission to change that Subnet's
-`spec.network_acl` association. The optional target name is top-level
-`metadata.name` and is forwarded to `ContextExtensions.Name`. These checks do
-not make Subnet or VirtualNetwork address configuration, or workload network
-attachments, mutable.
-
-```go
-aclReview := &v1.SelfSubjectAccessReview{
-    Metadata: &v1.Metadata{Tenant: "org-a", Name: "edge-acl"},
-    Spec: &v1.SelfSubjectAccessReviewSpec{
-        Service: "osac.public.v1.NetworkACLs",
-        Method:  "Update",
-    },
-}
-
-subnetReview := &v1.SelfSubjectAccessReview{
-    Metadata: &v1.Metadata{Tenant: "org-a", Name: "private-subnet"},
-    Spec: &v1.SelfSubjectAccessReviewSpec{
-        Service: "osac.public.v1.Subnets",
-        Method:  "Update",
-    },
-}
-```
-
-| Supported operation | Service | Method | Target | Mutable field scope |
-|---|---|---|---|---|
-| Change ACL rules | `osac.public.v1.NetworkACLs` | `Update` | NetworkACL name | Ingress and egress rule lists |
-| Reassociate Subnet policy | `osac.public.v1.Subnets` | `Update` | Subnet name | `spec.network_acl`, referencing a NetworkACL in the same VirtualNetwork |
+Resource-scoped networking checks use the actual resource service and method.
+`NetworkACLs` and `Subnets` support `List`, `Get`, `Create`, and `Delete`; they
+do not expose `Update`. For a resource-scoped check, the target name is
+top-level `metadata.name` and is forwarded to `ContextExtensions.Name`.
 
 ```mermaid
 sequenceDiagram
@@ -378,11 +350,9 @@ func buildGRPCMethodPath(service, method string) (string, error) {
 
 **Per-service method validation:** The reflection-based implementation validates that each service supports the requested method by iterating over the service's method descriptors. This provides clearer error messages when users request unsupported operations (e.g., `osac.public.v1.ExternalIPPools + Create` returns `InvalidArgument` "method Create not supported for service osac.public.v1.ExternalIPPools" instead of relying on OPA to deny the non-existent method path). Resources in the public API may expose only a subset of standard methods (e.g., ExternalIPPools supports List/Get but not Create/Update/Delete).
 
-The public `NetworkACLs` and `Subnets` services expose Update for their
-mutable networking fields. For this contract, those updates cover NetworkACL
-rule changes and reassociation through `Subnet.spec.network_acl`;
-VirtualNetwork/Subnet address configuration and workload attachments remain
-immutable.
+The public `NetworkACLs` and `Subnets` services expose `List`, `Get`, `Create`,
+and `Delete`. Their schemas have no `Update` method; NetworkACL rules and the
+Subnet association are fixed at creation.
 
 **Alternative considered:** Code-generated mapping from build-time script parsing proto files. Would require tooling (buf plugin or Makefile integration), CI verification to catch drift, and manual regeneration steps. Rejected in favor of reflection to eliminate maintenance overhead and an entire class of "forgot to regenerate" errors.
 
@@ -618,7 +588,7 @@ This rule is evaluated before role-based authorization rules, allowing any authe
   - `SelfSubjectAccessReview(service, "Create")` returns `allowed=true` ⟺ actual `Create()` succeeds
   - `SelfSubjectAccessReview(service, "Delete", metadata.name=name)` returns `allowed=false` ⟺ actual `Delete(name)` returns `PermissionDenied`
 - **Tenant scoping:** Tenant Admin for `org-a` checks permission on `org-b` resource → `allowed=false`
-- **Resource-scoped networking checks:** User checks `Update` permission on a specific NetworkACL and Subnet by setting top-level `metadata.name` → the handler passes that name as `ContextExtensions.Name`, and results match actual ACL-rule and Subnet-ACL-association updates; address configuration and workload-attachment updates remain unavailable
+- **Networking method validation:** Requests to check `Update` on NetworkACLs or Subnets return `InvalidArgument` because those services do not expose that method; the checks do not imply that ACL rules or Subnet associations can be changed after creation
 - **Advisory nature:** Permission check returns `allowed=true`, then user's role is revoked, then actual operation fails → demonstrates checks are advisory, not authoritative
 - **Unauthenticated requests:** Calling endpoint without valid JWT returns `Unauthenticated` error
 - **Invalid inputs:** Unknown service, invalid method, malformed tenant name → appropriate validation errors
@@ -826,8 +796,7 @@ Current design uses **Option A** (validation error) for clarity and fast feedbac
 - Admin user: `SelfSubjectAccessReview(service="osac.public.v1.Clusters", method="Create")` returns `allowed=true`; actual `Clusters.Create()` succeeds
 - Tenant Admin for `org-a`: `SelfSubjectAccessReview(service="osac.public.v1.VirtualNetworks", method="Create", metadata.tenant="org-a")` returns `allowed=true`; actual create succeeds
 - Tenant Admin for `org-a`: `SelfSubjectAccessReview(service="osac.public.v1.VirtualNetworks", method="Create", metadata.tenant="org-b")` returns `allowed=false` with empty `status.reason`; actual create returns `PermissionDenied` with an error message that does not reveal "org-b"
-- Tenant Admin for `org-a`: NetworkACL `Update` check with `metadata.name` set to an owned ACL returns `allowed=true` and the corresponding rule update succeeds; Subnet `Update` check with `metadata.name` set to an owned Subnet returns `allowed=true` and reassociation to a READY ACL in the same VirtualNetwork succeeds
-- Tenant User for `org-a`: NetworkACL and Subnet `Update` checks with `metadata.name` set to resources owned by another user return `allowed=false`, matching the actual authorization decision
+- Requests to check `Update` on `osac.public.v1.NetworkACLs` or `osac.public.v1.Subnets` return `InvalidArgument`, matching the methods exposed by those services
 - Client user: `SelfSubjectAccessReview(service="osac.public.v1.Tenants", method="Update")` returns `allowed=false`; actual update returns `PermissionDenied`
 - Repeat for all services and methods across Admin, Tenant Admin, Client roles
 
@@ -904,9 +873,8 @@ No version skew concerns. The fulfillment-service is the only component that imp
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise, revise, revise, revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

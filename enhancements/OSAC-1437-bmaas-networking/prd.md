@@ -7,10 +7,10 @@
 | Date        | 2026-09-24 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
-Networking resources support Create, List/Get, and Delete, except NetworkACL
-rules and Subnet-to-ACL associations, which are mutable. Bare-metal network
-attachment fields remain create-time-only; changing one requires delete and
-recreate.
+Networking resources support read (List/Get), create, and delete. NetworkACL
+rules and Subnet-to-ACL associations are immutable after creation. Bare-metal
+network attachment fields are also create-time-only; changing one requires
+delete and recreate.
 
 BMaaS networking also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
@@ -208,8 +208,8 @@ Resolved: First in the list. Ports are ordered in the BareMetalInstanceType; whe
 
 ## Provenance
 
-Authored: revise [manual] @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
