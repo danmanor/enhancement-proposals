@@ -72,7 +72,13 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - **FR-10:** A NATGateway can provide a stable egress identity for a VirtualNetwork. It is optional and handles outbound external access; ExternalIPAttachment handles inbound access. [Jira: OSAC-1433]
 - **FR-11:** Providers configure networking implementations. Tenants do not select implementation backends, and adding a supported backend does not require a tenant API change. [Jira: OSAC-1433]
 - **FR-12:** The supported deployment profile is connected networking with one provider-owned hub. ExternalIPPool accepts exactly one canonical IPv4 CIDR. IPv6, dual-stack, disconnected deployment, and multi-hub networking requests are rejected or reported unsupported. [Jira: OSAC-1433]
-- **FR-13:** At tenant onboarding, the system creates a default VirtualNetwork, Subnet, NetworkACL, and NATGateway from provider-configured defaults. The default Subnet is associated with the default NetworkACL, and tenant readiness waits until that association is ready. Workload creation can omit network attachment details to use these defaults. [User; OSAC-1433]
+- **FR-13:** At tenant onboarding, the system creates a default VirtualNetwork,
+  Subnet, NetworkACL, and NATGateway from provider-configured defaults. The
+  tenant default ACL denies ingress by default and permits egress by default;
+  because it is stateless, return traffic requires explicit reverse-direction
+  ingress rules. The default Subnet is associated with the default NetworkACL,
+  and tenant readiness waits until that association is ready. Workload creation
+  can omit network attachment details to use these defaults. [User; OSAC-1433]
 - **FR-14:** Existing workload traffic policies require tenant-assisted migration where their scope or stateful behavior cannot be represented by a Subnet-level stateless ACL. Tenants can group workloads by intended policy, place each group on a Subnet with the corresponding shared NetworkACL, and add reverse-direction rules where return traffic is required. [User]
 
 ### 3.2 Non-Functional Requirements
@@ -110,8 +116,9 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Authored: respond @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
