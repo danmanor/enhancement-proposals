@@ -38,7 +38,7 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-`BaremetalInstance` keeps its repeated `BareMetalNetworkAttachment` field for API compatibility, with a contract of at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The fulfillment-service copies that attachment into the existing BaremetalInstance CR. At the networking handoff for a BMaaS instance, BMF submits the shared private `NetworkAttachment` request targeting that BMI; fulfillment reconciliation materializes an internal `NetworkAttachment` CR that the osac-operator networking controller reconciles. BMF retains host provisioning, reboot, and lifecycle orchestration. VMaaS submits a ComputeInstance-target request, while CaaS submits one Cluster-target request that the networking controller fans out to worker BMIs; in both cases the service lifecycle owner submits the request and BMF consumes the per-BMI networking readiness for CaaS workers. See [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller) for the shared proto and [PRD](prd.md) for detailed requirements.
+`BaremetalInstance` keeps its repeated `BareMetalNetworkAttachment` field for API compatibility, with a contract of at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. Fulfillment-service copies that desired attachment into the BaremetalInstance CR. At the networking handoff, BMF submits a private `SubnetAttachment` request targeting the BMI; fulfillment reconciliation materializes an internal `SubnetAttachment` CR for the networking controller. This same BMI-target path applies to direct BMaaS instances and CaaS worker BMIs. VMaaS uses a ComputeInstance-target request. No Cluster-target request is needed because CaaS workers are BMIs. BMF retains host provisioning, reboot, and lifecycle orchestration. See [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller) for the shared proto and [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -51,15 +51,15 @@ fulfillment-service → BaremetalInstance CR → hub cluster
        │                                         │
        │                         bare-metal-fulfillment-operator
        │                           - inventory and OS provisioning
-       │                           - submits private NetworkAttachment request
+       │                           - submits private SubnetAttachment request
        │                           - waits for NetworkAttachmentsReady
        │                           - handoff reboot; waits for IPDiscoveryComplete
        │                           - host power and lifecycle finalizers
        │                                         │
        └→ fulfillment reconciliation creates     │
-          internal NetworkAttachment CR ─────────┘
+          internal SubnetAttachment CR ─────────┘
                     │
-                    └→ osac-operator NetworkAttachment controller
+                    └→ osac-operator SubnetAttachment controller
                           - resolves BMI's existing attachment intent
                           - moves the fabric port and queries DHCP
                           - owns NetworkAttachmentsReady and network status
@@ -75,15 +75,15 @@ fulfillment-service → BaremetalInstance CR → hub cluster
 The nested `BareMetalNetworkAttachment` on the BaremetalInstance CR remains the
 sole desired-state input. When BMF reaches the network handoff after
 `ProvisionTemplateComplete=True`, it calls the private
-`NetworkAttachments.Create` RPC with a `NetworkAttachment` proto identifying
+`SubnetAttachments.Create` RPC with a `SubnetAttachment` proto identifying
 the BMI. Fulfillment reconciliation creates one internal
-`NetworkAttachment` CR that references the BMI instead of copying its
+`SubnetAttachment` CR that references the BMI instead of copying its
 subnet/interface fields. The CR is a shared asynchronous work record, not a
 second tenant attachment or source of desired state. The networking controller
 owns the readiness condition and network status on the BMI; BMF consumes those
 results to sequence reboot and readiness.
 
-The private payload is `NetworkAttachment{baremetal_instance: {id: <bmi-id>}}`.
+The private payload is `SubnetAttachment{baremetal_instance: {id: <bmi-id>}}`.
 It identifies the BMI only; the nested `BareMetalNetworkAttachment` remains
 the desired attachment configuration. The generic proto and private Create RPC
 are defined in the [Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
@@ -285,7 +285,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 7. **osac-operator networking controller (after reboot):**
    - Waits for BMF to set `NetworkHandoffComplete=True`, then queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
-   - Records the discovered IP in the internal NetworkAttachment CR status,
+   - Records the discovered IP in the internal SubnetAttachment CR status,
      projects it to `status.networkAttachmentStatuses[].ipAddress` on the
      BaremetalInstance CR, and sets `IPDiscoveryComplete=True`.
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
@@ -396,7 +396,7 @@ message BareMetalNetworkAttachmentStatus {
 
 The existing private `BareMetalNetworkAttachment` message remains nested in
 `BareMetalInstanceSpec` and is the BMI's sole desired-state attachment. The
-shared private `NetworkAttachment` proto/RPC and internal request CR identify
+shared private `SubnetAttachment` proto/RPC and internal request CR identify
 the BMI target and provide the asynchronous networking handoff; they do not
 duplicate subnet, security-group, or interface intent. The networking
 controller writes `NetworkAttachmentStatuses`, conditions, and job history on
@@ -547,7 +547,7 @@ NetworkClass for this operation.
 
 #### Controller Boundary and Status Ownership
 
-The networking controller watches the internal `NetworkAttachment` CR created
+The networking controller watches the internal `SubnetAttachment` CR created
 from BMF's private fulfillment-service request. The CR references the existing
 BaremetalInstance and does not copy its nested `spec.networkAttachments`; that
 field remains the sole desired-state source. The private proto and CR form the
@@ -569,8 +569,8 @@ consumes it to gate the handoff reboot.
 
 | Owner | Status and lifecycle fields | Purpose |
 |---|---|---|
-| bare-metal-fulfillment-operator | Inventory/provisioning/power status; `ProvisionTemplateComplete`; `NetworkHandoffComplete`; `NetworkOffboardShutdownComplete`; private `NetworkAttachment` request at the BMaaS handoff | Owns host lifecycle, submits the request after provisioning, and reports when the handoff reboot or safe-to-offboard shutdown has completed. It consumes networking-owned readiness. |
-| osac-operator NetworkAttachment controller | Internal `NetworkAttachment` CR; `NetworkAttachmentsReady`; `IPDiscoveryComplete`; `NetworkOffboardComplete`; `NetworkAttachmentStatuses`; `NetworkingJobs`; `IPDiscoveryJobs`; `osac.openshift.io/baremetalinstance-networking` finalizer | Owns fabric attachment and DHCP discovery, records job history and the discovered address, writes the BMI readiness condition, and prevents deletion from passing network cleanup. |
+| bare-metal-fulfillment-operator | Inventory/provisioning/power status; `ProvisionTemplateComplete`; `NetworkHandoffComplete`; `NetworkOffboardShutdownComplete`; private `SubnetAttachment` request at the BMaaS handoff | Owns host lifecycle, submits the request after provisioning, and reports when the handoff reboot or safe-to-offboard shutdown has completed. It consumes networking-owned readiness. |
+| osac-operator SubnetAttachment controller | Internal `SubnetAttachment` CR; `NetworkAttachmentsReady`; `IPDiscoveryComplete`; `NetworkOffboardComplete`; `NetworkAttachmentStatuses`; `NetworkingJobs`; `IPDiscoveryJobs`; `osac.openshift.io/baremetalinstance-networking` finalizer | Owns fabric attachment and DHCP discovery, records job history and the discovered address, writes the BMI readiness condition, and prevents deletion from passing network cleanup. |
 | osac-operator feedback controller | Feedback finalizer and fulfillment-service Signal RPC | Observes the combined status and synchronizes it to the fulfillment-service. |
 
 `NetworkOffboardComplete` means the fabric port has returned to the provisioning
@@ -624,7 +624,7 @@ The controllers use conditions to hand off work without duplicating AAP
 operations:
 
 - After BMF reports `ProvisionTemplateComplete=True`, BMF submits the private
-  `NetworkAttachment` request. Fulfillment reconciliation creates the internal
+  `SubnetAttachment` request. Fulfillment reconciliation creates the internal
   CR; the osac-operator networking controller starts reconciliation from it.
 - The networking controller sets `NetworkAttachmentsReady` after the tenant
   port move and fabric readiness wait. BMF consumes this condition; it does not
@@ -662,7 +662,7 @@ controller dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`,
 passing the sole attachment's subnet reference and selected port MAC address.
 The role queries the fabric manager's DHCP lease API for the subnet, matches
 the port MAC to find the DHCP-assigned IP, and returns it. The networking
-controller records the discovered IP in the internal NetworkAttachment CR
+controller records the discovered IP in the internal SubnetAttachment CR
 status, writes it to `status.networkAttachmentStatuses[].ipAddress`, and sets
 `IPDiscoveryComplete=True` on the BaremetalInstance CR.
 
@@ -697,10 +697,10 @@ BMF BareMetalInstance controller:
    Host PXE boots and gets IP from DHCP on the provisioning network.
    Requires: InventoryAssigned=True
    Sets condition: ProvisionTemplateComplete=True
-   Submits private NetworkAttachment proto request for this BMI
-   Fulfillment reconciliation creates the internal NetworkAttachment CR
+   Submits private SubnetAttachment proto request for this BMI
+   Fulfillment reconciliation creates the internal SubnetAttachment CR
 
-osac-operator NetworkAttachment controller (internal request CR):
+osac-operator SubnetAttachment controller (internal request CR):
 3. Resolve the referenced BMI's Subnet → VirtualNetwork → NetworkClass,
    add the networking finalizer to the BMI,
    then dispatch move_network_attachment: provisioning network → tenant network
@@ -866,7 +866,7 @@ The operator pre-allocates IPs from the subnet CIDR and writes static config (IP
 ### Alternative 3: Reconcile BaremetalInstance directly without an internal request CR
 
 Let the networking controller watch the BaremetalInstance directly and omit the
-shared private `NetworkAttachment` proto and internal CR.
+shared private `SubnetAttachment` proto and internal CR.
 
 **Rejected because:** VMaaS, CaaS, and BMaaS need one explicit asynchronous
 handoff to the networking owner, while their workload CRs and lifecycle gates
@@ -890,7 +890,7 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 
 ### ~~4. How is the host's runtime IP discovered after network reconfiguration?~~ — Resolved
 
-Resolved: After BMF sets `NetworkHandoffComplete=True`, the osac-operator networking controller queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease`). It matches the server's port MAC — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers), records it in the internal NetworkAttachment CR status, writes it to `status.networkAttachmentStatuses[].ipAddress`, and sets `IPDiscoveryComplete=True`. The feedback controller syncs the status to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between network segments).
+Resolved: After BMF sets `NetworkHandoffComplete=True`, the osac-operator networking controller queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease`). It matches the server's port MAC — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers), records it in the internal SubnetAttachment CR status, writes it to `status.networkAttachmentStatuses[].ipAddress`, and sets `IPDiscoveryComplete=True`. The feedback controller syncs the status to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between network segments).
 
 ## Test Plan
 
@@ -983,7 +983,7 @@ GA criteria:
 ### Upgrade
 
 This controller-ownership change keeps the existing BMI attachment as the
-desired-state source and adds the shared private `NetworkAttachment` proto and
+desired-state source and adds the shared private `SubnetAttachment` proto and
 internal CR as the request/status boundary. Upgrade fulfillment-service,
 osac-operator, and BMF together. The new osac-operator controller adopts
 existing `NetworkingJobs`, `IPDiscoveryJobs`, and
@@ -1140,7 +1140,7 @@ Consequences:
 | Immutability + interface + primary validation | OSAC-1509 | New |
 | CLI --network-attachment for BareMetalInstance | OSAC-2075 | New |
 | Existing BMF networking orchestration must be changed to wait on networking-owned conditions and preserve other status fields | Not tracked | **GAP** |
-| Private `NetworkAttachments.Create` proto/RPC and fulfillment-service request-to-CR reconciliation | Not tracked | **GAP** |
+| Private `SubnetAttachments.Create` proto/RPC and fulfillment-service request-to-CR reconciliation | Not tracked | **GAP** |
 | BM reboot flow (reconcileReboot issues BMH annotation-based reboot after port move) | Not tracked | **GAP** |
 | Integration test | OSAC-1510 | New |
 | Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | Closed |

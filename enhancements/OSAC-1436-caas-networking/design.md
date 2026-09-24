@@ -67,29 +67,27 @@ Clusters require tenant-controlled networking to enable:
 
 Per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md), CaaS provisions bare-metal worker nodes **on demand** via the BMaaS private gRPC API — the static pre-boot agent pool is removed. A dedicated `BareMetalWorkerReconciler` in osac-operator creates `BareMetalInstance` objects for each requested worker. Each BMI references a RHCOS DiskImage and carries discovery ignition inline from a cluster-specific InfraEnv.
 
-**BMF owns each BareMetalInstance host lifecycle; the networking controller owns attachment operations.** CaaS submits one private request for its Cluster's single attachment; the controller fans that request out to the worker BMIs:
-1. The fulfillment-service Cluster lifecycle resolves the attachment, creates the ClusterOrder with the existing `osac.openshift.io/clusterorder-uuid: <cluster-id>` label, and calls private `NetworkAttachments.Create` with `NetworkAttachment{cluster: {id: <cluster-id>}}`. Fulfillment-service reconciliation materializes one internal `NetworkAttachment` CR referencing the Cluster.
-2. The `BareMetalWorkerReconciler` creates each BMI on the **provisioning network** through the BMaaS private API (inventory → OS provisioning via DiskImage + ignition), records its resource ID in `ClusterOrder.status.workers[]`, and supplies the Cluster's subnet and security groups plus the node-set `fabric_interface` from the matching `ClusterOrder.spec.nodeRequests[]` entry in the BMI create request.
-3. The osac-operator networking controller resolves the ClusterOrder by its `osac.openshift.io/clusterorder-uuid` label and watches its worker references, including workers added during scale-up. For each BMI it waits until BMF reports `ProvisionTemplateComplete=True`, creates `NetworkAttachmentsReady=Unknown` on BMI status, moves the host's fabric port **provisioning network → tenant network**, waits for the target segment to become active, and sets the condition True on success (or False with a reason on failure). BMF consumes this condition; it does not create it or dispatch the move.
-4. BMF reboots each host so the OS re-DHCPs on the tenant network (`reconcileReboot`) and sets `NetworkHandoffComplete=True` on BMI status.
-5. The networking controller queries each tenant-network DHCP lease, writes the discovered address to BMI status, and sets `IPDiscoveryComplete=True`. The ClusterOrder controller aggregates per-worker readiness and IP status; BMF waits for discovery before reporting each BMI Ready.
+**BMF owns each BareMetalInstance host lifecycle; the SubnetAttachment controller owns attachment operations.** CaaS creates BMIs through BMaaS, so each worker uses the same BMI-target flow as a directly-created BMaaS instance:
+1. The fulfillment-service Cluster lifecycle resolves the Cluster's single `network_attachment` and creates the ClusterOrder. It does not create a private SubnetAttachment request for the Cluster.
+2. The `BareMetalWorkerReconciler` creates each BMI on the **provisioning network** through the BMaaS private API (inventory → OS provisioning via DiskImage + ignition), records its resource ID in `ClusterOrder.status.workers[]`, and supplies the Cluster's subnet and security groups plus that node set's resolved `fabric_interface` from `ClusterOrder.spec.nodeRequests[]` in the BMI create request.
+3. After BMF reports `ProvisionTemplateComplete=True` for a BMI, BMF submits `SubnetAttachments.Create` with `SubnetAttachment{baremetal_instance: {id: <bmi-id>}}`. Fulfillment-service creates one internal SubnetAttachment CR for that BMI. The networking controller reads the BMI's existing desired attachment, moves that host's selected fabric port **provisioning network → tenant network**, waits for the target segment to become active, and sets `NetworkAttachmentsReady=True` on that BMI. BMF consumes this condition; it does not dispatch the move.
+4. BMF reboots the host so the OS re-DHCPs on the tenant network (`reconcileReboot`) and sets `NetworkHandoffComplete=True` on BMI status.
+5. The networking controller queries that tenant-network DHCP lease, writes the discovered address to the SubnetAttachment CR and BMI status, and sets `IPDiscoveryComplete=True`. The ClusterOrder controller aggregates per-worker readiness and IP status; BMF waits for discovery before reporting each BMI Ready.
 6. Assisted-installer worker registration and cluster installation proceed on the tenant network after each host handoff.
 
-The single Cluster-target `NetworkAttachment` CR records one result per worker,
-keyed by BMI resource ID, including that worker's discovered attachment IP.
-Each BMI status also exposes its own attachment IP and
-`IPDiscoveryComplete`; the ClusterOrder controller aggregates worker IPs into
-`status.nodeSets[].agents[].ipAddress` for operator use. The Cluster does not
-publish worker NIC addresses as a single cluster IP.
+Each worker BMI has its own BMI-target SubnetAttachment CR and discovered IP.
+The ClusterOrder controller aggregates worker IPs into
+`status.nodeSets[].agents[].ipAddress` for operator use. The Cluster's single
+attachment is configuration that the worker reconciler copies into the BMI
+attachment; it is not a target for the private SubnetAttachment API.
 
-The API and ingress VIPs are separate from worker attachment IPs. MetalLB
-allocates the VIPs to the HostedCluster Services, and the CaaS template writes
-them to ClusterOrder `status.apiEndpoint` and `status.ingressEndpoint`.
-Fulfillment-service syncs those endpoint fields to Cluster status. VIPs do not
-go in `NetworkAttachment` status; the ExternalIPAttachment controller waits
-for the relevant VIP and an allocated ExternalIP before creating DNAT.
-
-The Cluster-target request contains no subnet, security-group, interface, or IP values. The Cluster remains the source of the single attachment; each derived BMI attachment carries the per-node-set fabric interface needed for that physical host. BMF submits a BMI-target request only for BMaaS instances created directly through BMaaS, not for CaaS workers. CaaS does not dispatch `move_network_attachment` or query DHCP itself. On cluster deletion or worker scale-down, the worker reconciler requests BMI deletion; BMF and the networking controller complete host and fabric cleanup before BMI deletion completes and before the worker entry is removed. See the [shared private proto definition](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
+The private request contains only the BMI target ID; the subnet, security
+groups, and interface remain on the BMI's existing `BareMetalNetworkAttachment`.
+CaaS does not create requests or dispatch `move_network_attachment` or query
+DHCP itself. On cluster deletion or worker scale-down, the worker reconciler
+requests BMI deletion; BMF and the networking controller complete host and
+fabric cleanup before BMI deletion completes and before the worker entry is
+removed. See the [shared private proto definition](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
 
 ### Non-Goals
 
@@ -150,8 +148,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - For each node_set: resolves `baremetal_instance_type` → BareMetalInstanceType → picks first port with `role=fabric` from `network_ports[]` and stores it as `fabric_interface` on the corresponding `ClusterOrder.spec.nodeRequests[]` entry
     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool, creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) and two ExternalIPAttachments (labeled `osac.openshift.io/auto-created: "true"`) — all in the same DB transaction, all starting in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachments transition to Ready once VIPs are populated (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow and phased requeue cleanup pattern.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
-    - Creates ClusterOrder CR with the resolved singular `networkAttachment` in spec and `osac.openshift.io/clusterorder-uuid: <cluster-id>` label for lookup from a Cluster-target request
-    - Calls private `NetworkAttachments.Create` with `NetworkAttachment{cluster: {id: <cluster-id>}}`; retries are idempotent and return the same Cluster-target request CR
+    - Creates ClusterOrder CR with the resolved singular `networkAttachment` in spec and `osac.openshift.io/clusterorder-uuid: <cluster-id>` label
+    - Does not create a private SubnetAttachment request for the Cluster; BMF submits one BMI-target request for each worker after provisioning
 
 6. **osac-operator ClusterOrder controller:**
     - Creates namespace, ServiceAccount, RoleBindings (same as today)
@@ -161,8 +159,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     **b. `BareMetalWorkerReconciler`** (runs after the ClusterDeployment exists, per OSAC-2135):
     - Creates a cluster-specific `InfraEnv` CR for discovery ignition
     - For each bare-metal worker requested, creates a `BareMetalInstance` via the BMaaS private gRPC API, passing a one-entry `network_attachments` list enriched from `ClusterOrder.spec.networkAttachment` with the immutable `fabric_interface` already stored on the matching `ClusterOrder.spec.nodeRequests[]` entry by the fulfillment-service (step 5) — the controller does not re-resolve from BareMetalInstanceType to avoid divergence if the profile changes after cluster creation
-    - Records each BMI resource ID in `ClusterOrder.status.workers[]`; the networking controller uses these references to fan out the Cluster-target request to worker hosts
-    - BMF provisions each host and publishes `ProvisionTemplateComplete`; the networking controller moves the port and discovers the DHCP address, while BMF performs the handoff reboot and consumes the networking-owned per-BMI readiness conditions. BMF does not submit a second request for CaaS workers
+    - Records each BMI resource ID in `ClusterOrder.status.workers[]` for worker lifecycle tracking and status aggregation
+    - BMF provisions each host, publishes `ProvisionTemplateComplete`, and submits that BMI's private SubnetAttachment request; the networking controller moves the port and discovers the DHCP address, while BMF performs the handoff reboot and consumes the networking-owned readiness conditions
     - The controller correlates registered Agents to BMIs via MAC address and labels them for NodePool selection
     - If an Agent does not register within a configurable timeout (default: 30 minutes), the controller sets the worker phase to `Failed` with reason `AgentRegistrationTimeout` and retries with escalating backoff (see OSAC-2135 for full retry logic)
 
@@ -228,7 +226,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Deletes HyperShift HostedCluster + NodePools
       - DNS cleanup
     - ClusterOrder finalizer actively deletes every BMI listed in `status.workers[]` via `BareMetalInstances.Delete` on the BMaaS private API (30 s context deadline per call). The call returns once the delete is accepted; BMF holds BMI cleanup until the networking controller has returned the fabric port to the provisioning network and removed its networking finalizer. The CaaS controller retains each worker entry in `Deleting` phase and polls BMI state until the BMI is confirmed gone — only then is the entry removed. If the deadline is exceeded or the call fails, the controller retries on the next requeue (controller-runtime exponential backoff); `BareMetalInstances.Delete` is idempotent, so retries are safe. The finalizer holds until all `status.workers[]` entries are confirmed deleted. The InfraEnv CR is garbage collected via its ownerReference to the ClusterOrder (see OSAC-2135).
-    - The Cluster-target `NetworkAttachment` request remains active after the Cluster is deleted. The networking controller uses the matching ClusterOrder's `deletionTimestamp` to stop scale-up fan-out, completes offboarding for the retained worker references, and finishes request cleanup after `status.workers[]` is drained.
+    - Each worker BMI's SubnetAttachment request remains active until its own network offboarding and BMI deletion complete. ClusterOrder retains worker references while deletion proceeds; it does not own a network request or network fan-out.
     - Removes ClusterOrder finalizer
 
 13. **Tenant deletes networking resources** (independently, if desired):
@@ -273,7 +271,7 @@ set:
     {name: "mgmt-0", role: "management", type: "Ethernet", speed: "1Gbps"}]
    ```
 3. Fulfillment picks the first port with `role=fabric` → `data-0`, stores it as the immutable `fabric_interface` on the corresponding `ClusterOrder.spec.nodeRequests[]` entry
-4. The worker controller copies the stored `fabric_interface` into the per-BMI `BareMetalNetworkAttachment`; BMF receives the derived attachment (subnet + interface + primary) on the BMI Create call. The Cluster-target request already identifies the Cluster attachment; the networking controller handles the per-BMI port move and DHCP discovery after BMF provisioning (see [On-Demand BMI Provisioning Model](#on-demand-bmi-provisioning-model-osac-2135)).
+4. The worker controller copies the stored `fabric_interface` into the per-BMI `BareMetalNetworkAttachment`; BMF receives the derived attachment (subnet + interface + primary) on the BMI Create call. After provisioning, BMF submits a BMI-target SubnetAttachment request; the networking controller handles that BMI's port move and DHCP discovery (see [On-Demand BMI Provisioning Model](#on-demand-bmi-provisioning-model-osac-2135)).
 
 For v0.2: **CaaS supports BM node sets only.** VM-based cluster node sets are architecturally possible but are deferred — the HyperShift ↔ CUDN integration for VM worker nodes is not in scope.
 
@@ -303,7 +301,7 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 
 - `ClusterNetworkAttachment` proto message on ClusterSpec
 - `api_endpoint` / `ingress_endpoint` status fields on Cluster and ClusterOrder
-- `BareMetalWorkerReconciler` creates on-demand BareMetalInstances via BMaaS private gRPC API and passes each worker's resolved attachment; the networking controller reconciles each BMI under the Cluster-target request and BMF consumes the per-BMI conditions at provisioning handoff (OSAC-2135)
+- `BareMetalWorkerReconciler` creates on-demand BareMetalInstances via BMaaS private gRPC API and passes each worker's resolved attachment; BMF creates a BMI-target SubnetAttachment request after provisioning and consumes the per-BMI conditions at handoff (OSAC-2135)
 - Template provisions MetalLB VIPs and writes them to ClusterOrder status
 - VIP feedback loop: ClusterOrder → fulfillment-service → Cluster → ExternalIPAttachment controller
 - ExternalIPAttachment Pending → Ready lifecycle for cluster targets
@@ -383,7 +381,7 @@ type NodeSetStatus struct {
 // (see OSAC-2135 WorkerStatus). The BareMetalWorkerReconciler manages
 // worker phases (Provisioning → WaitingForAgent → Binding → Ready),
 // BMI resource IDs, and failure/retry state. IP addresses are discovered
-// by the osac-operator NetworkAttachment controller and written to BMI
+// by the osac-operator SubnetAttachment controller and written to BMI
 // status; the BareMetalWorkerReconciler consumes BMI status for CaaS
 // worker-state aggregation and does not dispatch DHCP queries.
 ```
@@ -422,15 +420,15 @@ Migration adds to clusters table:
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate `network_attachment` (singular), resolve fabric_interface per node set from BareMetalInstanceType, create ClusterOrder CR, submit one idempotent Cluster-target NetworkAttachment request, sync VIPs from feedback, auto-provision ExternalIP |
+| fulfillment-service | Validate `network_attachment` (singular), resolve `fabric_interface` per node set from BareMetalInstanceType, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
 | osac-operator BareMetalWorkerReconciler | Create on-demand BareMetalInstances via BMaaS private gRPC API with a one-entry `network_attachments` list (subnet from ClusterOrder `networkAttachment` + immutable `fabric_interface` from the node set, resolved once by fulfillment-service); correlate Agents to BMIs via MAC; delete BMIs on scale-down/cluster deletion. It passes CaaS attachment intent to BMF and does not dispatch network operations (OSAC-2135) |
-| BMaaS (bare-metal-fulfillment-operator) | Owns BMI provisioning, the handoff reboot, and host power/deprovision lifecycle; submits the private request for directly created BMaaS instances and consumes networking-owned per-BMI readiness and IP-discovery conditions for BMaaS and CaaS workers |
-| osac-operator NetworkAttachment controller | Owns reconciliation of ComputeInstance, Cluster, and BaremetalInstance requests; for a Cluster request, fans out to the worker BMIs in ClusterOrder status and owns their fabric port moves, DHCP lease queries, BMI networking conditions/status, AAP job history, and network finalizers |
+| BMaaS (bare-metal-fulfillment-operator) | Owns BMI provisioning, the handoff reboot, and host power/deprovision lifecycle; submits one BMI-target SubnetAttachment request after provisioning for direct BMaaS instances and CaaS workers; consumes networking-owned readiness and IP-discovery conditions |
+| osac-operator SubnetAttachment controller | Owns reconciliation of ComputeInstance and BaremetalInstance requests; for each BMI target, owns that BMI's fabric port move, DHCP lease query, networking conditions/status, AAP job history, and network finalizer |
 | osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, trigger AAP workflow, aggregate worker status and networking readiness from BMI status |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
 | osac-operator ExternalIPAttachment controller | Read ClusterOrder `apiEndpoint`/`ingressEndpoint` (MetalLB-allocated, template-discovered) from status, create DNAT via fabric_manager |
 | AAP template (ocp_4_17_small) | Create HostedCluster+NodePools, provision MetalLB VIPs, write VIPs to ClusterOrder status, host-side networking handled by DHCP |
-| fabric_manager (Ansible role) | move_network_attachment (generic port move, dispatched by the osac-operator NetworkAttachment controller), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
+| fabric_manager (Ansible role) | move_network_attachment (generic port move, dispatched by the osac-operator SubnetAttachment controller), create/delete_external_ip_attachment (DNAT), create/delete_nat_gateway (SNAT) |
 | k8s_manager (Ansible role) | create/delete_subnet (CUDN overlay) — called at subnet creation, NOT at cluster creation |
 
 #### Auto-Provisioned Resource Lifecycle
@@ -613,8 +611,8 @@ Tech Preview criteria:
 - [ ] API fields (`network_attachment`, `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`) implemented in fulfillment-service
 - [ ] Operator CRD updated with `ClusterNetworkAttachment`, `APIEndpoint`, `IngressEndpoint` fields
 - [ ] BareMetalWorkerReconciler (OSAC-2135) implemented — on-demand BMI creation with enriched network_attachment
-- [ ] fulfillment-service submits one private `NetworkAttachments.Create` request targeting the Cluster and materializes one internal request CR; the networking controller fans out to current and later ClusterOrder worker BMI references
-- [ ] BMF consumes per-BMI networking readiness and IP-discovery conditions for CaaS workers without submitting BMI-target requests on their behalf
+- [ ] BMF submits one private `SubnetAttachments.Create` request per CaaS worker BMI after `ProvisionTemplateComplete=True`; fulfillment-service materializes one internal request CR per BMI
+- [ ] BMF consumes per-BMI networking readiness and IP-discovery conditions for CaaS workers
 - [ ] Agent-to-BMI MAC correlation and NodePool labeling implemented
 - [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
