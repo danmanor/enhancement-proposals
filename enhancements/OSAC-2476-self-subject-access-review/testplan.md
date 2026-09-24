@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-2476 — Self-Subject Access Review API
-- **Total test cases:** 15
+- **Total test cases:** 17
 - **Requirements covered:** 6 of 6 (3 user stories + 3 technical requirements)
 - **Interface changes covered:** 1 of 1
 
@@ -36,7 +36,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Response `status.allowed` is `true`
-- No `status.reason` field present (permission granted)
+- `status.reason` is empty (v1 does not return denial reasons)
 
 #### TC-US1-02: Check permission to create VirtualNetwork in non-member tenant
 
@@ -58,7 +58,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Response `status.allowed` is `false`
-- Response `status.reason` indicates user is not authorized for the specified tenant
+- `status.reason` is empty; the response does not describe the target tenant
 
 #### TC-US1-03: Check permission to manage users via User resource operations
 
@@ -79,7 +79,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Response `status.allowed` is `true` (tenant admins can manage users)
-- No `status.reason` field present
+- `status.reason` is empty
 
 ### US-2: Tenant User Infrastructure Operations
 
@@ -104,7 +104,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Response `status.allowed` is `true`
-- No `status.reason` field present
+- `status.reason` is empty
 
 #### TC-US2-02: Check permission to delete Subnet in own tenant
 
@@ -126,7 +126,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Response `status.allowed` is `true`
-- No `status.reason` field present
+- `status.reason` is empty
 
 #### TC-US2-03: Check permission to update NetworkACL rules and Subnet association
 
@@ -156,7 +156,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Both responses have `status.allowed` set to `false`
-- Each `status.reason` indicates the user does not own the specified resource
+- Both `status.reason` values are empty; the response does not describe either resource
 
 ### US-3: Tenant User Resource-Scoped Permissions
 
@@ -185,7 +185,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Both responses have `status.allowed` set to `true`
-- Neither response includes `status.reason`
+- Both `status.reason` values are empty
 
 #### TC-US3-02: Check permission to delete specific VirtualNetwork owned by another user
 
@@ -208,7 +208,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Expected Results
 
 - Response `status.allowed` is `false`
-- Response `status.reason` indicates user does not own the specified resource
+- `status.reason` is empty; the response does not describe the resource
 
 ### TR-1: Comprehensive Resource Coverage
 
@@ -226,8 +226,8 @@ scope and target resource name are supplied in the review object's top-level
 
 ##### Steps
 
-1. For each OSAC service (`osac.public.v1.Clusters`, `osac.public.v1.ComputeInstances`, `osac.public.v1.DiskImages`, `osac.public.v1.ExternalIPs`, `osac.public.v1.ExternalIPAttachments`, `osac.public.v1.ExternalIPPools`, `osac.public.v1.NATGateways`, `osac.public.v1.NetworkACLs`, `osac.public.v1.Subnets`, `osac.public.v1.Tenants`, `osac.public.v1.VirtualNetworks`):
-   - Send `CreateSelfSubjectAccessReviewRequest` with `spec.service=<service>`, `spec.method="Create"`
+1. For each OSAC service (`osac.public.v1.Clusters`, `osac.public.v1.ComputeInstances`, `osac.public.v1.DiskImages`, `osac.public.v1.ExternalIPs`, `osac.public.v1.ExternalIPAttachments`, `osac.public.v1.ExternalIPPools`, `osac.public.v1.NATGateways`, `osac.public.v1.NetworkACLs`, `osac.public.v1.Subnets`, `osac.public.v1.Tenants`, `osac.public.v1.Users`, `osac.public.v1.VirtualNetworks`):
+   - Send `CreateSelfSubjectAccessReviewRequest` with `spec.service=<service>` and a method supported by that service; use `spec.method="List"` for `osac.public.v1.ExternalIPPools` and `spec.method="Create"` for the other listed services
    - Verify response `status.allowed` is `true` (admin has all permissions)
 2. Observe all responses
 
@@ -257,6 +257,43 @@ scope and target resource name are supplied in the review object's top-level
 
 - All permission checks return valid responses
 - No `InvalidArgument` errors for any method
+
+#### TC-TR1-03: Reject unknown services, unsupported methods, and recursive reviews
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | high | automated |
+
+##### Preconditions
+
+- Tenant user is authenticated with JWT token
+
+##### Steps
+
+1. Request a review for an unknown service.
+2. Request a review for a known service with an unsupported method, including `Create` on `osac.public.v1.ExternalIPPools`.
+3. Request a review for `osac.public.v1.SelfSubjectAccessReviews` with method `Create`.
+
+##### Expected Results
+
+- Each request returns `InvalidArgument` and no authorization evaluation is performed.
+- The review service cannot recursively evaluate itself.
+
+#### TC-TR1-04: Require authentication for permission reviews
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | high | automated |
+
+##### Steps
+
+1. Call `SelfSubjectAccessReviews.Create` without an authentication token.
+2. Call it again with an expired token.
+
+##### Expected Results
+
+- Both requests return `Unauthenticated`.
+- No permission result is returned.
 
 ### TR-2: Authorization Consistency
 
@@ -308,6 +345,49 @@ scope and target resource name are supplied in the review object's top-level
 - Permission check returns `status.allowed=false`
 - Actual update operation fails with `PermissionDenied` gRPC error
 
+#### TC-TR2-03: Do not expose evaluator failures
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | high | automated |
+
+##### Preconditions
+
+- The handler is configured with a fake authorization evaluator that returns an error containing internal policy details.
+
+##### Steps
+
+1. Send a valid `CreateSelfSubjectAccessReviewRequest`.
+2. Observe the gRPC response and server logs.
+
+##### Expected Results
+
+- The request returns `Internal` with a generic error message.
+- The response does not include evaluator, policy, tenant, or resource details.
+- Server-side diagnostics record a sanitized evaluator failure without the raw error or user-provided tenant/resource values.
+
+#### TC-TR2-04: Cross-tenant denials do not disclose resource information
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-1 | critical | automated |
+
+##### Preconditions
+
+- Tenant user is authenticated in `org-a` and is not a member of `org-b`.
+- A VirtualNetwork named `private-net` exists in `org-b`.
+
+##### Steps
+
+1. Request a review for `osac.public.v1.VirtualNetworks`, method `Get`, with `metadata.tenant="org-b"` and `metadata.name="private-net"`.
+2. Repeat with a name that does not exist in `org-b`.
+3. Observe both responses.
+
+##### Expected Results
+
+- Both responses have `status.allowed=false` and empty `status.reason`.
+- Neither response reveals whether the target resource exists or repeats the tenant/resource name.
+
 ### TR-3: Advisory Results
 
 **Technical Requirement:** Validation that permission check results reflect authorization state at check time, but actual operations must independently re-evaluate authorization
@@ -337,6 +417,12 @@ scope and target resource name are supplied in the review object's top-level
 - After permission revocation, actual create operation fails with `PermissionDenied` error
 - This demonstrates that permission checks are advisory snapshots, not authoritative guarantees
 
+## Test Execution and Implementation
+
+- Add the end-to-end gRPC suite at `tests/e2e/iam/test_self_subject_access_review.py` in the OSAC source repository. Use the shared `GRPCClient` from `tests/e2e/core/grpc_client.py` and the `grpc`, `jwt_grpc_tenant1_admin`, `jwt_grpc_tenant1`, and `jwt_grpc_tenant2` fixtures from `tests/e2e/conftest.py`; follow the IAM reference pattern in `tests/e2e/references/test_iam_references.py`.
+- Test evaluator errors in fulfillment-service unit tests with a fake `AuthorizationEvaluator`; the E2E suite should cover API-visible status and authentication behavior.
+- The external test-infrastructure repository provisions dependencies; test suites belong in the OSAC source repository.
+
 ## Gaps
 
 ### Requirement Coverage Gaps
@@ -351,13 +437,13 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 15 |
-| Critical | 3 |
-| High | 11 |
+| Total test cases | 17 |
+| Critical | 5 |
+| High | 12 |
 | Medium | 0 |
 | Low | 0 |
 | Manual | 1 |
-| Automated | 14 |
+| Automated | 16 |
 | Requirements with test cases | 6 / 6 |
 | Interface changes with test cases | 1 / 1 |
 
@@ -366,7 +452,8 @@ All interface changes are exercised by test cases.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise, revise, revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

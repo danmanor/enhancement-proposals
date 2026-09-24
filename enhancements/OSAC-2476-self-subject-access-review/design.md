@@ -41,7 +41,7 @@ The fulfillment-service uses OPA for authorization, with policies evaluated in `
 
 ## Proposal
 
-Add a new `SelfSubjectAccessReview` type to the fulfillment-service public API with a create-only service (no List/Get/Update/Delete operations). The type follows Kubernetes conventions: spec describes the hypothetical operation to check (service name, method, optional tenant/name scoping), status returns the evaluation result (allowed boolean, optional reason string).
+Add a new `SelfSubjectAccessReview` type to the fulfillment-service public API with a create-only service (no List/Get/Update/Delete operations). The type follows Kubernetes conventions: spec describes the hypothetical operation to check (service name, method, optional tenant/name scoping), and status returns the evaluation result. The `reason` field is reserved for future use and is always empty in v1.
 
 Implementation creates an `AuthorizationEvaluator` interface that extracts OPA policy evaluation from `GrpcAuthzInterceptor` into a reusable and extendable component. The interface enables alternative implementations (mocking for tests, future policy backends) while maintaining authorization consistency. The `SelfSubjectAccessReviews.Create` handler:
 
@@ -72,7 +72,7 @@ This component-based approach ensures the same OPA policies govern both permissi
    - Constructs gRPC method path from `service` + `method` (e.g., `"osac.public.v1.Clusters" + "Create"` → `"/osac.public.v1.Clusters/Create"`)
    - Constructs OPA input with complete authentication context, method path, and `metadata.tenant` and `metadata.name` as context extensions
    - Evaluates OPA policy using the `AuthorizationEvaluator` component, including resource ownership and database visibility filtering to ensure accurate authorization results
-   - Returns `SelfSubjectAccessReview` response with `status.allowed` (bool) and optional `status.reason` (string)
+   - Returns `SelfSubjectAccessReview` response with `status.allowed` (bool); `status.reason` is always empty in v1
 4. User receives permission check result
 
 **Error Flows:**
@@ -106,8 +106,9 @@ if err != nil {
 if resp.Object.Status.Allowed {
     // User is authorized — proceed with create workflow
 } else {
-    // User is not authorized — display reason or hide UI element
-    fmt.Printf("Permission denied: %s\n", resp.Object.Status.Reason)
+    // User is not authorized — hide or disable the UI action.
+    // v1 does not return a denial reason.
+    fmt.Println("Permission denied")
 }
 ```
 
@@ -622,9 +623,9 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 - **Unauthenticated requests:** Calling endpoint without valid JWT returns `Unauthenticated` error
 - **Invalid inputs:** Unknown service, invalid method, malformed tenant name → appropriate validation errors
 
-**E2E Tests (osac-test-infra):**
+**E2E Tests (OSAC source repository):**
 - UI workflow: User navigates to Clusters page → UI calls `SelfSubjectAccessReview("osac.public.v1.Clusters", "Create")` → if `allowed=false`, "Create Cluster" button is disabled
-- CLI workflow: `osac auth can-i create clusters` → calls permission check API → prints "yes" or "no" based on result
+- CLI workflow: `osac auth can-i create clusters` → calls permission check API using service `osac.public.v1.Clusters` and method `Create` → prints "yes" or "no" based on `allowed`
 
 ## Security Considerations
 
@@ -637,11 +638,7 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 
 **Input validation:** `buf.validate` annotations enforce service and method constraints, while the standard Metadata validators enforce optional `metadata.tenant` and `metadata.name` constraints. A supplied `metadata.name` is the target name for resource-scoped authorization; it is not part of the `spec`. Unknown services return `InvalidArgument` errors before reaching authorization logic.
 
-**Information disclosure:** The response `reason` field may reveal information about why permission was denied, but must NOT disclose cross-tenant information. Reason messages must be sanitized to prevent tenant enumeration or information leakage:
-- SAFE: "insufficient permissions" (generic denial, reveals nothing about other tenants)
-- UNSAFE: "user is not a member of tenant X" (reveals tenant X's existence to users outside that tenant)
-- The reason is based on the caller's own identity and the request parameters they provided, never revealing information about other tenants or users
-- v1 implementation: OPA policy does not export denial reasons, so the `reason` field is always empty. Future enhancement may add sanitized reasons that do not leak cross-tenant data.
+**Information disclosure:** The v1 response never includes a denial explanation: `status.reason` is always empty because the OPA policy does not export denial reasons. A future version that adds explanations must not reveal whether another tenant or its resources exist. The current response exposes only `allowed`.
 
 **Data exposure:** No new data is exposed. The API returns only whether the caller would be authorized for a hypothetical operation, using information the caller already knows (their own identity and tenants) and information they provide in the request (type, method, tenant, name).
 
@@ -828,17 +825,15 @@ Current design uses **Option A** (validation error) for clarity and fast feedbac
 **Authorization consistency (critical):**
 - Admin user: `SelfSubjectAccessReview(service="osac.public.v1.Clusters", method="Create")` returns `allowed=true`; actual `Clusters.Create()` succeeds
 - Tenant Admin for `org-a`: `SelfSubjectAccessReview(service="osac.public.v1.VirtualNetworks", method="Create", metadata.tenant="org-a")` returns `allowed=true`; actual create succeeds
-- Tenant Admin for `org-a`: `SelfSubjectAccessReview(service="osac.public.v1.VirtualNetworks", method="Create", metadata.tenant="org-b")` returns `allowed=false` with `reason` that does NOT contain "org-b" (e.g., empty or "insufficient permissions"); actual create returns `PermissionDenied` with error message that also does NOT reveal "org-b"
+- Tenant Admin for `org-a`: `SelfSubjectAccessReview(service="osac.public.v1.VirtualNetworks", method="Create", metadata.tenant="org-b")` returns `allowed=false` with empty `status.reason`; actual create returns `PermissionDenied` with an error message that does not reveal "org-b"
 - Tenant Admin for `org-a`: NetworkACL `Update` check with `metadata.name` set to an owned ACL returns `allowed=true` and the corresponding rule update succeeds; Subnet `Update` check with `metadata.name` set to an owned Subnet returns `allowed=true` and reassociation to a READY ACL in the same VirtualNetwork succeeds
 - Tenant User for `org-a`: NetworkACL and Subnet `Update` checks with `metadata.name` set to resources owned by another user return `allowed=false`, matching the actual authorization decision
 - Client user: `SelfSubjectAccessReview(service="osac.public.v1.Tenants", method="Update")` returns `allowed=false`; actual update returns `PermissionDenied`
 - Repeat for all services and methods across Admin, Tenant Admin, Client roles
 
 **Cross-tenant information disclosure prevention (security):**
-- Verify `reason` field NEVER contains tenant names, resource names, or other user-provided parameters from requests when denying access to prevent tenant enumeration
-- Verify actual operation error messages also NEVER reveal tenant names from other tenants
-- SAFE reason/error: empty string or "insufficient permissions"
-- UNSAFE reason/error: "user is not a member of tenant org-b" or "tenant org-b does not exist"
+- Verify `status.reason` is empty for denials and actual operation error messages do not reveal tenant names from other tenants
+- Verify denied checks for existing and nonexistent resources in a non-member tenant return the same public result
 
 **Advisory nature:**
 - User checks `SelfSubjectAccessReview(service="osac.public.v1.Clusters", method="Create")` → `allowed=true`
@@ -867,8 +862,8 @@ Current design uses **Option A** (validation error) for clarity and fast feedbac
 
 **CLI permission checking:**
 - Tenant user runs `osac auth can-i create compute-instances`
-- CLI calls `SelfSubjectAccessReview("ComputeInstance", "create")`
-- CLI prints "yes" if `allowed=true`, "no (reason)" if `allowed=false`
+- CLI calls `SelfSubjectAccessReview(service="osac.public.v1.ComputeInstances", method="Create")`
+- CLI prints "yes" if `allowed=true`, "no" if `allowed=false`; v1 returns no denial reason
 
 ## Upgrade / Downgrade Strategy
 
@@ -910,8 +905,8 @@ No version skew concerns. The fulfillment-service is the only component that imp
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise, revise
+Phases: revise, revise, revise, revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

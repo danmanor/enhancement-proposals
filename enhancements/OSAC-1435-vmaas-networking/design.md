@@ -97,11 +97,16 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 2. **Tenant creates NetworkACL:**
    ```bash
-   osac create network-acl --virtual-network my-net --name my-acl
+   osac create network-acl --virtual-network my-net --name my-acl \
+     --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+     --ingress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
+   - NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with the reverse-direction rules needed for both reply paths. Replace the documentation CIDRs with trusted deployment ranges.
    - The NetworkACL has independent ingress and egress rules. Rules contain an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR.
    - Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied.
-   - The ACL is stateless. For example, allowing inbound TCP traffic to a service port also requires an egress rule for the expected response traffic.
+   - The ACL is stateless. Every allowed connection needs explicit rules in both directions; the reverse rules above permit response packets to their destination ephemeral ports.
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
    - NetworkACL rule lists may be updated later; changes apply to every workload on each associated Subnet without changing workload attachments.
 
@@ -549,8 +554,9 @@ Consequences:
 
 ## Provenance
 
-Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->

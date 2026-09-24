@@ -199,9 +199,12 @@ managed-switch infrastructure, limiting where the platform can run.
 
 #### External IP Pools
 
-- **FR-7:** A Cloud Infrastructure Admin can define external IP ranges
-  (ExternalIPPool) from which the agentless VLAN backend allocates ExternalIPs for
-  tenant external access. [Jira: OSAC-3664]
+- **FR-7:** After this backend implements mandatory NetworkACL enforcement and
+  becomes selectable as a supported fabric manager, a Cloud Infrastructure
+  Admin can define external IP ranges (ExternalIPPool) from which tenant
+  ExternalIPs can be allocated for external access. This milestone does not
+  expose tenant ExternalIP allocation through this backend. [Jira: OSAC-3664;
+  User direction]
 
 #### Networking Across All Services
 
@@ -376,8 +379,8 @@ selected as a supported fabric manager.
 
 ## Provenance
 
-Committed: commit @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

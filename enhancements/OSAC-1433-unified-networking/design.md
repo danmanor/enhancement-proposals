@@ -435,6 +435,10 @@ egress. For TCP/UDP, either both port endpoints are supplied or neither is;
 an omitted range matches all destination ports for that protocol. [PRD:
 FR-2, FR-4, FR-5]
 
+NetworkACL creation does not add default rules. An ACL with empty ingress and
+egress lists denies all traffic that reaches its Subnet boundary; users must
+provide every required flow, including reverse-direction rules for replies.
+
 Deleting a NetworkACL that is associated with one or more Subnets fails with
 `FAILED_PRECONDITION`. Deleting a VirtualNetwork is blocked until its Subnets,
 NetworkACLs, and NATGateway have been removed. An ACL update is rejected if
@@ -518,13 +522,18 @@ The fabric manager creates an isolated tenant segment on the fabric.
 
 ```bash
 osac create network-acl --virtual-network my-net --name web-acl \
-  --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=0.0.0.0/0" \
-  --egress-rule "action=ALLOW,priority=100,protocol=ALL,cidr=0.0.0.0/0"
+  --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+  --ingress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+  --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+  --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
 ```
 
-The broad egress rule explicitly permits response traffic because ACL rules
-are stateless. A tenant that restricts egress must add rules for the return
-traffic it needs.
+The example allows HTTPS from the illustrative client range and to the
+illustrative external endpoint range. The higher destination-port rules allow
+the corresponding replies in each reverse direction. These documentation
+CIDRs must be replaced with the deployment's actual trusted client and
+endpoint ranges. Rules are stateless: omitting either reverse rule blocks that
+flow's replies.
 
 **Create Subnet and associate the ACL:**
 
@@ -1601,8 +1610,8 @@ No additional infrastructure beyond existing OSAC components and managers.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Phases: revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
