@@ -280,7 +280,13 @@ message BareMetalInstanceCatalogItem {
 }
 ```
 
-#### Proto: BareMetalInstance
+#### Proto: BareMetalInstance (partial API schema)
+
+This schema sketch predates the networking fields. The authoritative
+`BareMetalNetworkAttachment` and `BareMetalInstanceSpec.network_attachments`
+contract is defined in
+[OSAC-1437](/enhancements/OSAC-1437-bmaas-networking/design.md#api-extensions);
+the Subnet's NetworkACL supplies traffic policy.
 
 ```protobuf
 // Contains the image configuration for a bare metal instance.

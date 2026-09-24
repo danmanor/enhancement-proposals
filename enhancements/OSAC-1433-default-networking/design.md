@@ -75,8 +75,15 @@ The design covers three capabilities: default networking (including NATGateway) 
 
 1. **Cloud Infrastructure Admin creates the NetworkClass with defaults:**
    The NetworkClass is created with the deployment-wide IPv4 CIDRs and
-   default ingress and egress NetworkACL rules before tenant onboarding. NetworkClass changes follow
-   the unified create/read/delete contract and require replacement.
+   tenant-default ingress and egress NetworkACL rules before tenant onboarding.
+   The tenant default ACL denies unmatched ingress and permits egress by
+   default. The NetworkClass egress rule set explicitly includes an `ALLOW
+   ALL` rule for `0.0.0.0/0` at priority `32766`; more-specific deny rules use
+   earlier priorities. In the stateless rule model, that egress permit does
+   not allow reply traffic automatically, so reverse-direction ingress rules
+   must be configured for replies that need to pass.
+   NetworkClass changes follow the unified create/read/delete contract and
+   require replacement.
 
    **NetworkClass replacement lifecycle:** `VirtualNetwork.spec.network_class`
    is required and immutable. The old NetworkClass cannot be deleted while any
@@ -236,10 +243,10 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
       VirtualNetwork/Subnet address configuration are immutable after creation.
     - Default resources cannot be deleted while any resource depends on them
       (subnet deletion is blocked if VMs reference it).
-    - The default Subnet cannot be reassociated in place. Replacing default
-      policy requires deleting dependent workloads and the default Subnet,
-      deleting the old NetworkACL, then creating the replacement ACL and Subnet
-      with the desired rules and association.
+    - The default Subnet cannot be reassociated in place. Replacing its policy
+      follows the coordinated process in [Default Resource Lifecycle](#default-resource-lifecycle),
+      including every Subnet that references the shared ACL and its dependent
+      workloads.
     - Replacing the default address/resource set (VirtualNetwork, Subnet,
       and NATGateway) is a coordinated transition: pause
       default-based creates for every affected existing tenant, drain or delete
@@ -277,7 +284,8 @@ message NetworkClassSpec {
 message NetworkDefaults {
   string virtual_network_cidr = 1;  // e.g., "10.0.0.0/16"
   string ipv4_subnet_cidr = 2;      // e.g., "10.0.1.0/24"
-  repeated NetworkACLRule ingress_rules = 3;
+  repeated NetworkACLRule ingress_rules = 3; // default config leaves this empty
+  // Default config includes ALLOW ALL 0.0.0.0/0 at priority 32766.
   repeated NetworkACLRule egress_rules = 4;
 }
 
@@ -361,7 +369,8 @@ type NetworkClassSpec struct {
 type NetworkDefaults struct {
     VirtualNetworkCIDR string           `json:"virtualNetworkCIDR,omitempty"`
     IPv4SubnetCIDR     string           `json:"ipv4SubnetCIDR,omitempty"`
-    IngressRules       []NetworkACLRule `json:"ingressRules,omitempty"`
+    IngressRules       []NetworkACLRule `json:"ingressRules,omitempty"` // default config leaves this empty
+    // Default config includes ALLOW ALL 0.0.0.0/0 at priority 32766.
     EgressRules        []NetworkACLRule `json:"egressRules,omitempty"`
 }
 
@@ -433,9 +442,12 @@ type ClusterSpec struct {
 - **Creation:** fulfillment-service creates default VN, then NetworkACL, then IPv4 Subnet associated with that ACL, and NATGateway at tenant onboarding (through the normal API; resources are persisted and reconciled like any other resource)
 - **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
 - **Visibility:** Default resources appear in list/detail views like any other resource
-- **Mutability:** NetworkACL rules and the Subnet's ACL association can be
-  updated in place. VirtualNetwork/Subnet address configuration remains
-  immutable after creation.
+- **Mutability:** NetworkACL rules and the Subnet's ACL association are fixed at
+  creation. To replace a default policy, pause network changes and workload
+  creation on every Subnet referencing the ACL; delete affected workloads, all
+  referencing Subnets, and then the ACL. Create the replacement ACL and Subnets
+  with the desired rules and associations, and resume creates after they are
+  READY. VirtualNetwork/Subnet address configuration is also immutable.
 - **Deletion protection:** Default resources cannot be deleted while any resource depends on them (e.g., subnet deletion blocked if VMs reference it)
 - **Tenant deletion:** Default resources are deleted when tenant is deleted (owner reference cleanup)
 
@@ -486,12 +498,13 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent resource
 - Default resources (VN, Subnet, NetworkACL, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
-- Default NetworkACL rules configured by Cloud Infrastructure Admin (applies to all tenants)
-- Default NetworkACL rules and the default Subnet association are fixed at
-  creation; changing defaults requires recreating dependent networking resources
-
-**Risk: Default NetworkACL too permissive**
-- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access before tenant onboarding. Unmatched traffic is denied. Tenants can create separate networking resources for future workloads; existing default rules and associations cannot be changed in place.
+- NetworkClass default rules are configured by the Cloud Infrastructure Admin
+  and materialized when a tenant is onboarded. Later NetworkClass changes do
+  not update existing tenant ACLs.
+- NetworkACL rules and Subnet associations are fixed at creation; policy
+  changes require the coordinated replacement process in
+  [Default Resource Lifecycle](#default-resource-lifecycle). See the
+  [default-policy risk](#risk-default-networkacl-too-permissive) for mitigation.
 
 ### Failure Handling and Recovery
 
@@ -519,12 +532,12 @@ This feature inherits the existing security model:
 
 No new tenancy boundary is introduced. Default resources and auto-created ExternalIPs inherit the existing tenant isolation:
 - `osac.openshift.io/tenant` annotation propagated from parent to all child resources
-- OPA policies enforce tenant-scoped create/list/get/update/delete. Update is
-  limited to NetworkACL rules and Subnet ACL association; all other networking
-  specifications remain immutable.
+- OPA policies enforce tenant-scoped read (List/Get), Create, and Delete for
+  networking resources; they expose no Update operation.
 - Tenant User can view default and auto-created resources and use the supported
-  create/list/get/update/delete operations subject to dependency protection
-- Cloud Infrastructure Admin configures NetworkClass defaults (global, applies to all tenants)
+  read, create, and delete operations, subject to dependency protection.
+- Cloud Infrastructure Admin configures NetworkClass defaults used during
+  tenant onboarding; changes do not revise existing tenant ACLs.
 
 ### Observability and Monitoring
 
@@ -554,9 +567,17 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: Default NetworkACL too permissive
 
-**Impact:** All tenants receive the same default NetworkACL rules configured by Cloud Infrastructure Admin. If misconfigured, all tenants' resources may be exposed.
+**Impact:** The tenant default ACL permits egress unless an earlier rule
+denies it; an overly broad exception may expose workloads to unintended
+outbound access. Unmatched ingress is denied, and return traffic still needs
+an explicit reverse-direction rule. Changing NetworkClass defaults does not
+update existing tenant ACLs.
 
-**Mitigation:** Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access (e.g., SSH and HTTPS only). Tenant Admin can tighten rules after creation.
+**Mitigation:** Cloud Infrastructure Admin limits ingress exceptions and can
+restrict egress with earlier-priority DENY rules in NetworkClass before tenant
+onboarding. Tightening an existing tenant's policy requires the coordinated
+replacement process in [Default Resource Lifecycle](#default-resource-lifecycle),
+including every Subnet referencing the ACL and its dependent workloads.
 
 **Reviewed by:** Cloud Infrastructure Admin
 
@@ -611,7 +632,9 @@ Resolved: Return error, no resource persisted.
 
 ### Unit Tests
 
-- fulfillment-service: NetworkClass defaults validation (valid CIDR, valid NetworkACLRule fields)
+- fulfillment-service: NetworkClass defaults validation (valid CIDR and rule
+  fields, deny unmatched ingress, and include default egress ALLOW ALL at
+  priority 32766)
 - fulfillment-service: resource-specific attachment resolution (resolve omitted or empty fields, fill partial attachments, preserve complete explicit attachments)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
@@ -825,9 +848,9 @@ Consequences:
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, revise
+Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, revise, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

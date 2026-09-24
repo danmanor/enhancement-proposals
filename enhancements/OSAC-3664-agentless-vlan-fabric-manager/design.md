@@ -1824,8 +1824,8 @@ checks use raw topology fixtures.
   lease-file parsing, daemon restart, and lease preservation across reload.
 - Verify whole-address/all-protocol DNAT, explicit `SNAT --to-source`, BGP
   announce-after-rule ordering, and route-withdraw-before-release cleanup.
-- Verify NATGateway source-CIDR reconciliation when a Subnet is added, updated,
-  or deleted, including rule-set revision and ordering before VLAN release.
+- Verify NATGateway source-CIDR reconciliation when a Subnet is added or
+  deleted, including rule-set revision and ordering before VLAN release.
 - Inject an ExternalIP state-file write failure and verify that no partial
   `external_ips` entry is visible, retries reuse the same UUID reservation, and
   terminal failure compensates capacity only after `NOT_COMMITTED`.
@@ -2066,8 +2066,9 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, revise, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

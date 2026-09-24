@@ -432,9 +432,18 @@ egress. For TCP/UDP, either both port endpoints are supplied or neither is;
 an omitted range matches all destination ports for that protocol. [PRD:
 FR-2, FR-4]
 
-NetworkACL creation does not add default rules. An ACL with empty ingress and
-egress lists denies all traffic that reaches its Subnet boundary; users must
-provide every required flow, including reverse-direction rules for replies.
+The current deployment-level ACL policy is hard-coded to permit all traffic.
+That deployment policy is separate from tenant-managed NetworkACL rules and
+from the tenant default ACL provisioned at onboarding. Tenant default ACL
+behavior is deny-by-default for ingress and permit-by-default for egress; the
+stateless tenant ACL still requires explicit reverse-direction ingress rules
+for any egress replies that must pass.
+
+Creating a tenant-managed NetworkACL does not seed default rules. An ACL with
+empty ingress and egress lists denies all traffic that reaches its Subnet
+boundary; users must provide every required flow, including reverse-direction
+rules for replies. The tenant default ACL policy is materialized separately by
+default networking.
 
 Deleting a NetworkACL that is associated with one or more Subnets fails with
 `FAILED_PRECONDITION`. Deleting a VirtualNetwork is blocked until its Subnets,
@@ -1601,8 +1610,9 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

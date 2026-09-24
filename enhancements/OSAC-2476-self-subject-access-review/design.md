@@ -670,7 +670,7 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 
 **Risk: Missing or incorrect target resource name**
 - **Manifestation:** A resource-scoped check omits `metadata.name` or supplies a name different from the resource targeted by the actual operation, so the ownership context cannot match that operation.
-- **Mitigation:** Clients supply the actual target name in `metadata.name` for resource-scoped checks. The server forwards it as `ContextExtensions.Name`, and integration tests compare checks against updates and deletes of the named resource.
+- **Mitigation:** Clients supply the actual target name in `metadata.name` for resource-scoped checks. The server forwards it as `ContextExtensions.Name`, and integration tests compare each check against the corresponding supported operation on the named resource, including Update only where that service exposes it.
 - **Residual risk:** Low — the field is optional for method-level checks, while resource-scoped client flows know the target resource name.
 
 **Risk: Protobuf reflection mapping does not capture a new service**
@@ -873,8 +873,9 @@ No version skew concerns. The fulfillment-service is the only component that imp
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
