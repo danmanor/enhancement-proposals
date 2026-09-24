@@ -132,6 +132,8 @@ Subnet used by a positive case has an associated, actively enforced policy.
 - A Cloud Infrastructure Admin fixture can create the provider-scoped
   ExternalIPPool; the tenant fixture cannot create or update that pool.
 - The test tenant can create tenant-scoped networking resources.
+- A test host is available for creating a BareMetalInstance on the Subnet.
+- The ExternalIPPool has capacity for at least two distinct allocations.
 
 ##### Steps
 
@@ -143,10 +145,15 @@ Subnet used by a positive case has an associated, actively enforced policy.
 4. Create a Subnet whose `spec.network_acl` explicitly references that
    same-VirtualNetwork ACL. Wait until the policy is enforced on the Subnet and
    the Subnet reaches Ready.
-5. Create an ExternalIP, ExternalIPAttachment, and NATGateway with the tenant
-   fixture through the existing API.
-6. Attempt to create or update the ExternalIPPool with the tenant fixture.
-7. Poll the corresponding CRs and fulfillment-service resources.
+5. Create a BareMetalInstance on the Ready Subnet with the test host fixture.
+   Wait until its primary private address is available.
+6. Create two ExternalIPs from the pool and wait until both are Allocated with
+   distinct addresses.
+7. Create an ExternalIPAttachment using the first ExternalIP and the
+   BareMetalInstance target. Create a NATGateway using the second ExternalIP
+   and the VirtualNetwork.
+8. Attempt to create or update the ExternalIPPool with the tenant fixture.
+9. Poll the corresponding CRs and fulfillment-service resources.
 
 ##### Expected Results
 
@@ -154,7 +161,9 @@ Subnet used by a positive case has an associated, actively enforced policy.
 - The tenant cannot create or modify the provider-scoped ExternalIPPool.
 - The Subnet references the READY NetworkACL in its VirtualNetwork, and its
   readiness follows confirmation that the policy is enforced.
-- Each corresponding resource reaches its expected Ready or Allocated state.
+- Each ExternalIP reaches Allocated with a distinct address. The
+  ExternalIPAttachment reaches Ready after the target address is available and
+  DNAT succeeds; the NATGateway reaches Ready after SNAT succeeds.
 - Each tenant-scoped CR retains both required tenant-isolation annotations.
 
 #### TC-FR2-02: Preserve the existing API contract for external access
@@ -165,14 +174,16 @@ Subnet used by a positive case has an associated, actively enforced policy.
 
 ##### Preconditions
 
-- An allocated ExternalIP has an address in status.
+- Two allocated ExternalIPs have distinct addresses in status.
 - A target resource has a primary private address.
 - The target Subnet and its NetworkACL are Ready, with the policy enforced.
 
 ##### Steps
 
-1. Create an ExternalIPAttachment with the existing externalIP and target fields.
-2. Create a NATGateway with the existing virtualNetwork and externalIP fields.
+1. Create an ExternalIPAttachment with the first ExternalIP and the existing
+   target fields.
+2. Create a NATGateway with the existing VirtualNetwork and the second
+   ExternalIP.
 3. Query the resources through the existing API.
 
 ##### Expected Results
@@ -1054,9 +1065,9 @@ All interface changes are exercised by test cases.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","commit","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
