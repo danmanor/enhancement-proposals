@@ -38,7 +38,7 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. In the shared target architecture, the ComputeInstance lifecycle controller submits the private `SubnetAttachment` request after defaulting; the networking-owned controller applies the VM attachment, discovers its IP, and reports readiness. See [PRD](prd.md) and the [shared attachment controller design](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller) for details.
+ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. In the shared target architecture, fulfillment-service applies attachment defaults and the ComputeInstance lifecycle controller submits a target-only private `SubnetAttachment` request; the networking-owned controller applies the VM attachment, discovers its IP, and reports readiness. See [PRD](prd.md) and the [shared attachment controller design](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller) for details.
 
 ## Motivation
 
@@ -52,8 +52,8 @@ network readiness.
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
 3. Tenant creates ComputeInstance with `network_attachments` (`ComputeNetworkAttachment`, no `primary` field, single-NIC only)
 4. The ComputeInstance lifecycle controller calls the private
-   `SubnetAttachments.Create` RPC with a `SubnetAttachment` proto request for
-   the normalized attachment.
+   `SubnetAttachments.Create` RPC to request reconciliation of the
+   normalized attachment.
    Its payload identifies the target only, for example
    `SubnetAttachment{compute_instance: {id: <compute-instance-id>}}`; subnet
    and security-group values remain on the ComputeInstance spec. See the
@@ -68,7 +68,7 @@ network readiness.
 ### What Already Works
 
 - `network_attachments` field exists on ComputeInstanceSpec (field 14)
-- Operator CRD has `NetworkAttachments []ComputeNetworkAttachment` with CEL cardinality and immutability rules; the complete resolved attachment is immutable
+- Operator CRD has the `NetworkAttachments []ComputeNetworkAttachment` field; max-one validation is not yet enforced
 - Subnet-to-namespace resolution is implemented
 - The template creates VMs in the correct namespace
 - ExternalIPAttachment with `compute_instance` target works end-to-end
@@ -77,8 +77,8 @@ network readiness.
 
 - Existing `ComputeNetworkAttachment` has no `primary` field; the compatibility field remains single-attachment only
 - Private `SubnetAttachments.Create` request and target-only `SubnetAttachment` proto integration for the ComputeInstance lifecycle controller
-- Service-level maximum-one validation and field-level defaulting are still required
-- At most one attachment — template creates one `l2bridge` interface
+- Fulfillment-service and CRD maximum-one validation, plus field-level defaulting, are still required
+- The SubnetAttachment controller must configure one `l2bridge` interface from the ComputeInstance's desired attachment; the VM template does not own attachment reconciliation
 - No dispatcher — uses `implementation_strategy` annotation
 - BM-only deployment validation (reject VM when no k8sManager)
 - Auto ExternalIP allocation (tenant must manually create ExternalIP + ExternalIPAttachment)
@@ -151,8 +151,9 @@ network readiness.
 
 5. **osac-operator ComputeInstance controller:**
 
-   a. Resolves API defaults and submits the private `SubnetAttachment`
-      request identifying the ComputeInstance. It does not configure the VM's
+   a. Submits the private `SubnetAttachment` request for the ComputeInstance
+      after fulfillment-service has applied attachment defaults. The request
+      identifies the target only; the controller does not configure the VM's
       network interface or discover the attachment IP.
 
    b. Triggers AAP job: `osac-create-compute-instance` for VM compute
@@ -253,8 +254,8 @@ message ComputeInstanceStatus {
 #### Operator CRD (osac-operator)
 
 Update `ComputeInstanceSpec.NetworkAttachments` struct:
-- Add validation that the repeated field contains at most one attachment
-- `PrimarySubnetRef()` returns the sole attachment (or no subnet when the list is empty)
+- Add API and CRD validation that the repeated field contains at most one attachment before reconciliation; the controller must not select arbitrarily if multiple entries are present
+- Keep `PrimarySubnetRef()` as an accessor for the sole attachment (or no subnet when the list is empty); it does not perform subnet or interface reconciliation
 
 CEL validation rule:
 ```yaml
@@ -293,8 +294,10 @@ fulfillment-service.
 
 #### Template Changes (osac-aap)
 
-- The VM template creates compute resources and does not interpret
-  `network_attachments` or add KubeVirt network interfaces.
+- The VM template creates compute resources and continues to project
+  `securityGroupRefs` to pod labels for the existing security-group policy
+  flow. It does not resolve the Subnet or create KubeVirt network/interface
+  definitions.
 - The SubnetAttachment controller uses the resolved Subnet/CUDN NAD to
   configure the sole `l2bridge` interface and waits for the VM IP/default-route
   state before marking the request Ready.
@@ -305,8 +308,8 @@ fulfillment-service.
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate `network_attachments`, persist the private SubnetAttachment request, materialize its internal CR, auto-provision ExternalIP, and sync network-owned status |
-| osac-operator ComputeInstance controller | Resolve defaults, submit the private request, trigger VM compute provisioning, wait for network readiness, clean up auto-provisioned resources |
+| fulfillment-service | Validate and default `network_attachments`, persist the private SubnetAttachment request, materialize its internal CR, auto-provision ExternalIP, and sync network-owned status |
+| osac-operator ComputeInstance controller | Submit the target-only request, trigger VM compute provisioning, wait for network readiness, and clean up auto-provisioned resources |
 | osac-operator SubnetAttachment controller | Configure the KubeVirt attachment, observe the VMI address, own request status/readiness/finalizer, and project attachment IP status |
 | osac-operator ComputeInstance feedback controller | Signal fulfillment-service when network-owned readiness/IP status changes |
 | osac-operator networking controllers | Dispatch networking-resource operations via dispatcher (VN, Subnet, SG, ExternalIP) and reconcile internal SubnetAttachment CRs |
@@ -346,10 +349,9 @@ This feature inherits the existing security model:
 
 ### Failure Handling and Recovery
 
-#### ComputeInstance Controller Reconciliation Failures
+#### SubnetAttachment and ComputeInstance Reconciliation Failures
 
-- Subnet resolution failure (subnet not found, not Ready): ComputeInstance enters Failed state with condition, retries on Subnet status change
-- Namespace resolution failure (subnet has no target namespace): ComputeInstance enters Failed state, retries after manual correction
+- Subnet or namespace resolution failure (subnet not found, not Ready, or has no target namespace): SubnetAttachment controller reports the failure on the request and ComputeInstance networking condition; the lifecycle controller marks the instance Failed and retries on dependency status changes
 - AAP job failure (template execution error): ComputeInstance enters Failed state with AAP job ID in status, manual investigation required
 
 #### Auto ExternalIP Allocation Failures
@@ -375,12 +377,12 @@ No RBAC or tenancy changes. All new resources (ComputeInstance with its existing
 ### Observability and Monitoring
 
 New structured log events:
-- ComputeInstance controller: `ResolvedPrimarySubnet` (info), `SubnetResolutionFailed` (error), `MultiNICProvisioning` (info)
+- osac-operator SubnetAttachment controller: `ResolvedPrimarySubnet` (info), `SubnetResolutionFailed` (error)
+- ComputeInstance controller: `MultiNICProvisioning` (info)
 - fulfillment-service: `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error)
 
 New Kubernetes events on ComputeInstance:
-- `NetworkingResolved`: subnet → namespace resolution succeeded
-- `NetworkingResolutionFailed`: subnet resolution failed (not found, not Ready, BM-only deployment)
+- Emitted by the SubnetAttachment controller: `NetworkingResolved` (subnet → namespace resolution succeeded) and `NetworkingResolutionFailed` (subnet resolution failed or subnet is not Ready)
 - `AutoExternalIPCreated`: ExternalIP and ExternalIPAttachment auto-provisioned
 
 No new metrics or alerts (existing provisioning duration and failure rate metrics apply).
@@ -443,12 +445,14 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 ### Unit Tests
 
-- fulfillment-service: max-one validation (accept no attachment or one attachment)
-- fulfillment-service: max-one `network_attachments` validation
+- fulfillment-service: max-one `network_attachments` validation (accept no attachment or one attachment)
+- osac-operator CRD: CEL validation rejects more than one attachment
 - fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
 - fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (implicit single attachment)
+- fulfillment-service: private `SubnetAttachments.Create` is idempotent for a ComputeInstance target, materializes a target-only CR, and removes it after target deletion completes
+- osac-operator ComputeInstance controller: submits the target-only request after fulfillment-service applies defaults and waits for both networking conditions before Ready
+- osac-operator SubnetAttachment controller: configures the CUDN/NAD interface, projects the VMI IP to the request and ComputeInstance statuses, and sets readiness conditions
 
 ### Integration Tests
 
@@ -457,6 +461,8 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
 - E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route
+- E2E: verify the ComputeInstance-target SubnetAttachment request is reconciled, its interface becomes ready, and the discovered IP appears in both request and ComputeInstance status before Ready
+- E2E: delete an attached ComputeInstance, verify the networking finalizer completes cleanup before deletion and fulfillment-service removes the request CR afterward
 
 ### Tricky Test Cases
 
@@ -473,9 +479,11 @@ Proposed maturity level: **Tech Preview** → **GA**
 Tech Preview criteria:
 - [ ] API fields (`network_attachments`, `auto_external_ip_attachment`) implemented in fulfillment-service
 - [ ] Operator CRD updated with max-one CEL validation
+- [ ] Private `SubnetAttachments.Create` and fulfillment-service request-to-CR lifecycle implemented for ComputeInstance targets
+- [ ] SubnetAttachment controller owns CUDN/NAD attachment, IP status, readiness conditions, and deletion finalizer; ComputeInstance waits on both readiness gates
 - [ ] Single-NIC template support (`osac.templates.ocp_virt_vm`) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] Integration tests pass (E2E coverage for max-one validation, auto ExternalIP)
+- [ ] Integration tests pass (E2E coverage for max-one validation, SubnetAttachment readiness/IP feedback/deletion, and auto ExternalIP)
 - [ ] Documentation: API reference, user guide for simplified VM creation
 
 GA criteria:

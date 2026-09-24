@@ -900,10 +900,12 @@ Resolved: After BMF sets `NetworkHandoffComplete=True`, the osac-operator networ
 - fulfillment-service: omitted and partial attachment defaulting (empty `security_groups` is missing; supplied values are preserved; a missing group list defaults only for the tenant default VirtualNetwork and is rejected for a non-default subnet without caller-supplied groups)
 - fulfillment-service: interface validation (reject an interface not in BareMetalInstanceType)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
+- bare-metal-fulfillment-operator: submits one BMI-target `SubnetAttachment` request after `ProvisionTemplateComplete=True`, with no copied subnet/interface payload
+- fulfillment-service: private BMI-target `SubnetAttachments.Create` is idempotent, materializes one target-only request CR, and removes it after target deletion completes
 - bare-metal-fulfillment-operator: waits for `NetworkAttachmentsReady`, performs the handoff reboot, sets `NetworkHandoffComplete`, and waits for `IPDiscoveryComplete` before Ready
 - osac-operator: attachment controller dispatches one `move_network_attachment` job only after provisioning completion, resolves the correct fabric manager, and waits for target-segment readiness
-- osac-operator: DHCP discovery waits for `NetworkHandoffComplete`, resolves the sole interface MAC from the BareMetalHost annotation, and writes the primary IP and `IPDiscoveryComplete`
-- osac-operator: offboard waits for BMF shutdown, returns the port to provisioning, sets `NetworkOffboardComplete`, and removes the networking finalizer before BMF deprovisions the host
+- osac-operator: DHCP discovery waits for `NetworkHandoffComplete`, resolves the sole interface MAC from the BareMetalHost annotation, writes the IP to both SubnetAttachment and BMI status, and sets `IPDiscoveryComplete`
+- osac-operator: offboard waits for BMF shutdown, returns the port to provisioning, sets `NetworkOffboardComplete`, and removes the BMI networking finalizer before BMF deprovisions; fulfillment-service removes the request CR after BMI deletion completes
 - osac-operator and BMF: concurrent status updates preserve the other controller's status fields and conditions under resource-version conflicts
 
 ### Integration Tests
@@ -913,8 +915,8 @@ Resolved: After BMF sets `NetworkHandoffComplete=True`, the osac-operator networ
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with a second `--network-attachment`, verify the CLI and API return a maximum-one error
-- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after BMF handoff reboot, matches port MAC to assigned IP on tenant network, osac-operator writes CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment reads primary IP)
-- E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
+- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after BMF handoff reboot, matches port MAC to assigned IP on tenant network, osac-operator writes SubnetAttachment and BMI status, feedback controller syncs to fulfillment-service, ExternalIPAttachment reads primary IP)
+- E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network, then removes the request CR (confirm in fabric manager; a freed server can re-inspect with internet)
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
 
 ### Tricky Test Cases

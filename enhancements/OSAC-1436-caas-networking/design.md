@@ -92,7 +92,7 @@ removed. See the [shared private proto definition](/enhancements/OSAC-1433-unifi
 ### Non-Goals
 
 - Direct VMaaS or BMaaS service API behavior (this EP covers CaaS; CaaS worker BMIs use the shared BMI attachment flow)
-- VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
+- VM-based cluster node sets (deferred; if added through VMaaS, each worker would use a ComputeInstance-target SubnetAttachment request. HyperShift ↔ CUDN integration is not in scope)
 - DNS API (DNS record creation stays inline in the template until DNS API is implemented)
 - Multi-NIC cluster nodes (not supported; v0.2 has one attachment per cluster → one subnet, while each node set resolves its own fabric interface from its BareMetalInstanceType)
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
@@ -421,7 +421,7 @@ Migration adds to clusters table:
 | Component | Responsibility |
 |-----------|---------------|
 | fulfillment-service | Validate `network_attachment` (singular), resolve `fabric_interface` per node set from BareMetalInstanceType, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
-| osac-operator BareMetalWorkerReconciler | Create on-demand BareMetalInstances via BMaaS private gRPC API with a one-entry `network_attachments` list (subnet from ClusterOrder `networkAttachment` + immutable `fabric_interface` from the node set, resolved once by fulfillment-service); correlate Agents to BMIs via MAC; delete BMIs on scale-down/cluster deletion. It passes CaaS attachment intent to BMF and does not dispatch network operations (OSAC-2135) |
+| osac-operator BareMetalWorkerReconciler | Create on-demand BareMetalInstances via BMaaS private gRPC API with a one-entry `network_attachments` list (subnet and security groups from ClusterOrder `networkAttachment` + immutable `fabric_interface` from the node set, resolved once by fulfillment-service); correlate Agents to BMIs via MAC; delete BMIs on scale-down/cluster deletion. It passes CaaS attachment intent to BMF and does not dispatch network operations (OSAC-2135) |
 | BMaaS (bare-metal-fulfillment-operator) | Owns BMI provisioning, the handoff reboot, and host power/deprovision lifecycle; submits one BMI-target SubnetAttachment request after provisioning for direct BMaaS instances and CaaS workers; consumes networking-owned readiness and IP-discovery conditions |
 | osac-operator SubnetAttachment controller | Owns reconciliation of ComputeInstance and BaremetalInstance requests; for each BMI target, owns that BMI's fabric port move, DHCP lease query, networking conditions/status, AAP job history, and network finalizer |
 | osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, trigger AAP workflow, aggregate worker status and networking readiness from BMI status |
@@ -581,7 +581,8 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - fulfillment-service: fabric_interface resolution per node set (BareMetalInstanceType must have fabric-role port)
 - fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role port from network_ports[] and store it on the corresponding ClusterOrder NodeRequest)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- osac-operator BareMetalWorkerReconciler: BMI creation with enriched network_attachment using the stored node-set interface
+- osac-operator BareMetalWorkerReconciler: creates each BMI with the Cluster subnet/security groups and the matching node request's resolved interface in its sole attachment
+- osac-operator ClusterOrder controller: aggregates each BMI's networking readiness and discovered IP without creating a Cluster-target SubnetAttachment
 - osac-operator BareMetalWorkerReconciler: Agent-to-BMI MAC correlation
 - osac-operator feedback controller: VIP sync to fulfillment-service
 
@@ -590,7 +591,9 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - E2E: create Cluster with explicit network_attachment, verify cluster provisioned on correct subnet
 - E2E: create Cluster with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
 - E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
+- E2E: create a Cluster with multiple worker BMIs, verify BMF creates one BMI-target SubnetAttachment request per worker, each BMI reaches both networking conditions, and ClusterOrder aggregates the worker IPs; verify no Cluster-target request is created
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
+- E2E: delete or scale down a worker, verify port offboarding and BMI deletion complete before the ClusterOrder worker entry and request CR are removed
 - E2E: create Cluster with omitted network_attachment, verify default Subnet + SecurityGroup populated
 - E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
 
@@ -599,6 +602,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - Multiple node sets sharing the same subnet (verify correct fabric interface resolution per node set from BareMetalInstanceType)
 - ExternalIPPool exhaustion (verify error returned, no resource created)
 - Auto-provisioned resource cleanup failure (verify finalizer retry, eventual orphan cleanup)
+- Worker provisioning delay/failure (verify no request or port move occurs before `ProvisionTemplateComplete=True` and a failed worker does not mark other BMI attachments Ready)
 - VIP feedback loop failure (Signal RPC fails, fulfillment-service does not sync VIPs)
 
 ## Graduation Criteria
@@ -617,7 +621,7 @@ Tech Preview criteria:
 - [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
 - [ ] Template changes (remove cluster_infra/external_access, add MetalLB VIP provisioning) completed
-- [ ] Integration tests pass (E2E coverage for network_attachment, auto ExternalIP attachment, VIP feedback)
+- [ ] Integration tests pass (E2E coverage for per-BMI SubnetAttachment requests/IP aggregation/offboarding, network_attachment, auto ExternalIP attachment, and VIP feedback)
 - [ ] Documentation: API reference, user guide for simplified cluster creation
 
 GA criteria:

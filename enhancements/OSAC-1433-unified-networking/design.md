@@ -704,11 +704,12 @@ prefix, and DNS automatically.
 
 After the workload receives its IP via DHCP, the SubnetAttachment controller
 records the observed address in the internal request CR status and projects it
-to the target workload's status for two purposes:
-- ExternalIPAttachment controller reads the primary IP for DNAT target
-- Tenant visibility where that workload API exposes an attachment IP. CaaS
-  worker NIC IPs remain operator-internal; the Cluster API exposes its service
-  endpoints instead.
+to the target workload's status. For ComputeInstance and BaremetalInstance
+targets, the ExternalIPAttachment controller reads the primary attachment IP
+for its DNAT target. CaaS Cluster ExternalIPAttachments use the Cluster API or
+ingress VIP instead; they do not use a worker BMI's SubnetAttachment IP. Tenant
+visibility follows each workload API: CaaS worker NIC IPs remain
+operator-internal, while the Cluster API exposes its service endpoints.
 
 IP discovery mechanism per service type:
 
@@ -741,7 +742,9 @@ a second copy of the desired attachment. It targets a ComputeInstance or a
 BareMetalInstance; there is no Cluster target. CaaS's single Cluster
 `network_attachment` is copied into each worker BMI's desired attachment, so
 each worker follows the same BMI-target flow as a directly-created BMaaS
-instance. The proposed type belongs in
+instance. If CaaS later creates VM workers through VMaaS, each worker
+ComputeInstance would use its own ComputeInstance-target request under the
+same API; no Cluster target is needed. The proposed type belongs in
 `proto/private/osac/private/v1/subnet_attachment_type.proto`:
 
 ```protobuf
@@ -895,13 +898,18 @@ on the target CR through cleanup. For BMaaS instances and CaaS
 worker BMIs, BMF first powers the host off and reports
 `NetworkOffboardShutdownComplete`; the networking controller then returns the
 port to the provisioning network and reports `NetworkOffboardComplete`. During
-CaaS cluster deletion, fulfillment-service requests ClusterOrder deletion and
-the ClusterOrder finalizer retains the order and worker references while the
-BMIs are offboarded. Each BMI's own SubnetAttachment CR and finalizer keep
-network cleanup active until that BMI is safe to delete; no Cluster-target
-request or fan-out cleanup is needed. The CaaS worker reconciler waits for BMI
-deletion before removing each worker entry. For VMaaS, the ComputeInstance
-lifecycle controller provides the corresponding safe-to-detach gate.
+cleanup, the internal SubnetAttachment CR remains available until the target
+is deleted; fulfillment-service removes that request CR after target deletion
+completes. The API has no separate detach or Delete RPC.
+
+During CaaS cluster deletion, fulfillment-service requests ClusterOrder
+deletion and the ClusterOrder finalizer retains the order and worker references
+while the BMIs are offboarded. Each BMI's own SubnetAttachment CR remains
+available while the finalizer on that BMI keeps network cleanup active. No
+Cluster-target request or fan-out cleanup is needed. The CaaS worker
+reconciler waits for BMI deletion before removing each worker entry. The VMaaS
+ComputeInstance lifecycle controller provides the corresponding safe-to-detach
+gate.
 
 The fabric manager's `move_network_attachment` role is switch-side
 only — it moves a host's fabric port from one network segment to another
@@ -1249,8 +1257,11 @@ IP when the target is a cluster (see
 
 After provisioning, resources receive IPs via DHCP or their platform network.
 The SubnetAttachment controller records the discovered address in the
-internal request CR status and projects it to the workload status for tenant
-visibility and ExternalIPAttachment DNAT target resolution.
+internal request CR status and projects it to the target workload status.
+ComputeInstance and BaremetalInstance attachment IPs support tenant visibility
+where those APIs expose them and provide ExternalIPAttachment DNAT targets.
+CaaS worker BMI IPs are operator-internal; Cluster ExternalIPAttachments use
+the Cluster API or ingress VIPs described above.
 
 **ComputeInstanceStatus:**
 
@@ -1448,12 +1459,12 @@ validation and the corresponding operator CRD. For BMaaS, this validation is
 defined by the contract and remains an implementation prerequisite. Multi-NIC
 workload networking is not supported by this contract.
 
-With exactly one attachment, the attachment is the **primary** attachment by
+With exactly one VM or BM attachment, it is the **primary** attachment by
 default and determines:
 
 - Which subnet provides the **default gateway** for the resource
-- Which subnet IP is used as the **DNAT target** for ExternalIPAttachment
-- Which subnet IP is used as the **source** for NATGateway SNAT
+- For VM and BM ExternalIPAttachments, which subnet IP is used as the **DNAT target**; Cluster ExternalIPAttachments use the API or ingress VIP instead
+- Which subnet IP is used as the **source** for NATGateway SNAT where that gateway applies
 
 **Validation and compatibility:**
 - Zero or one attachment is valid
@@ -1467,11 +1478,12 @@ default and determines:
   immutable after creation; changing them requires deleting and recreating the
   workload.
 
-**IP assignment:** All resource types receive IPs via DHCP. For VMs,
-OVN provides DHCP on the CUDN overlay. For BM servers and CaaS agents,
-the fabric's DHCP server assigns IPs on the network segment. The provisioning
-template does NOT configure host-side networking (no static IP, gateway,
-or DNS configuration) — DHCP handles it automatically.
+**IP assignment:** VMs receive IPs through DHCP on the CUDN overlay; BM servers
+and CaaS worker agents receive IPs from the fabric DHCP server on their tenant
+network. CaaS API and ingress VIPs are allocated separately by MetalLB and are
+not the worker attachment IPs. The provisioning template does NOT configure
+host-side networking (no static IP, gateway, or DNS configuration) — DHCP
+handles host addressing automatically.
 
 | Subnet role | IP assignment provides (via DHCP) |
 |-------------|---------------------------------------------|
