@@ -64,9 +64,9 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, a unique numeric priority from 1 through 32766 within its direction, protocol, an optional TCP or UDP destination-port range, and a canonical IPv4 CIDR. Lower priorities are evaluated first; the first matching rule decides, and traffic that matches no rule is denied. [User]
 - **FR-3:** NetworkACLs are stateless. Ingress and egress are evaluated independently, and return traffic requires a matching rule in the reverse direction. [User]
 - **FR-4:** A Subnet has exactly one associated NetworkACL. Tenants can reuse one NetworkACL on multiple Subnets in the same VirtualNetwork. The policy applies uniformly to every workload attached to that Subnet. Traffic between workloads on the same Subnet is not filtered by the Subnet's NetworkACL. For traffic between Subnets, source egress and destination ingress rules are evaluated independently. [User]
-- **FR-5:** Tenants can update NetworkACL rules and change a Subnet's NetworkACL association. A VirtualNetwork's and Subnet's address configuration and a workload's network attachment remain fixed after creation. [User]
+- **FR-5:** NetworkACL rules and a Subnet's NetworkACL association are fixed at creation. Changing them requires deleting and recreating the affected networking resources. A VirtualNetwork's and Subnet's address configuration and a workload's network attachment also remain fixed after creation. [User]
 - **FR-6:** ComputeInstance, Cluster, and BaremetalInstance attachments identify a Subnet and do not carry traffic-policy references. A BaremetalInstance attachment may also identify one physical interface. Each workload supports at most one tenant network attachment. [User; OSAC-1433]
-- **FR-7:** The networking API provides create, list, get, and delete operations for its resources. NetworkACL rule updates and Subnet-to-NetworkACL reassociation are also supported. Workload attachments remain immutable after workload creation. [User; OSAC-1433]
+- **FR-7:** The networking API provides read (list/get), create, and delete operations for networking resources. NetworkACL rules and Subnet-to-NetworkACL associations cannot be updated after creation. Workload attachments remain immutable after workload creation. [User; OSAC-1433]
 - **FR-8:** All three service types use the same network resource model and can place workloads on any compatible Subnet. A Subnet and its associated NetworkACL belong to the same VirtualNetwork. [Jira: OSAC-1433]
 - **FR-9:** Tenants can allocate ExternalIPs and attach them to ComputeInstances, Clusters, and BaremetalInstances for inbound traffic. ExternalIP means external to the VirtualNetwork and does not promise Internet reachability. [Jira: OSAC-1433]
 - **FR-10:** A NATGateway can provide a stable egress identity for a VirtualNetwork. It is optional and handles outbound external access; ExternalIPAttachment handles inbound access. [Jira: OSAC-1433]
@@ -87,7 +87,7 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - [ ] Each direction has unique priorities from 1 through 32766; lower values are evaluated first, the first matching rule determines the result, and unmatched traffic is denied.
 - [ ] Reply traffic is evaluated independently and passes only when the reverse direction has a matching rule.
 - [ ] A Subnet can reference exactly one NetworkACL, and one NetworkACL can be associated with multiple Subnets in the same VirtualNetwork.
-- [ ] A tenant can update NetworkACL rules and re-associate a Subnet; address configuration and workload attachments cannot be changed after creation.
+- [ ] NetworkACL rules and Subnet-to-NetworkACL associations are set at creation and cannot be updated; changes require deleting and recreating affected networking resources.
 - [ ] All resources on one Subnet receive the same ACL policy; same-Subnet traffic is not filtered by that ACL.
 - [ ] Cross-Subnet traffic must pass the source Subnet's egress rules and the destination Subnet's ingress rules.
 - [ ] ComputeInstance, Cluster, and BaremetalInstance network attachments refer to a Subnet and contain no traffic-policy references; BMaaS can additionally select one interface.
@@ -110,7 +110,8 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: draft, revise
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

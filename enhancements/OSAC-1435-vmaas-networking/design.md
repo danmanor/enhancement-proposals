@@ -108,14 +108,14 @@ ComputeInstance already participates in the networking API. Today's flow:
    - Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied.
    - The ACL is stateless. Every allowed connection needs explicit rules in both directions; the reverse rules above permit response packets to their destination ephemeral ports.
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
-   - NetworkACL rule lists may be updated later; changes apply to every workload on each associated Subnet without changing workload attachments.
+   - NetworkACL rule lists are fixed at creation. Changing policy requires deleting and recreating the affected networking resources; workload attachments are also immutable.
 
 3. **Tenant creates Subnet:**
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
      --network-acl my-acl --name my-subnet
    ```
-   - `Subnet.spec.network_acl` references exactly one active NetworkACL in the same VirtualNetwork. The ACL may be reused by other Subnets in that VirtualNetwork, and the association may be updated later.
+   - `Subnet.spec.network_acl` references exactly one active NetworkACL in the same VirtualNetwork. The ACL may be reused by other Subnets in that VirtualNetwork; the association is immutable after Subnet creation.
    - osac-operator Subnet controller → dispatcher resolves NetworkClass → triggers TWO AAP jobs (multi-job tracking per OSAC-1459):
      - `osac.templates.{{ fabric_manager }}.create_subnet` — creates VLAN / fabric segment
      - `osac.templates.{{ k8s_manager }}.create_subnet` — creates CUDN overlay on each hosting cluster, bridges to the fabric segment
@@ -138,7 +138,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet (see Default Networking PRD)
      - If one attachment is supplied, defaults only a missing Subnet; supplied values are preserved
      - Validates: at most one attachment; the Subnet is Ready, including completion of its NetworkACL association
-     - The Subnet's associated NetworkACL supplies policy for this VM and every other workload attached to the Subnet. Updating ACL rules or reassociating the Subnet changes policy without changing the VM attachment.
+     - The Subnet's associated NetworkACL supplies policy for this VM and every other workload attached to the Subnet. ACL rules and the Subnet association are immutable after creation; changing them requires recreating the affected networking resources.
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `network_attachments`
 
@@ -301,8 +301,9 @@ supplied single entry receives a default only for a missing Subnet. The
 attachment carries no policy reference: the Subnet's `network_acl` association
 controls traffic for every attached workload. The sole VM attachment is
 implicitly primary/default, and changing its resolved Subnet requires deleting
-and recreating the VM. NetworkACL rules and Subnet-to-ACL association may be
-updated independently and affect attached VMs without recreation.
+and recreating the VM. NetworkACL rules and Subnet-to-ACL associations are
+immutable after creation; changing policy requires recreating affected
+networking resources and may require recreating dependent workloads.
 
 ### Security Considerations
 
@@ -339,9 +340,9 @@ This feature inherits the existing tenant isolation model:
 No RBAC or tenancy changes. All new resources (ComputeInstance with its existing fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
-  most networking resources use create/list/get/delete. NetworkACL rules and
-  Subnet-to-ACL associations support updates; supported non-network workload
-  updates remain available
+  networking resources use read/create/delete; NetworkACL rules and
+  Subnet-to-ACL associations are immutable after creation. Supported
+  non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -554,9 +555,8 @@ Consequences:
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

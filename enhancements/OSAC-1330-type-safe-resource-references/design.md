@@ -308,9 +308,9 @@ that same-VirtualNetwork resource.
 | `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, and `SubnetLocalReference`. Replace string fields in `ComputeInstanceSpec` and `ComputeNetworkAttachment`; attachments contain only a subnet reference and reserve field 2. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
 | `baremetal_instance_common_type.proto` | Reuse `SubnetLocalReference` in `BareMetalNetworkAttachment`; the subnet determines the applicable NetworkACL, field 2 is reserved, and `interface` remains field 3. |
 | `cluster_common_type.proto` | Reuse `SubnetLocalReference` in `ClusterNetworkAttachment`; the subnet determines the applicable NetworkACL and field 2 is reserved. |
-| `subnet_type.proto` | Add `VirtualNetworkLocalReference` and `NetworkACLLocalReference`. Replace `SubnetSpec.virtual_network` and type required, singular `SubnetSpec.network_acl` as a local reference. The subnet-to-ACL reference can be updated to reassociate the subnet. |
+| `subnet_type.proto` | Add `VirtualNetworkLocalReference` and `NetworkACLLocalReference`. Replace `SubnetSpec.virtual_network` and type required, singular `SubnetSpec.network_acl` as a local reference. The required association is immutable after Subnet creation. |
 | `virtual_network_type.proto` | Add `NetworkClassReference`. Replace `VirtualNetworkSpec.network_class`. |
-| `network_acl_type.proto` | Add `VirtualNetworkLocalReference`. Replace `NetworkACLSpec.virtual_network`; ACL rule updates remain on the NetworkACL resource. |
+| `network_acl_type.proto` | Add `VirtualNetworkLocalReference`. Replace `NetworkACLSpec.virtual_network`; ingress and egress rule lists are immutable after NetworkACL creation. |
 | `external_ip_attachment_type.proto` | Add `ExternalIPLocalReference`, `ComputeInstanceLocalReference`, `ClusterLocalReference`, `BareMetalInstanceLocalReference`. Replace string fields in `ExternalIPAttachmentSpec` oneof. |
 | `external_ip_type.proto` | Add `ExternalIPPoolReference`. Replace `ExternalIPSpec.pool`. |
 | `public_ip_attachment_type.proto` | Add `PublicIPLocalReference`, `ComputeInstanceLocalReference` (reuse). Replace string fields. |
@@ -473,7 +473,7 @@ resource can be in a different tenant or project from the referencing resource:
 |-------|---------------|-----------|
 | `SubnetSpec.virtual_network` | `VirtualNetworkLocalReference` | Subnet is always in the same tenant/project as its parent VirtualNetwork |
 | `NetworkACLSpec.virtual_network` | `VirtualNetworkLocalReference` | Same reasoning as Subnet |
-| `SubnetSpec.network_acl` | `NetworkACLLocalReference` | Required, singular association; Subnet and NetworkACL are in the same tenant/project and VirtualNetwork; this association is mutable |
+| `SubnetSpec.network_acl` | `NetworkACLLocalReference` | Required, singular association; Subnet and NetworkACL are in the same tenant/project and VirtualNetwork; immutable after Subnet creation |
 | `ComputeNetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
 | `BareMetalNetworkAttachment.subnet` | `SubnetLocalReference` | BareMetalInstance and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
 | `ClusterNetworkAttachment.subnet` | `SubnetLocalReference` | Cluster and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
@@ -1233,9 +1233,8 @@ osac-ux) and use existing CI infrastructure.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

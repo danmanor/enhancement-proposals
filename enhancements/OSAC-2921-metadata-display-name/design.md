@@ -141,9 +141,8 @@ Starting state: authenticated caller with create permission on a type
    string when omitted) and returns the created object.
 
 For networking resources governed by OSAC-1433, `display_name` and
-`description` are create-time inputs in this enhancement. This does not change
-OSAC-1433's separate update operations for NetworkACL rules and Subnet
-associations.
+`description` are create-time inputs in this enhancement. NetworkACL rules
+and Subnet associations are also fixed at creation under OSAC-1433.
 
 #### Update and clear for resources that support metadata updates
 
@@ -412,11 +411,11 @@ policy is tracked as a follow-up outside the server cutover.
 For non-networking resources and fields that support them, Create/Update/List
 remain idempotent under retry for the same payload. Networking resources and
 workload network-attachment fields are excluded from this generic metadata
-behavior. OSAC-1433 defines their API and update boundaries: NetworkACL rules and
-`Subnet.spec.network_acl` can be updated, while workload attachment
-configuration remains create-only. This enhancement adds no new controller
-reconciliation for metadata fields; existing networking controllers reconcile
-NetworkACL rule changes and Subnet reassociation through the networking API.
+behavior. OSAC-1433 defines their API lifecycle: NetworkACL rules and
+`Subnet.spec.network_acl` are fixed at creation, as is workload attachment
+configuration. This enhancement adds no new controller reconciliation for
+metadata fields; networking controllers apply ACL policy and Subnet association
+when those resources are created.
 
 ### RBAC / Tenancy
 
@@ -429,8 +428,8 @@ templates) remain visible under current platform rules.
 
 No new Prometheus metrics or Kubernetes events. Existing gRPC and DAO
 operation duration metrics cover supported Create/Update/List operations for
-non-networking metadata fields. OSAC-1433 separately governs NetworkACL rule
-and Subnet association updates; workload network attachments remain immutable.
+non-networking metadata fields. Under OSAC-1433, NetworkACL rules, Subnet
+associations, and workload network attachments remain immutable after creation.
 Migration progress is observed via normal migration runner logs.
 
 ### Risks and Mitigations
@@ -623,9 +622,8 @@ None.
 
 ## Provenance
 
-Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

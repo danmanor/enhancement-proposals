@@ -412,7 +412,7 @@ not alter the NATGateway configuration. [Locked: D14]
    node/interface address instead of the allocated ExternalIP. The role then
    announces the exact ExternalIP `/32` through BGP using the saved namespace-
    side transit address as next hop.
-4. A Subnet add/update enqueues every NATGateway for its VirtualNetwork. The
+4. Subnet creation enqueues every NATGateway for its VirtualNetwork. The
    NATGateway reconciler adds the new source CIDR and verifies the new SNAT rule
    before the Subnet is reported `NetworkReady` when a NATGateway already
    exists. A Subnet delete first marks the Subnet pending deletion and enqueues
@@ -683,8 +683,9 @@ another VirtualNetwork. [User]
 ##### Subnet
 
 The example associates the Subnet with the previously created acl-a; that
-reference is required and mutable under the shared contract. The associated ACL
-must be actively enforced before this Subnet or any dependent resource is Ready.
+reference is required and immutable after creation under the shared contract.
+The associated ACL must be actively enforced before this Subnet or any
+dependent resource is Ready.
 
 ~~~yaml
 apiVersion: osac.openshift.io/v1alpha1
@@ -1181,7 +1182,7 @@ in the unified state file. [Codebase: osac-aap/collections/ansible_collections/a
 | API action | State transition | AgentlessNet data-plane operation |
 |---|---|---|
 | VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry, including its transit `/30`, veth identities, and external-reachability mode; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Allocate or reuse the transit link; create or repair the namespace, uplink, default route, and permit-all baseline; remove the link during ordered cleanup |
-| Subnet create/update/delete | Add or reuse one `subnets` entry with VLAN interface, gateway, DHCP range, exclusions, and state generation; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, dnsmasq range, and lease mapping; reload the per-VN daemon; reconcile any active NATGateway `source_cidrs`; no host access-port binding during Subnet provisioning |
+| Subnet create/delete | Add one `subnets` entry with VLAN interface, gateway, DHCP range, exclusions, and state generation; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, dnsmasq range, and lease mapping; reload the per-VN daemon; reconcile any active NATGateway `source_cidrs`; no host access-port binding during Subnet provisioning |
 | ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
 | ExternalIP create/delete | Create or reuse one fulfillment-service reservation keyed by ExternalIP UUID; add or reuse one complete `external_ips` provider entry keyed by the same UUID; accept provider and consumer cleanup events; release capacity only in the service's idempotent `RELEASED` transaction | Select and persist a complete IPv4 allocation atomically under the state-file lock, patch the provider-result annotations, and remove provider state before the service acknowledges capacity release |
 | ExternalIPAttachment create/delete | Atomically reserve the ExternalIP consumer in fulfillment-service; add, replace, or remove one `attachments` entry containing the target, whole-address DNAT, `/32` route, saved next hop, and route-announced state; retain the reservation through cleanup | Read the address from `ExternalIP.status.address` and target status, create the all-protocol DNAT rule, announce or withdraw the owned BGP `/32`, then report consumer cleanup to the service |
@@ -2065,8 +2066,8 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","commit","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

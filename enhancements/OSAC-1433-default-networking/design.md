@@ -20,7 +20,7 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-Default networking provisions an IPv4 VirtualNetwork, NetworkACL, Subnet associated with that ACL, and optional NATGateway at tenant onboarding. Workload network attachments can use the default Subnet, auto ExternalIP provisioning is available, and auto-created external-access resources are cleaned up on deletion. IPv6 and dual-stack networking are not supported. NetworkACL rules and the Subnet's NetworkACL association are mutable; VirtualNetwork/Subnet address configuration and workload attachments remain immutable.
+Default networking provisions an IPv4 VirtualNetwork, NetworkACL, Subnet associated with that ACL, and optional NATGateway at tenant onboarding. Workload network attachments can use the default Subnet, auto ExternalIP provisioning is available, and auto-created external-access resources are cleaned up on deletion. IPv6 and dual-stack networking are not supported. Networking resources use read, create, and delete operations; NetworkACL rules, Subnet associations, address configuration, and workload attachments are immutable after creation.
 
 The current workload contract is at most one tenant network attachment for
 VMaaS, BMaaS, and CaaS. VMaaS and BMaaS keep their plural
@@ -56,7 +56,7 @@ A reachable resource in OSAC requires networking resources: VirtualNetwork, Netw
 - Auto ExternalIP mode for inbound connectivity
 - Auto-cleanup of auto-created resources on deletion
 - Tenant-scoped default resources (visible and managed through the unified
-  lifecycle; ACL rules and Subnet association can be updated)
+  read/create/delete lifecycle; ACL rules and Subnet association are fixed at creation)
 
 ### Non-Goals
 
@@ -231,15 +231,15 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
     # Changes require creating replacement networking resources after
     # dependencies on the defaults have been removed.
     ```
-    - Default resources follow the unified create/read/delete contract;
-      NetworkACL rules and the Subnet's NetworkACL association can be updated
-      in place. VirtualNetwork/Subnet address configuration remains immutable.
+    - Default resources follow the unified read/create/delete contract.
+      NetworkACL rules, the Subnet's NetworkACL association, and
+      VirtualNetwork/Subnet address configuration are immutable after creation.
     - Default resources cannot be deleted while any resource depends on them
       (subnet deletion is blocked if VMs reference it).
-    - Replacing only the default NetworkACL requires creating a replacement
-      ACL, updating the default Subnet's association, waiting for the
-      association to become READY, and then deleting the old ACL. Workloads
-      remain attached to the same Subnet and do not need recreation.
+    - The default Subnet cannot be reassociated in place. Replacing default
+      policy requires deleting dependent workloads and the default Subnet,
+      deleting the old NetworkACL, then creating the replacement ACL and Subnet
+      with the desired rules and association.
     - Replacing the default address/resource set (VirtualNetwork, Subnet,
       and NATGateway) is a coordinated transition: pause
       default-based creates for every affected existing tenant, drain or delete
@@ -471,9 +471,9 @@ Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPA
 All default and auto-created resources inherit tenant annotation from parent:
 - `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/NetworkACL/NATGateway
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
-- OPA policies enforce tenant-scoped create/list/get/update/delete for the
-  mutable ACL rules and Subnet association; other networking fields remain
-  immutable, and controller status transitions remain internal
+- OPA policies enforce tenant-scoped read/create/delete operations for
+  networking resources; ACL rules and Subnet association are immutable after
+  creation, and controller status transitions remain internal
 
 #### CIDR Overlap Across Tenants
 
@@ -487,11 +487,11 @@ This feature inherits the existing security model:
 - Default resources (VN, Subnet, NetworkACL, NATGateway) inherit tenant annotation from Tenant resource
 - No new authentication or authorization changes
 - Default NetworkACL rules configured by Cloud Infrastructure Admin (applies to all tenants)
-- Tenant Admin can update default NetworkACL rules or create a replacement
-  NetworkACL and associate it with the default Subnet
+- Default NetworkACL rules and the default Subnet association are fixed at
+  creation; changing defaults requires recreating dependent networking resources
 
 **Risk: Default NetworkACL too permissive**
-- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access. Unmatched traffic is denied. Tenant Admin can update rules or associate a replacement ACL without recreating workloads.
+- Mitigation: Cloud Infrastructure Admin configures default rules on NetworkClass with minimal access before tenant onboarding. Unmatched traffic is denied. Tenants can create separate networking resources for future workloads; existing default rules and associations cannot be changed in place.
 
 ### Failure Handling and Recovery
 
@@ -631,9 +631,9 @@ Resolved: Return error, no resource persisted.
 - E2E: create ComputeInstance with a complete explicit attachment and verify its values are preserved
 - E2E: create ComputeInstance with a partial attachment and verify only missing fields are defaulted
 - E2E: verify workload attachment stores only the resolved Subnet, and the effective ACL is read from that Subnet
-- E2E: update default NetworkACL rules and re-associate a Subnet; verify readiness follows the applied rule set and association
+- E2E: verify NetworkACL rules and Subnet associations have no Update operation and remain fixed after creation
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
-- E2E: verify NetworkACL rules and Subnet association can be updated while address configuration and workload attachments remain immutable
+- E2E: verify changing NetworkACL rules or Subnet association requires deleting and recreating the affected networking resources
 - E2E: verify an associated NetworkACL cannot be deleted and a Subnet cannot become READY without one active NetworkACL
 
 ### Tricky Test Cases
@@ -701,9 +701,11 @@ tenant-mapped; no automatic or lossless conversion is promised.
    schemas, and compatible clients as one coordinated release. Do not permit
    old clients to write with the previous attachment contract.
 3. Through the new API, create each planned NetworkACL in the same VirtualNetwork
-   as its Subnet. Wait for the ACL policy to become active, then create or update
-   each Subnet with the explicit `spec.network_acl` reference. A Subnet is READY
-   only when its associated policy is active.
+   as its Subnet. Wait for the ACL policy to become active, then create each
+   replacement Subnet with the explicit `spec.network_acl` reference. Existing
+   Subnets cannot be reassociated in place; recreate dependent workloads as
+   required by their deletion constraints. A Subnet is READY only when its
+   associated policy is active.
 4. Keep each affected Subnet and workload creation/default resolution gated
    until that Subnet is READY. Recreate workloads only after their destination
    Subnet's policy is active when tenant policy mapping requires a move.
@@ -823,9 +825,8 @@ Consequences:
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
