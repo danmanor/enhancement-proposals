@@ -1792,7 +1792,7 @@ their own stable host identity without changing the BMaaS identity rule.
 
 ## Test Plan
 
-The detailed requirement-anchored testplan is in 04-testplan.md. The following
+The detailed requirement-anchored testplan is in [testplan.md](testplan.md). The following
 scenarios summarize the expected coverage and are not a substitute for that
 testplan.
 
@@ -2065,8 +2065,8 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Committed: commit @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","commit","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
