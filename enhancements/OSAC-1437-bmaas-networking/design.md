@@ -189,9 +189,13 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 2. **Create NetworkACL:**
    ```bash
-   osac create network-acl --virtual-network my-net --name my-acl
+   osac create network-acl --virtual-network my-net --name my-acl \
+     --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+     --ingress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
-   The ACL has independent ingress and egress lists. Each rule has an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied. The policy is stateless, so expected return traffic requires an explicit reverse-direction rule. Rule lists may be updated later; changes apply to every workload on each associated Subnet without changing workload attachments.
+   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied. Rule lists may be updated later; changes apply to every workload on each associated Subnet without changing workload attachments.
    Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
 
 3. **Create Subnet:**
@@ -973,8 +977,9 @@ Consequences:
 
 ## Provenance
 
-Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->

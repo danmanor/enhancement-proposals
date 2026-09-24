@@ -59,19 +59,21 @@
 
 1. Create a Subnet through the fulfillment-service API with an explicit `network_acl` reference to the READY same-VirtualNetwork ACL.
 2. Observe the Subnet controller create the fabric AAP Job first.
-3. Wait for the fabric job to complete and provide VNI data in status.extraVars.
-4. Verify the k8s job is not created until the fabric job succeeds and the associated ACL policy is active.
-5. Verify the controller extracts l2_vni and l3_vni from the fabric job.
-6. Observe the controller create the k8s AAP Job with the VNI data in extra_vars.
-7. Verify the k8s job extra_vars contains l2_vni and l3_vni (route targets are not passed; CUDN auto-generates them).
-8. Verify the Subnet reaches READY only after both managers complete and the associated ACL is actively enforced.
+3. Wait for the fabric job to complete, then inspect its output ConfigMap and verify `data.extra_vars` contains valid JSON with `l2_vni`, `l3_vni`, and `fabric_reserved_range`.
+4. Verify the k8s job is not created until the fabric job succeeds and the associated ACL policy is active on the Subnet.
+5. Verify the controller extracts `l2_vni` and `l3_vni` from the ConfigMap, not from the AAP Job CR.
+6. Observe the controller create the k8s AAP Job with the VNI data in `extra_vars`.
+7. Verify the k8s job `extra_vars` contains `l2_vni` and `l3_vni` (route targets are not passed; CUDN auto-generates them).
+8. Verify the precreated `NetworkACL.status.phase` remains `Ready` and the Subnet's `NetworkACLAssociationReady=True` condition is set only after explicit manager activation acknowledgement; fabric job completion and ConfigMap data alone do not set the condition.
+9. Verify the Subnet reaches READY only after both managers complete and the associated ACL is actively enforced.
 
 ##### Expected Results
 
 - The Subnet references the READY ACL scoped to its VirtualNetwork.
 - The fabric job completes before the k8s job starts; they do not run concurrently.
-- The k8s job receives VNI values extracted from fabric job status.
-- The Subnet does not report READY before ACL enforcement is active.
+- The k8s job receives VNI values extracted from ConfigMap `data.extra_vars`.
+- `NetworkACL.status.phase == "Ready"` reflects the ACL's active rules, and the Subnet's `NetworkACLAssociationReady=True` condition reflects explicit manager confirmation that those rules are enforced on this Subnet.
+- Fabric job completion and VNI ConfigMap data are not treated as proof of ACL enforcement; the Subnet does not report READY before its association condition is true.
 - Subnet.status.conditions shows a K8sManagerWaitingForFabric event between jobs.
 
 #### TC-R2-02: VNI extraction failure when fabric job missing data
@@ -84,12 +86,12 @@
 
 - The Subnet create request explicitly referenced a READY NetworkACL scoped to the same VirtualNetwork.
 - The associated ACL policy is actively enforced; the Subnet remains non-READY while provisioning is incomplete.
-- Fabric provisioning completed, but the fabric AAP Job CR status.extraVars is missing VNI fields
+- Fabric provisioning completed, but the output ConfigMap `data.extra_vars` is missing one or more required VNI fields
 
 ##### Steps
 
-1. Controller attempts to extract VNI from fabric job status
-2. Extraction fails (missing l2_vni field)
+1. Controller reads the fabric output ConfigMap `data.extra_vars`
+2. Extraction fails (missing `l2_vni` field)
 3. Observe controller emits Kubernetes event "VNIExtractionFailed"
 4. Observe Subnet.status.phase = "Failed"
 5. Observe Subnet.status.conditions shows error message referencing fabric job
@@ -502,8 +504,8 @@ None identified. All requirements map to test cases, all interface changes exerc
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise, revise, revise
+Phases: revise, revise, revise, revise, revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

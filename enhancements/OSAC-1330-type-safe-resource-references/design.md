@@ -158,8 +158,9 @@ entry; the reference-resolution design does not enable multi-NIC workloads.
    walks the `CreateComputeInstanceRequest` message using protoreflect,
    discovers the reference-typed fields, and for each:
    - Extracts the `name` field from the reference message.
-   - Looks up the resource via the corresponding DAO using the caller's tenant
-     context.
+   - Looks up the resource via the corresponding DAO using the owning
+     resource's assigned tenant and project. Full references use their
+     caller/explicit scope as described below.
    - If the resource does not exist, collects an error with the field path
      (e.g., `spec.network_attachments[0].subnet.name`).
 
@@ -270,8 +271,8 @@ sequenceDiagram
     U->>GW: POST /v1/subnets {spec: {virtual_network: {name: "prod-net"}, network_acl: {name: "prod-acl"}}}
     GW->>INT: CreateSubnet(request)
     INT->>INT: Find SubnetSpec.virtual_network and SubnetSpec.network_acl local references
-    INT->>DAO: Get VirtualNetwork by name="prod-net" in tenant context
-    INT->>DAO: Get NetworkACL by name="prod-acl" in tenant context
+    INT->>DAO: Get VirtualNetwork by name="prod-net" in Subnet's assigned tenant/project
+    INT->>DAO: Get NetworkACL by name="prod-acl" in Subnet's assigned tenant/project
     alt Reference valid
         DAO-->>INT: VirtualNetwork and NetworkACL found
         INT->>SRV: Forward request
@@ -415,9 +416,9 @@ message ClusterTemplateReference {
 // Shared between public and private APIs.
 message SubnetLocalReference {
   option (buf.validate.message).cel = {
-    id: "id_or_name_required",
-    message: "at least one of id or name must be provided",
-    expression: "this.id != '' || this.name != ''"
+    id: "name_required",
+    message: "name must be provided for a local reference",
+    expression: "this.name != ''"
   };
 
   string id = 1;
@@ -438,7 +439,7 @@ it includes all public fields (`id`, `name`, `project`, `shared`) plus an
 additional `tenant` field for Cloud Provider Admins who manage cross-tenant
 resources.
 
-All reference types (full and local) support three resolution modes:
+Full references support three resolution modes:
 
 1. **Name only** (most common): The interceptor resolves the resource by name
    within the caller's tenant (or the `shared` tenant if `shared = true` in
@@ -456,11 +457,12 @@ fully-qualified reference. This ensures consistent downstream behavior
 regardless of how the caller specified the reference.
 
 Local references omit `tenant` and `project` because the target is always in
-the same scope as the referencing resource. The interceptor derives tenant and
-project from the owning resource's metadata, not from the caller's auth
-context. The `id` field is included for backward compatibility — clients that
-currently use resource identifiers can continue to do so during the transition
-to name-based references.
+the same scope as the referencing resource. A local reference request must
+provide `name`; the interceptor derives tenant and project from the owning
+resource's metadata, not from the caller's auth context, resolves the resource
+by name, and fills `id` in the resolved request and stored representation.
+Clients cannot use an ID-only local reference. If both `name` and `id` are
+present, they must identify the same resource.
 
 #### Which fields use local vs. full references
 
@@ -523,9 +525,15 @@ message SubnetSpec {
 **After:** `subnet_type.proto`
 
 ```protobuf
-// Local reference to a VirtualNetwork.
-// Used when the VirtualNetwork is always in the same tenant/project.
+// Local reference to a VirtualNetwork. Requests require name; id is populated
+// by the server after name resolution.
 message VirtualNetworkLocalReference {
+  option (buf.validate.message).cel = {
+    id: "name_required",
+    message: "name must be provided for a local reference",
+    expression: "this.name != ''"
+  };
+
   string id = 1;
   string name = 2;
 }
@@ -616,9 +624,10 @@ type ResolvedRef struct {
     Name    string
 }
 
-// ReferenceLookupFunc resolves a resource by id, name, or both within a
-// tenant/project scope. At least one of id or name is non-empty (enforced by
-// buf.validate CEL). Returns the fully-resolved reference or dao.ErrNotFound.
+// ReferenceLookupFunc resolves a resource within a tenant/project scope.
+// Full-reference inputs may identify a target by id, name, or both; local
+// references require name. Returns the fully-resolved reference or
+// dao.ErrNotFound.
 type ReferenceLookupFunc func(
     ctx context.Context,
     tenant, project, id, name string,
@@ -653,8 +662,11 @@ references, determined by which fields the caller provides:
 | ID only | `id` set, `name` empty | Look up by id. Auto-populate `name` in the request. |
 | Both | `id` and `name` both set | Look up, verify both resolve to the same resource. Return `InvalidArgument` if they disagree. |
 
-For local references (`LocalReference` messages), the same three resolution
-modes apply. The tenant is always the caller's tenant.
+For local references (`LocalReference` messages), `name` is required. The
+interceptor looks up the target by name in the tenant and project assigned to
+the resource being created or updated, then populates `id`. If an `id` is also
+present, it must resolve to that same target. ID-only local references are
+invalid.
 
 The lookup function uses the existing `List` + CEL filter pattern already
 established in the codebase (e.g., `lookupCatalogItem`, `lookupTemplate`):
@@ -806,19 +818,15 @@ The CLI currently accepts reference values as string flags (e.g.,
 `--template my-template`, `--subnet my-subnet`). After the change, the CLI
 constructs reference messages from flag values:
 
-**For local references (by name or id):**
+**For local references (by name):**
 
 ```bash
 # By name (common case):
 osac compute-instance create --name my-vm --catalog-item standard-vm \
   --subnet app-subnet
 
-# By id (backward compatibility):
-osac compute-instance create --name my-vm --catalog-item standard-vm \
-  --subnet-id abc-123
-
 # The CLI internally constructs:
-# network_attachments[0].subnet: { name: "app-subnet" }  or  { id: "abc-123" }
+# network_attachments[0].subnet: { name: "app-subnet" }
 # NetworkACL selection is configured on the Subnet, not the workload attachment.
 ```
 
@@ -954,10 +962,10 @@ validator.
 ### RBAC / Tenancy
 
 No RBAC or tenancy changes are required. The reference validation interceptor
-reuses the existing tenant context from the authentication interceptor. Local
-reference lookups are automatically scoped to the caller's tenant and project.
-Full reference lookups with explicit tenant/project are subject to existing
-OPA cross-tenant access policies.
+uses the tenant and project assigned to the owning resource for local
+references. Full reference lookups use the caller's tenant or the explicit
+scope in the reference; cross-tenant lookups remain subject to existing OPA
+policies.
 
 This enhancement does not introduce new resources, so no new tenant isolation
 metadata (`osac.openshift.io/tenant`, `osac.openshift.io/owner-reference`)
@@ -1063,10 +1071,13 @@ details on the URI/ARN trade-off.
 - Interceptor validation logic: verify that the interceptor returns
   `InvalidArgument` with correct field paths for missing references, returns
   success for valid references, and aggregates multiple errors.
-- Interceptor resolution modes (full and local references): verify name-only
-  resolution (id auto-populated), id-only resolution (name auto-populated),
-  both-match (succeeds, no mutation needed), and both-mismatch (returns
-  `InvalidArgument` explaining the inconsistency).
+- Full-reference resolution modes: verify name-only resolution (id
+  auto-populated), id-only resolution (name auto-populated), both-match
+  (succeeds, no mutation needed), and both-mismatch (returns `InvalidArgument`
+  explaining the inconsistency).
+- Local-reference validation and resolution: reject a missing name and an
+  ID-only reference; resolve by name in the owning resource's assigned
+  tenant/project; populate the resolved ID; and reject an ID/name mismatch.
 - Request mutation: verify that after interceptor runs, the request message
   contains fully-qualified references (all fields populated) regardless
   of which fields the caller originally provided.
@@ -1080,10 +1091,6 @@ details on the URI/ARN trade-off.
   VirtualNetwork, create a READY NetworkACL in that VirtualNetwork, then
   create a Subnet referencing both by name. Verify the Subnet is created and
   both stored references contain `id` and `name`.
-- End-to-end Create with valid local references by id: Create a
-  VirtualNetwork and its READY NetworkACL, then create a Subnet referencing
-  both by `id` only. Verify both stored references contain `id` and `name`
-  (auto-populated).
 - End-to-end Create with invalid ACL reference: Attempt to create a Subnet
   referencing a nonexistent NetworkACL. Verify `InvalidArgument` with the
   `spec.network_acl` field path.
@@ -1227,7 +1234,8 @@ osac-ux) and use existing CI infrastructure.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
