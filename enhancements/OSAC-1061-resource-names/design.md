@@ -22,7 +22,7 @@ superseded-by:
 
 This design enforces naming discipline across all OSAC resources through three layers: proto validation (mandatory names, RFC 1123 format), PostgreSQL unique indexes (uniqueness within scope boundaries), and PostgreSQL immutability triggers (name cannot change after creation). The changes are concentrated in the proto `Metadata` message and a single database migration — no server or DAO code changes are required for core enforcement. See [PRD](prd.md) for detailed requirements.
 
-Networking resources governed by [OSAC-1433](/enhancements/OSAC-1433-unified-networking/design.md) support read (List/Get), Create, and Delete. NetworkACL rules and Subnet-to-NetworkACL associations are fixed at creation; workload attachments and VirtualNetwork/Subnet address configuration also remain immutable under OSAC-1433.
+Networking resources governed by [OSAC-1433](/enhancements/OSAC-1433-unified-networking/design.md) are an operation exception: they support Create, List/Get, and Delete only. Their name, specification, and metadata changes use delete and recreate; the Update examples below apply only to resource APIs that support Update.
 
 ## Motivation
 
