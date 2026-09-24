@@ -1219,9 +1219,10 @@ The workload API no longer carries traffic-policy references. Existing
 per-workload policies cannot always map one-to-one to a subnet-wide stateless
 ACL: workloads on one Subnet may have different policies, and established
 connections previously allowed return traffic without a reverse rule.
-Tenants group workloads by intended policy, create a NetworkACL for each
-policy group, associate the appropriate ACL with each Subnet, and add explicit
-reverse-direction rules where return traffic is needed. If workloads on one
+After the ACL-aware release is deployed, tenants group workloads by intended
+policy, create a NetworkACL for each policy group, associate the appropriate
+ACL with each Subnet, and add explicit reverse-direction rules where return
+traffic is needed. If workloads on one
 Subnet require different policies, the tenant moves them to separate Subnets;
 changing a workload's Subnet requires recreating the workload because its
 attachment is immutable. This migration is tenant-assisted and does not
@@ -1494,11 +1495,98 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
 
 ## Upgrade / Downgrade Strategy
 
-*Section to be completed when targeted at a release.*
+### Upgrade
+
+This is a coordinated, breaking cutover of the networking API and workload
+attachment contract. The prior release cannot represent `NetworkACL` resources
+or `Subnet.spec.network_acl`; tenants must not create ACL resources or
+associations before the ACL-aware API is deployed. Existing policy is
+tenant-mapped. There is no automatic or lossless conversion from existing
+per-workload policy to a Subnet-wide ACL.
+
+#### Pre-upgrade inventory and preparation
+
+- Inventory affected tenants' VirtualNetworks, Subnets, workload attachments,
+  and existing traffic policies. Identify Subnets whose workloads require
+  different policies.
+- With each tenant, prepare a mapping from existing policy to the intended
+  Subnet policy. A Subnet has exactly one associated ACL; compatible rules may
+  share an ACL among Subnets in the same VirtualNetwork. Where policies on a
+  Subnet conflict, plan separate Subnets and workload recreation. Include
+  explicit reverse-direction rules for required return traffic.
+- Prepare the NetworkACL rule definitions and Subnet-to-ACL mapping as a
+  migration plan only; do not submit ACL resources through the prior release.
+  Snapshot API/database state, networking CRs, NetworkClass configuration,
+  attachment specs, and the current release versions. Agree on a restore plan
+  and schedule a maintenance window.
+
+#### Coordinated cutover
+
+1. Freeze tenant network and workload writes that can affect the cutover,
+   including network resource changes, workload creation/deletion, and
+   attachment changes. Permit only the designated migration operations while
+   the freeze is in effect.
+2. Deploy the ACL-aware fulfillment-service, API and CRD schemas,
+   osac-operator, networking controllers, configured networking manager, and
+   compatible clients as one coordinated release.
+3. For each VirtualNetwork, use the new API to create the planned
+   VirtualNetwork-scoped NetworkACLs. Wait for each ACL to become READY, then
+   create Subnets with an explicit `spec.network_acl` or update existing
+   Subnets to associate the planned ACL in the same VirtualNetwork.
+4. Keep each affected Subnet and workload creation using it gated until its
+   associated ACL policy is active. A Subnet becomes READY only when its
+   associated policy is active. If policy mapping requires moving a workload
+   to a different Subnet, recreate it only after the destination Subnet is
+   READY; attachments remain immutable.
+5. Validate the tenant-approved policy mapping, ACL readiness, Subnet
+   associations, and representative connectivity. Reopen network and workload
+   writes only after every affected Subnet has an active policy. Keep any
+   incomplete tenant migration gated.
+
+The tenant-approved mapping is authoritative: the service does not infer one
+Subnet-wide policy from workloads that previously had different policies.
+Tenants retain responsibility for policy grouping and for deciding whether
+workloads must be recreated.
+
+### Downgrade
+
+The prior release cannot parse, manage, or enforce `NetworkACL` resources and
+Subnet associations. Rolling back only the API server or only the operator is
+unsupported. If rollback is required after cutover begins:
+
+1. Freeze network and workload writes.
+2. Restore the coordinated pre-upgrade database, CR, NetworkClass, and workload
+   attachment state, ensuring no ACL-only objects or Subnet references remain.
+   A tenant-managed reverse mapping or a separately tested restore procedure
+   is required; automatic policy conversion is not provided.
+3. Roll back fulfillment-service, API/CRD schemas, osac-operator, networking
+   controllers, configured networking manager, and clients together.
+
+If the pre-upgrade state cannot be restored, downgrade is unsupported; retain
+the ACL-aware release and fix forward. Do not assume existing workload or
+default-networking resources make an in-place binary rollback safe.
 
 ## Version Skew Strategy
 
-*Section to be completed when targeted at a release.*
+### Control plane
+
+The API service, persistence schema, CRDs, controllers, and configured
+networking manager must use the same ACL-aware release. Mixed prior and new
+versions are unsupported during migration: the prior release does not
+understand NetworkACL resources or `Subnet.spec.network_acl`, and the new
+release requires that policy contract for Subnet readiness and workload
+placement. Keep affected writes frozen until all components are upgraded and
+each migrated Subnet has active policy.
+
+### Clients
+
+Prior clients cannot create NetworkACLs or submit explicit Subnet ACL
+associations, and may still construct workload attachments using the prior
+wire contract. New clients require the ACL-aware API and cannot use its
+NetworkACL or Subnet association operations against the prior server. Upgrade
+clients with the control plane and block prior-client network/workload writes
+during cutover. Reopen writes only when clients and services use the same
+contract; no mixed-version write compatibility is promised.
 
 ## Support Procedures
 
@@ -1513,7 +1601,8 @@ No additional infrastructure beyond existing OSAC components and managers.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -671,54 +671,95 @@ GA criteria:
 
 ### Upgrade
 
-The attachment contract change is breaking and must be deployed as a
-coordinated release across fulfillment-service, operator, and clients. Before
-the new contract is enabled, tenants map existing policies to shared subnet
-policies, create NetworkACLs, associate each Subnet with one ACL, and add
-explicit reverse-direction rules for required return traffic. Workloads whose
-intended policy requires a different Subnet are recreated because workload
-attachments remain immutable. The rollout does not infer a single policy for
-workloads that previously had different policies on one Subnet.
+The NetworkACL and attachment contract change is a coordinated, breaking
+release; the prior release cannot represent NetworkACL resources or Subnet
+associations. Tenants must not be asked to create ACLs or associations before
+the ACL-aware API is deployed. The cutover follows the [unified networking
+upgrade strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy)
+and adds the default-networking steps below. Existing tenant policy is
+tenant-mapped; no automatic or lossless conversion is promised.
 
-Existing tenants do not receive default networking retroactively. Tenant
-admins may create and label default resources manually when they want to use
-simplified resource creation. Existing default Subnets must have a READY ACL
-association before new workloads can use them. NetworkACL rules or the
-association can later be changed in place without recreating workloads that
-remain on the same Subnet.
+#### Pre-upgrade inventory and preparation
+
+- Inventory each affected tenant's VirtualNetworks, Subnets, default-resource
+  labels, workload attachments, and existing workload traffic policies.
+- Prepare a tenant-approved mapping from existing policies to one intended
+  NetworkACL per Subnet, including explicit return-traffic rules where needed.
+  If workloads on one Subnet require different policies, plan separate Subnets
+  and workload recreation because attachments are immutable. Prepare rule
+  specifications and association plans, but do not create ACLs under the old
+  release.
+- Snapshot the current API/database, CR, NetworkClass, and workload attachment
+  state and schedule a maintenance window. Keep the snapshot and reverse plan
+  for rollback.
+
+#### Coordinated cutover
+
+1. Freeze tenant network and workload writes that can affect the migration,
+   including onboarding, resource creation, deletion, and attachment changes.
+2. Deploy the ACL-aware fulfillment-service, operator, networking controllers,
+   schemas, and compatible clients as one coordinated release. Do not permit
+   old clients to write with the previous attachment contract.
+3. Through the new API, create each planned NetworkACL in the same VirtualNetwork
+   as its Subnet. Wait for the ACL policy to become active, then create or update
+   each Subnet with the explicit `spec.network_acl` reference. A Subnet is READY
+   only when its associated policy is active.
+4. Keep each affected Subnet and workload creation/default resolution gated
+   until that Subnet is READY. Recreate workloads only after their destination
+   Subnet's policy is active when tenant policy mapping requires a move.
+5. Validate the mapping, readiness, and representative connectivity. Reopen
+   network and workload writes only after every affected Subnet has an active
+   same-VirtualNetwork ACL association; incomplete tenant migrations remain
+   gated.
+
+Existing tenants do not receive the new default VN/Subnet/NATGateway
+retroactively. An existing tenant that wants simplified creation must use the
+new API after cutover to create or select its default networking resources and
+associate a READY NetworkACL with the default Subnet. It may use the configured
+NetworkClass rules as policy input, but the tenant must review and apply the
+mapping. New tenant onboarding after upgrade creates the default NetworkACL and
+Subnet association through the ACL-aware release.
 
 ### Downgrade
 
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service and osac-operator images to `N`
-- A prior version does not understand NetworkACL resources or Subnet associations. Rollback after policy migration requires restoring saved prior resource and attachment data and applying a tenant-managed reverse migration; no lossless automatic conversion is guaranteed.
-- Existing Tenants with default networking resources: default resources remain (no impact)
-- Existing resources with auto-created ExternalIP: `N` server does not recognize auto_external_ip_attachment field, auto-created resources remain (manual cleanup required if not needed)
-- New resource creation with auto_external_ip_attachment=true will fail (field not recognized)
+The prior release cannot represent or manage NetworkACL resources,
+`Subnet.spec.network_acl`, or the new attachment contract. A binary-only
+rollback after ACL creation or association is unsupported. To roll back, freeze
+network/workload writes, restore the pre-upgrade database, CRs, NetworkClass,
+and workload attachment state from the coordinated snapshot, and roll back the
+fulfillment-service, operator, networking controllers, schemas, and clients
+together. ACL resources and migrated associations must be removed or reversed
+as part of that tested restore; tenant policy mapping has no automatic reverse
+conversion. If the pre-upgrade state cannot be restored, keep the ACL-aware
+release and fix forward.
 
-Acceptable downgrade steps:
-- Existing resources continue to function (default networking and auto-created resources persist)
-- New resources must use explicit networking (auto_external_ip_attachment=true not supported)
-- Manually delete orphaned auto-created resources if not needed (identified by label `osac.openshift.io/auto-created: "true"`)
+The existing auto-ExternalIP downgrade limit still applies: release `N` does
+not recognize `auto_external_ip_attachment`, and auto-created resources may
+need manual cleanup if they are no longer required. Do not treat retained
+default resources as evidence that rollback is safe; the old release cannot
+interpret ACL state.
 
 ## Version Skew Strategy
 
 ### Control Plane Skew
 
-fulfillment-service and osac-operator are deployed together in the same namespace and upgraded atomically (both controlled by osac-installer). No skew expected.
+The ACL-aware fulfillment-service, schemas/CRDs, osac-operator, networking
+controllers, and configured networking manager must be deployed and rolled
+back together. Mixed `N`/`N+1` control-plane versions are unsupported during
+cutover because `N` cannot represent ACL resources or Subnet associations.
+Keep affected network and workload writes frozen until the new release is
+complete and every migrated Subnet policy is active.
 
 ### Client Skew
 
-osac-cli (n-1) with fulfillment-service (n):
-- Old CLI does not support `--external-ip-attachment` flag
-- Tenant must upgrade CLI to use simplified creation
-- Existing explicit networking workflows remain functional
-
-osac-cli (n) with fulfillment-service (n-1):
-- New CLI uses `--external-ip-attachment` flag → old server rejects unknown field
-- Workaround: use explicit ExternalIP allocation until server is upgraded
-
-Recommendation: keep osac-cli and fulfillment-service within one minor version.
+Clients using the previous attachment contract cannot write safely against the
+ACL-aware release, and new clients cannot create NetworkACLs or supply
+`spec.network_acl` to release `N`. Upgrade clients with the control plane,
+block old-client network/workload writes during the cutover, and do not reopen
+writes until clients and APIs use the same contract. The existing limitation
+for `--external-ip-attachment` also applies: new clients require the upgraded
+server, while older clients cannot request that behavior. Keep clients and the
+fulfillment-service within one coordinated minor release.
 
 ## Support Procedures
 
@@ -783,7 +824,8 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
