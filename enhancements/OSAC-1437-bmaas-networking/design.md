@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-23
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -74,13 +74,19 @@ fulfillment-service → BaremetalInstance CR → hub cluster
 
 The nested `BareMetalNetworkAttachment` on the BaremetalInstance CR remains the
 sole desired-state input. When BMF reaches the network handoff after
-`ProvisionTemplateComplete=True`, it submits the private `NetworkAttachment`
-proto identifying the BMI. Fulfillment reconciliation creates one internal
+`ProvisionTemplateComplete=True`, it calls the private
+`NetworkAttachments.Create` RPC with a `NetworkAttachment` proto identifying
+the BMI. Fulfillment reconciliation creates one internal
 `NetworkAttachment` CR that references the BMI instead of copying its
 subnet/interface fields. The CR is a shared asynchronous work record, not a
 second tenant attachment or source of desired state. The networking controller
 owns the readiness condition and network status on the BMI; BMF consumes those
 results to sequence reboot and readiness.
+
+The private payload is `NetworkAttachment{baremetal_instance: {id: <bmi-id>}}`.
+It identifies the BMI only; the nested `BareMetalNetworkAttachment` remains
+the desired attachment configuration. The generic proto and private Create RPC
+are defined in the [Unified Networking design](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
 
 ### Goals
 
@@ -1130,6 +1136,7 @@ Consequences:
 | Immutability + interface + primary validation | OSAC-1509 | New |
 | CLI --network-attachment for BareMetalInstance | OSAC-2075 | New |
 | Existing BMF networking orchestration must be changed to wait on networking-owned conditions and preserve other status fields | Not tracked | **GAP** |
+| Private `NetworkAttachments.Create` proto/RPC and fulfillment-service request-to-CR reconciliation | Not tracked | **GAP** |
 | BM reboot flow (reconcileReboot issues BMH annotation-based reboot after port move) | Not tracked | **GAP** |
 | Integration test | OSAC-1510 | New |
 | Fabric manager `move_network_attachment` role (generic port move) | OSAC-2081 (Netris BM) | Closed |
@@ -1148,10 +1155,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (22 behind origin/main)
-Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (23 behind origin/main)
+Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (39 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":23,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

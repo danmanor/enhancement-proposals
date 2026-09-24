@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-23
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -51,8 +51,13 @@ network readiness.
 1. Tenant creates VirtualNetwork, Subnet, SecurityGroup via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
 3. Tenant creates ComputeInstance with `network_attachments` (`ComputeNetworkAttachment`, no `primary` field, single-NIC only)
-4. The ComputeInstance lifecycle controller submits the private
-   `NetworkAttachment` proto request for the normalized attachment.
+4. The ComputeInstance lifecycle controller calls the private
+   `NetworkAttachments.Create` RPC with a `NetworkAttachment` proto request for
+   the normalized attachment.
+   Its payload identifies the target only, for example
+   `NetworkAttachment{compute_instance: {id: <compute-instance-id>}}`; subnet
+   and security-group values remain on the ComputeInstance spec. See the
+   [shared private proto definition](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
 5. Fulfillment reconciliation creates one internal `NetworkAttachment` CR;
    the networking controller resolves the target and prepares its CUDN/NAD
    attachment.
@@ -70,6 +75,7 @@ network readiness.
 ### What's Missing
 
 - Existing `ComputeNetworkAttachment` has no `primary` field; the compatibility field remains single-attachment only
+- Private `NetworkAttachments.Create` request and target-only `NetworkAttachment` proto integration for the ComputeInstance lifecycle controller
 - Service-level maximum-one validation and field-level defaulting are still required
 - At most one attachment — template creates one `l2bridge` interface
 - No dispatcher — uses `implementation_strategy` annotation
@@ -566,7 +572,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (23 behind origin/main)
+Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (39 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":23,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

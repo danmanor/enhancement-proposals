@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-23
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -726,9 +726,81 @@ source of intent. The supported contract is at most one attachment per
 workload, and the fulfillment API and corresponding CRD must validate that
 limit before rollout. For CaaS, the Cluster's single tenant attachment is
 copied into each worker BMI's derived attachment when CaaS creates the BMI.
-The private fulfillment-service
-`NetworkAttachment` proto is an internal request to reconcile that existing
-intent; it does not add another tenant-facing attachment field.
+The private fulfillment-service `NetworkAttachment` proto is a reconciliation
+request accepted by `NetworkAttachments.Create`, not a second copy of the
+desired attachment. The proposed type belongs in
+`proto/private/osac/private/v1/network_attachment_type.proto`; its target
+`oneof` identifies which existing workload owns the attachment:
+
+```protobuf
+syntax = "proto3";
+
+package osac.private.v1;
+
+import "buf/validate/validate.proto";
+import "cleanapi/cleanapi.proto";
+import "osac/private/v1/baremetal_instance_type.proto";
+import "osac/private/v1/compute_instance_type.proto";
+
+option (cleanapi.file).package = "osac.public.v1";
+
+message NetworkAttachment {
+  option (buf.validate.message).cel = {
+    id: "network_attachment_target_id"
+    message: "the selected target must have a non-empty id"
+    expression: "has(this.compute_instance) ? this.compute_instance.id != '' : this.baremetal_instance.id != ''"
+  };
+
+  oneof target {
+    option (buf.validate.oneof).required = true;
+
+    ComputeInstanceLocalReference compute_instance = 1;
+    BareMetalInstanceLocalReference baremetal_instance = 2;
+  }
+}
+```
+
+The private method follows the existing service pattern in
+`proto/private/osac/private/v1/network_attachments_service.proto`:
+
+```protobuf
+syntax = "proto3";
+
+package osac.private.v1;
+
+import "buf/validate/validate.proto";
+import "cleanapi/cleanapi.proto";
+import "osac/private/v1/network_attachment_type.proto";
+
+option (cleanapi.file).package = "osac.public.v1";
+option (cleanapi.file).http_route_prefix_map = "private:fulfillment";
+
+message NetworkAttachmentsCreateRequest {
+  NetworkAttachment object = 1 [(buf.validate.field).required = true];
+}
+
+message NetworkAttachmentsCreateResponse {
+  // Stable internal request/CR name, derived from target kind and target ID.
+  string id = 1;
+}
+
+service NetworkAttachments {
+  // Private and idempotent for the same target; this is not a tenant API.
+  rpc Create(NetworkAttachmentsCreateRequest) returns (NetworkAttachmentsCreateResponse) {
+    option (cleanapi.method).private = true;
+  }
+}
+```
+
+The selected reference must contain a non-empty `id`; duplicate Create calls
+for the same target return the same internal request. The message deliberately
+contains no subnet, security-group, interface, or IP fields: fulfillment-service
+and the networking controller read the immutable attachment from the referenced
+workload. A Cluster is not a request target in this design. CaaS fans its one
+Cluster attachment out into each worker BMI, and BMF submits one request per BMI
+when that BMI reaches its network handoff. The private API has no update or
+detach payload; network cleanup is triggered by target deletion and gated by
+the workload and networking finalizers described below.
 
 The lifecycle owner for the target workload submits the private request when
 that workload reaches the point where attachment work can proceed. The
@@ -1525,10 +1597,10 @@ No additional infrastructure beyond existing OSAC components and managers.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (22 behind origin/main)
-Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (23 behind origin/main)
+Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (39 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":23,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

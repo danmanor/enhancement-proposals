@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-23
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -69,13 +69,19 @@ Per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/desi
 
 **BMF owns each BareMetalInstance host lifecycle; the networking controller owns attachment operations.** For every BMI created directly for BMaaS or on behalf of CaaS:
 1. BMF provisions the host on the **provisioning network** (inventory → OS provisioning via DiskImage + ignition).
-2. After BMF reports `ProvisionTemplateComplete=True`, BMF submits the private `NetworkAttachment` proto request. Fulfillment-service reconciliation materializes the internal `NetworkAttachment` CR that references the BMI.
+2. After BMF reports `ProvisionTemplateComplete=True`, BMF calls the private `NetworkAttachments.Create` RPC with a `NetworkAttachment` proto request. Fulfillment-service reconciliation materializes the internal `NetworkAttachment` CR that references the BMI.
 3. When it first observes the internal request CR, the osac-operator networking controller creates `NetworkAttachmentsReady=Unknown` on BMI status. It moves the host's fabric port **provisioning network → tenant network**, waits for the target segment to become active, and sets the condition True on success (or False with a reason on failure). BMF consumes this condition; it does not create it or dispatch the move.
 4. BMF reboots the host so the OS re-DHCPs on the tenant network (`reconcileReboot`) and sets `NetworkHandoffComplete=True`.
 5. The networking controller queries the tenant-network DHCP lease, writes the discovered address to BMI status, and sets `IPDiscoveryComplete=True`. BMF waits for discovery before reporting the BMI Ready.
 6. For CaaS, assisted-installer worker registration and cluster installation proceed on the tenant network after the host handoff.
 
 The `BareMetalWorkerReconciler` reads the private `ClusterOrder.spec.networkAttachment` (a `ClusterNetworkAttachment` carrying typed subnet and security-group references) and enriches each BMI create request with the immutable `fabric_interface` stored on the node set by the fulfillment-service. This carries the cluster's single resolved attachment to each worker; BMF then submits a separate networking request for each BMI at its provisioning handoff. CaaS does not dispatch `move_network_attachment` or query DHCP itself. On cluster deletion, the controller calls `BareMetalInstances.Delete`; BMF and the networking controller complete host and fabric cleanup before the BMI is removed.
+
+The request target for a CaaS worker is its BMI, for example
+`NetworkAttachment{baremetal_instance: {id: <bmi-id>}}`; there is no Cluster
+target because port movement and DHCP discovery happen per worker. The request
+contains no subnet or interface values. See the [shared private proto
+definition](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
 
 ### Non-Goals
 
@@ -589,6 +595,7 @@ Tech Preview criteria:
 - [ ] API fields (`network_attachment`, `auto_external_ip_attachment`, `api_endpoint`, `ingress_endpoint`) implemented in fulfillment-service
 - [ ] Operator CRD updated with `ClusterNetworkAttachment`, `APIEndpoint`, `IngressEndpoint` fields
 - [ ] BareMetalWorkerReconciler (OSAC-2135) implemented — on-demand BMI creation with enriched network_attachment
+- [ ] BMF calls the private `NetworkAttachments.Create` RPC per BMI and fulfillment-service materializes the internal request CR
 - [ ] Agent-to-BMI MAC correlation and NodePool labeling implemented
 - [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
@@ -742,7 +749,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (23 behind origin/main)
+Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (39 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":23,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
