@@ -3,7 +3,7 @@ title: self-subject-access-review-api
 authors:
   - CrystalChun
 creation-date: 2026-09-22
-last-updated: 2026-09-22
+last-updated: 2026-09-24
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2476
 prd:
@@ -28,7 +28,7 @@ The fulfillment-service uses OPA for authorization, with policies evaluated in `
 
 - Create an extendable authorization component that can be reused across permission checks and actual operations without duplicating authorization rules
 - Follow Kubernetes SelfSubjectAccessReview API pattern for consistency with established conventions
-- Support checking permissions on all OSAC services and standard methods (create, get, list, update, delete)
+- Support checking permissions for the methods each OSAC service exposes (create, get, list, update, delete where present). Networking Update checks cover NetworkACL rule changes and Subnet NetworkACL reassociation; they do not make address configuration or workload attachments mutable.
 - Ensure authorization consistency — permission check results must match what the actual operation's authorization decision would be at the time of the check
 - Design the authorization component with a clear interface to enable testing, alternative implementations, and future extensions
 
@@ -47,7 +47,7 @@ Implementation creates an `AuthorizationEvaluator` interface that extracts OPA p
 
 1. Extracts the authenticated user's identity from request context (via existing authentication interceptor)
 2. Constructs the gRPC method path from the user-provided service and method (e.g., `"osac.public.v1.Clusters" + "Create"` → `"/osac.public.v1.Clusters/Create"`)
-3. Constructs hypothetical `ContextExtensions` from the spec's tenant and resource name fields
+3. Constructs hypothetical `ContextExtensions` from top-level `metadata.tenant` and optional target `metadata.name`
 4. Calls the `AuthorizationEvaluator.Evaluate` method with the user's identity, method path, and hypothetical context
 5. Returns the authorization decision as the response status
 
@@ -62,14 +62,15 @@ This component-based approach ensures the same OPA policies govern both permissi
 **Basic Flow:**
 
 1. User constructs a `CreateSelfSubjectAccessReviewRequest` specifying:
-   - `spec.service`: The full OSAC service name to check (e.g., `"osac.public.v1.Clusters"`, `"osac.public.v1.ComputeInstances"`, `"osac.public.v1.VirtualNetworks"`)
-   - `spec.method`: The operation to check (`"Create"`, `"Get"`, `"List"`, `"Update"`, `"Delete"`)
+   - `spec.service`: The full OSAC service name to check (e.g., `"osac.public.v1.Clusters"`, `"osac.public.v1.ComputeInstances"`, `"osac.public.v1.VirtualNetworks"`, `"osac.public.v1.NetworkACLs"`, `"osac.public.v1.Subnets"`)
+   - `spec.method`: A method exposed by that service (`"Create"`, `"Get"`, `"List"`, `"Update"`, or `"Delete"`); for networking, Update applies to NetworkACL rules and Subnet NetworkACL reassociation
    - `metadata.tenant`: Optional tenant context for the hypothetical operation (e.g., `"org-a"`)
+   - `metadata.name`: Optional target resource name for a resource-scoped check (e.g., `"edge-acl"` or `"private-subnet"`)
 2. User calls `SelfSubjectAccessReviews.Create` (gRPC)
 3. fulfillment-service:
    - Authenticates the user via existing authentication interceptor (extracts full JWT claims)
    - Constructs gRPC method path from `service` + `method` (e.g., `"osac.public.v1.Clusters" + "Create"` → `"/osac.public.v1.Clusters/Create"`)
-   - Constructs OPA input with complete authentication context, method path, and `metadata.tenant` as context extension
+   - Constructs OPA input with complete authentication context, method path, and `metadata.tenant` and `metadata.name` as context extensions
    - Evaluates OPA policy using the `AuthorizationEvaluator` component, including resource ownership and database visibility filtering to ensure accurate authorization results
    - Returns `SelfSubjectAccessReview` response with `status.allowed` (bool) and optional `status.reason` (string)
 4. User receives permission check result
@@ -110,6 +111,39 @@ if resp.Object.Status.Allowed {
 }
 ```
 
+Resource-scoped networking Update checks use the actual resource service and
+method. For example, checking `osac.public.v1.NetworkACLs` with `Update` and
+`metadata.name="edge-acl"` checks permission to update that ACL's rules.
+Checking `osac.public.v1.Subnets` with `Update` and
+`metadata.name="private-subnet"` checks permission to change that Subnet's
+`spec.network_acl` association. The optional target name is top-level
+`metadata.name` and is forwarded to `ContextExtensions.Name`. These checks do
+not make Subnet or VirtualNetwork address configuration, or workload network
+attachments, mutable.
+
+```go
+aclReview := &v1.SelfSubjectAccessReview{
+    Metadata: &v1.Metadata{Tenant: "org-a", Name: "edge-acl"},
+    Spec: &v1.SelfSubjectAccessReviewSpec{
+        Service: "osac.public.v1.NetworkACLs",
+        Method:  "Update",
+    },
+}
+
+subnetReview := &v1.SelfSubjectAccessReview{
+    Metadata: &v1.Metadata{Tenant: "org-a", Name: "private-subnet"},
+    Spec: &v1.SelfSubjectAccessReviewSpec{
+        Service: "osac.public.v1.Subnets",
+        Method:  "Update",
+    },
+}
+```
+
+| Supported operation | Service | Method | Target | Mutable field scope |
+|---|---|---|---|---|
+| Change ACL rules | `osac.public.v1.NetworkACLs` | `Update` | NetworkACL name | Ingress and egress rule lists |
+| Reassociate Subnet policy | `osac.public.v1.Subnets` | `Update` | Subnet name | `spec.network_acl`, referencing a NetworkACL in the same VirtualNetwork |
+
 ```mermaid
 sequenceDiagram
     participant Client
@@ -118,7 +152,7 @@ sequenceDiagram
     participant AuthzEval as AuthorizationEvaluator
     participant OPA as OPA Policy Engine
 
-    Client->>AuthInterceptor: CreateSelfSubjectAccessReview(spec: {service, method, tenant})
+    Client->>AuthInterceptor: CreateSelfSubjectAccessReview(metadata: {tenant, name}, spec: {service, method})
     AuthInterceptor->>AuthInterceptor: Validate JWT, extract Subject
     AuthInterceptor->>ReviewServer: Request with Subject in context
     ReviewServer->>ReviewServer: Map service + method → gRPC method path
@@ -169,8 +203,8 @@ import "metadata_type.proto";
 
 // SelfSubjectAccessReview checks whether the current user can perform an action.
 message SelfSubjectAccessReview {
-  // Metadata contains the tenant context for the hypothetical operation.
-  // The tenant field specifies which tenant's scope to evaluate permissions in.
+  // Metadata contains optional tenant scope and target resource name for the
+  // hypothetical operation. Name is used for resource-scoped authorization.
   Metadata metadata = 1;
 
   // Spec describes information about the request being evaluated.
@@ -251,12 +285,13 @@ message CreateSelfSubjectAccessReviewResponse {
 - `service` must match the pattern `osac.public.v1.[A-Z][a-zA-Z]*s` (fully-qualified OSAC service name)
 - `method` max length 64 characters (buf.validate constraint)
 - `metadata.tenant` is optional (inherits standard metadata validation — RFC 1123 DNS subdomain, max 253 chars)
+- `metadata.name` is optional and identifies the target resource for resource-scoped checks; it inherits standard Metadata name validation
 - Runtime validation (in `buildGRPCMethodPath`) ensures the method exists on the specified service using protobuf reflection
 - Invalid input returns `InvalidArgument` gRPC error (protobuf validation failures before reaching server logic, unknown service/method during server processing)
 
 ### Service and Method Validation
 
-User-provided service names are fully-qualified (e.g., `"osac.public.v1.Clusters"`). The server must validate that the service exists and that it supports the requested method before evaluating authorization. [Research: §Pattern 2: type to API Path Mapping]
+User-provided service names are fully-qualified (e.g., `"osac.public.v1.Clusters"`, `"osac.public.v1.NetworkACLs"`, `"osac.public.v1.Subnets"`). The server must validate that the service exists and that it supports the requested method before evaluating authorization. [Research: §Pattern 2: type to API Path Mapping]
 
 **Implementation:** Runtime protobuf reflection over `osac.public.v1` service definitions. The server uses Go's `google.golang.org/protobuf/reflect/protoregistry` to iterate over all registered services at startup and builds a mapping of which methods each service supports:
 
@@ -341,6 +376,12 @@ func buildGRPCMethodPath(service, method string) (string, error) {
 **Rationale:** Protobuf reflection eliminates build-time code generation and automatically stays in sync with proto service definitions — when a new `*_service.proto` is added and compiled, the reflection-based validation immediately includes it without any additional build steps. No generator scripts, no CI drift checks, no manual regeneration commands. The mapping is built once at server startup using the compiled proto descriptors. [Research: §Integration Constraints]
 
 **Per-service method validation:** The reflection-based implementation validates that each service supports the requested method by iterating over the service's method descriptors. This provides clearer error messages when users request unsupported operations (e.g., `osac.public.v1.ExternalIPPools + Create` returns `InvalidArgument` "method Create not supported for service osac.public.v1.ExternalIPPools" instead of relying on OPA to deny the non-existent method path). Resources in the public API may expose only a subset of standard methods (e.g., ExternalIPPools supports List/Get but not Create/Update/Delete).
+
+The public `NetworkACLs` and `Subnets` services expose Update for their
+mutable networking fields. For this contract, those updates cover NetworkACL
+rule changes and reassociation through `Subnet.spec.network_acl`;
+VirtualNetwork/Subnet address configuration and workload attachments remain
+immutable.
 
 **Alternative considered:** Code-generated mapping from build-time script parsing proto files. Would require tooling (buf plugin or Makefile integration), CI verification to catch drift, and manual regeneration steps. Rejected in favor of reflection to eliminate maintenance overhead and an entire class of "forgot to regenerate" errors.
 
@@ -446,6 +487,8 @@ func (e *OPAAuthorizationEvaluator) Evaluate(
 // constructOPAInput builds the input structure for OPA policy evaluation.
 // This is the existing logic from GrpcAuthzInterceptor, extracted for reuse.
 // authContext contains all JWT claims needed for complete authorization evaluation.
+// For review requests, ContextExtensions.Name comes from optional top-level
+// metadata.name and is exposed to Rego as context.context_extensions.name.
 func constructOPAInput(authContext *AuthenticationContext, method string, ext *ContextExtensions) map[string]interface{} {
     return map[string]interface{}{
         "auth": map[string]interface{}{
@@ -468,7 +511,7 @@ func constructOPAInput(authContext *AuthenticationContext, method string, ext *C
             "context_extensions": map[string]interface{}{
                 "id":      ext.ID,
                 "tenant":  ext.Tenant,
-                "name":    ext.Name,
+                "name":    ext.Name, // optional target name from metadata.name
                 "project": ext.Project,
             },
         },
@@ -507,10 +550,12 @@ func (s *SelfSubjectAccessReviewsServer) Create(
         return nil, status.Errorf(codes.InvalidArgument, err.Error())
     }
 
-    // Construct hypothetical context extensions from metadata
+    // Construct hypothetical context extensions from top-level metadata.
+    // Name is optional; when supplied, authorization can evaluate ownership
+    // for that specific resource.
     contextExt := &auth.ContextExtensions{
         Tenant: req.Object.Metadata.GetTenant(),
-        // Name, ID, and Project are not provided; leave empty for hypothetical check
+        Name:   req.Object.Metadata.GetName(),
     }
 
     // Evaluate authorization using the same component as actual operations
@@ -570,9 +615,9 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 **Integration Tests (against Kind cluster with Keycloak):**
 - **Authorization consistency:** For each role (Admin, Tenant Admin, Client) and each service:
   - `SelfSubjectAccessReview(service, "Create")` returns `allowed=true` ⟺ actual `Create()` succeeds
-  - `SelfSubjectAccessReview(service, "Delete", name)` returns `allowed=false` ⟺ actual `Delete(name)` returns `PermissionDenied`
+  - `SelfSubjectAccessReview(service, "Delete", metadata.name=name)` returns `allowed=false` ⟺ actual `Delete(name)` returns `PermissionDenied`
 - **Tenant scoping:** Tenant Admin for `org-a` checks permission on `org-b` resource → `allowed=false`
-- **Resource-scoped checks:** User checks `Update` permission on specific VirtualNetwork by name → result matches whether actual update would succeed
+- **Resource-scoped networking checks:** User checks `Update` permission on a specific NetworkACL and Subnet by setting top-level `metadata.name` → the handler passes that name as `ContextExtensions.Name`, and results match actual ACL-rule and Subnet-ACL-association updates; address configuration and workload-attachment updates remain unavailable
 - **Advisory nature:** Permission check returns `allowed=true`, then user's role is revoked, then actual operation fails → demonstrates checks are advisory, not authoritative
 - **Unauthenticated requests:** Calling endpoint without valid JWT returns `Unauthenticated` error
 - **Invalid inputs:** Unknown service, invalid method, malformed tenant name → appropriate validation errors
@@ -590,7 +635,7 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 - Users can only check their own permissions (self-subject), not other users
 - The authorization decision returned is advisory — actual operations re-evaluate authorization independently
 
-**Input validation:** `buf.validate` annotations enforce service, method, tenant, and resource name constraints at the protobuf layer. Unknown services return `InvalidArgument` errors before reaching authorization logic.
+**Input validation:** `buf.validate` annotations enforce service and method constraints, while the standard Metadata validators enforce optional `metadata.tenant` and `metadata.name` constraints. A supplied `metadata.name` is the target name for resource-scoped authorization; it is not part of the `spec`. Unknown services return `InvalidArgument` errors before reaching authorization logic.
 
 **Information disclosure:** The response `reason` field may reveal information about why permission was denied, but must NOT disclose cross-tenant information. Reason messages must be sanitized to prevent tenant enumeration or information leakage:
 - SAFE: "insufficient permissions" (generic denial, reveals nothing about other tenants)
@@ -656,6 +701,11 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 - **Mitigation:** Integration tests verify authorization consistency (permission check result matches actual operation outcome). Using a shared component interface (not duplicating policy logic) minimizes drift risk. Both `GrpcAuthzInterceptor` and `SelfSubjectAccessReviewsServer` use the same `AuthorizationEvaluator` instance. [Research: §Recommended Approach]
 - **Residual risk:** Low — refactoring is mechanical, existing tests catch behavioral changes, and the interface abstraction makes it clear when the same evaluator is being used
 
+**Risk: Missing or incorrect target resource name**
+- **Manifestation:** A resource-scoped check omits `metadata.name` or supplies a name different from the resource targeted by the actual operation, so the ownership context cannot match that operation.
+- **Mitigation:** Clients supply the actual target name in `metadata.name` for resource-scoped checks. The server forwards it as `ContextExtensions.Name`, and integration tests compare checks against updates and deletes of the named resource.
+- **Residual risk:** Low — the field is optional for method-level checks, while resource-scoped client flows know the target resource name.
+
 **Risk: Protobuf reflection mapping does not capture a new service**
 - **Manifestation:** New service added to proto definitions and compiled, but protobuf reflection does not find it at runtime → permission checks for new service fail with `unknown service` error
 - **Mitigation:** Protobuf reflection automatically includes all services registered in the global proto registry at compile time — when `buf generate` produces Go code for a new `*_service.proto`, the service descriptor is automatically registered. Unit tests for all services will fail if reflection cannot find them.
@@ -712,7 +762,7 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 - New types work automatically
 
 **Cons:**
-- Pluralization is not algorithmic — `"SecurityGroup"` → `"SecurityGroups"`, not `"SecurityGroupes"`; exceptions abound
+- Resource-path pluralization must use explicit mappings; do not infer API service names algorithmically, because an incorrect path can cause OPA to deny all requests.
 - Kubernetes explicitly requires hand-specified `plural` in CRDs for this reason
 - Silent failures when algorithmic rule is wrong (incorrect method path → OPA denies everything)
 
@@ -734,26 +784,6 @@ Kubernetes SelfSubjectAccessReview allows any resource string (extensible for CR
 
 Current design uses **Option A** (validation error) for clarity and fast feedback. Should this be reconsidered?
 
-### 2. Should future versions support resource-scoped permission checks?
-
-**Owner:** To be determined
-
-**Impact:** §Implementation Details (Server Implementation, Authorization Integration)
-
-v1 includes **database visibility filtering** to ensure permission check results match actual operation authorization. The full authorization stack includes:
-1. **OPA policy evaluation** (what v1 implements)
-2. **Tenant membership checks** (covered via OPA tenant claims)
-3. **Database visibility filtering** (ownership, resource-level permissions — included in v1 to ensure list method results are accurate)
-
-v1 checks "can I call the list method and see results?" rather than only "can I call the list method?" This ensures permission check results accurately reflect whether the operation would return accessible data.
-
-However, v1 still cannot answer "can I modify cluster Y specifically?" without the specific resource identifier. Should a future version add resource-scoped checks with explicit resource name validation? Considerations:
-- **Pro:** Enables precise UI disabling ("hide edit button on resources user cannot modify"), better UX
-- **Con:** Requires resource name in the request spec, adding complexity to the API surface
-
-Kubernetes SelfSubjectAccessReview checks RBAC (method-level) but not object ownership — resource-level checks require hitting the actual API. Is that pattern sufficient for OSAC with visibility filtering included?
-
-
 ## Test Plan
 
 ### Unit Tests
@@ -773,6 +803,7 @@ Kubernetes SelfSubjectAccessReview checks RBAC (method-level) but not object own
 
 **`OPAAuthorizationEvaluator` component:**
 - `Evaluate` method constructs OPA input with correct structure (auth.identity, context.request.http.path, context.context_extensions)
+- A supplied top-level `metadata.name` reaches OPA as `context.context_extensions.name`
 - Returns `Allowed=true` when OPA authz data contains `{"allow": true}`
 - Returns `Allowed=false` when OPA authz data contains `{"allow": false}` (note: current OPA policy does not return a `reason` field)
 - Returns error when OPA query fails or returns unexpected result type
@@ -780,6 +811,7 @@ Kubernetes SelfSubjectAccessReview checks RBAC (method-level) but not object own
 **Mock `AuthorizationEvaluator` for testing:**
 - Create mock implementation of `AuthorizationEvaluator` interface that returns predefined `AuthzDecision` values
 - Test server with mock evaluator to verify it calls `Evaluate` with correct parameters
+- Server passes supplied `metadata.name` through as `ContextExtensions.Name`
 - Test server error handling when evaluator returns errors
 - Enables unit testing server logic without OPA dependency
 
@@ -789,6 +821,7 @@ Kubernetes SelfSubjectAccessReview checks RBAC (method-level) but not object own
 - Request with empty `method` fails validation before reaching handler
 - Request with `method` exceeding 64 characters fails validation before reaching handler
 - Request with `metadata.tenant` exceeding max length fails validation
+- Invalid `metadata.name` fails the standard Metadata validation before authorization evaluation
 
 ### Integration Tests
 
@@ -796,6 +829,8 @@ Kubernetes SelfSubjectAccessReview checks RBAC (method-level) but not object own
 - Admin user: `SelfSubjectAccessReview(service="osac.public.v1.Clusters", method="Create")` returns `allowed=true`; actual `Clusters.Create()` succeeds
 - Tenant Admin for `org-a`: `SelfSubjectAccessReview(service="osac.public.v1.VirtualNetworks", method="Create", metadata.tenant="org-a")` returns `allowed=true`; actual create succeeds
 - Tenant Admin for `org-a`: `SelfSubjectAccessReview(service="osac.public.v1.VirtualNetworks", method="Create", metadata.tenant="org-b")` returns `allowed=false` with `reason` that does NOT contain "org-b" (e.g., empty or "insufficient permissions"); actual create returns `PermissionDenied` with error message that also does NOT reveal "org-b"
+- Tenant Admin for `org-a`: NetworkACL `Update` check with `metadata.name` set to an owned ACL returns `allowed=true` and the corresponding rule update succeeds; Subnet `Update` check with `metadata.name` set to an owned Subnet returns `allowed=true` and reassociation to a READY ACL in the same VirtualNetwork succeeds
+- Tenant User for `org-a`: NetworkACL and Subnet `Update` checks with `metadata.name` set to resources owned by another user return `allowed=false`, matching the actual authorization decision
 - Client user: `SelfSubjectAccessReview(service="osac.public.v1.Tenants", method="Update")` returns `allowed=false`; actual update returns `PermissionDenied`
 - Repeat for all services and methods across Admin, Tenant Admin, Client roles
 
@@ -874,9 +909,9 @@ No version skew concerns. The fulfillment-service is the only component that imp
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 9b25062, workspace main @ f0a8211 (dirty)
-Phases: respond, manual-edit, revise, revise, revise, revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Phases: revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"9b25062","source_repo":"f0a8211 (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","commit","commit","respond","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
