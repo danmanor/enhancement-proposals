@@ -22,7 +22,7 @@ superseded-by:
 
 This design enforces naming discipline across all OSAC resources through three layers: proto validation (mandatory names, RFC 1123 format), PostgreSQL unique indexes (uniqueness within scope boundaries), and PostgreSQL immutability triggers (name cannot change after creation). The changes are concentrated in the proto `Metadata` message and a single database migration — no server or DAO code changes are required for core enforcement. See [PRD](prd.md) for detailed requirements.
 
-Networking resources governed by [OSAC-1433](/enhancements/OSAC-1433-unified-networking/design.md) support Create, List/Get, and Delete, with NetworkACL rule updates and Subnet-to-NetworkACL reassociation also supported. This naming feature keeps `metadata.name` immutable on those updates; workload attachments and VirtualNetwork/Subnet address configuration remain immutable under OSAC-1433.
+Networking resources governed by [OSAC-1433](/enhancements/OSAC-1433-unified-networking/design.md) support read (List/Get), Create, and Delete. NetworkACL rules and Subnet-to-NetworkACL associations are fixed at creation; workload attachments and VirtualNetwork/Subnet address configuration also remain immutable under OSAC-1433.
 
 ## Motivation
 
@@ -135,7 +135,7 @@ This feature modifies the shared `Metadata` protobuf message. No new services, C
 
 **Behavioral changes to existing resources:**
 - All `Create*` RPCs reject requests with missing or invalid names (previously accepted empty)
-- All `Update*` RPCs for resource APIs that support Update reject name changes via database trigger (some tables already enforced this; now all do); NetworkACL rule and Subnet association updates also preserve the resource name under OSAC-1433
+- All `Update*` RPCs for resource APIs that support Update reject name changes via database trigger (some tables already enforced this; now all do). NetworkACL and Subnet networking fields have no Update operation under OSAC-1433.
 - All `Create*` RPCs reject duplicate names within scope boundaries (most resources previously accepted duplicates)
 
 ## UX Alignment
@@ -303,7 +303,7 @@ Input validation is strengthened: the proto `min_len: 1` constraint and updated 
 
 **Uniqueness constraint violation (duplicate name):** The DAO translates the PostgreSQL `UniqueViolation` to `ErrAlreadyExists`. The server returns `AlreadyExists`. No partial state is created. The user chooses a different name and retries.
 
-**Immutability trigger violation (name change on a supported update):** The trigger raises SQLSTATE `Z0001`. The DAO translates to `ErrImmutable`. The server returns `InvalidArgument`. The update is rolled back entirely — the resource retains its original state. OSAC-1433's NetworkACL rule and Subnet association updates do not make `metadata.name` mutable; changing a network resource's name requires delete and recreate.
+**Immutability trigger violation (name change on a supported update):** The trigger raises SQLSTATE `Z0001`. The DAO translates to `ErrImmutable`. The server returns `InvalidArgument`. The update is rolled back entirely — the resource retains its original state. NetworkACLs and Subnets do not expose Update under OSAC-1433; changing a network resource's name requires delete and recreate.
 
 **Migration failure (existing data violations):** The data cleanup migration runs first in the upgrade sequence, backfilling empty names and deduplicating collisions. If the cleanup migration itself fails (e.g., unexpected data patterns), the entire upgrade is rolled back. No partial enforcement is applied.
 
@@ -435,7 +435,7 @@ Integration tests run against a real PostgreSQL instance via the DAO test infras
 - Update a resource's name → returns `ErrImmutable` with `fields: ["metadata.name"]`
 - Update a resource without changing the name → succeeds
 - Update a resource's other fields (labels, annotations, spec) → succeeds (name not affected)
-- Network-resource name changes use delete and recreate; NetworkACL rule updates and Subnet association updates remain supported under OSAC-1433
+- Network-resource name changes use delete and recreate; NetworkACL rules and Subnet associations are fixed at creation under OSAC-1433
 
 **Concurrent creation:**
 - Launch N goroutines that each attempt to create a resource with the same name, tenant, and project → exactly one succeeds, all others return `ErrAlreadyExists`
@@ -448,7 +448,7 @@ E2E tests via `osac-test-infra` pytest framework against the fulfillment-service
 - Create a VirtualNetwork with an invalid name → `InvalidArgument`
 - Create two VirtualNetworks with the same name in the same tenant/project → second returns `AlreadyExists` with resource type in message
 - Create a VirtualNetwork, delete it, create another with the same name before archival → `AlreadyExists`
-- OSAC-1433 supports NetworkACL rule and Subnet association updates; changing a VirtualNetwork name still requires delete and recreate
+- OSAC-1433 fixes NetworkACL rules and Subnet associations at creation; changing a VirtualNetwork name still requires delete and recreate
 - Create a platform-scoped NetworkClass with a duplicate name → `AlreadyExists`
 
 ## Graduation Criteria
@@ -488,9 +488,8 @@ None.
 
 ## Provenance
 
-Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

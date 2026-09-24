@@ -43,7 +43,7 @@ dual-stack networking are not supported.
 - Tenants who need custom networking retain the full explicit workflow —
   simplified creation is additive, not a replacement
 - Auto-provisioned networking resources are visible and follow the unified
-  networking lifecycle; ACL rules and Subnet ACL associations can be updated
+  read/create/delete lifecycle; ACL rules and Subnet ACL associations are fixed at creation
 
 ### 2.2 Non-Goals
 
@@ -117,9 +117,9 @@ dual-stack networking are not supported.
   with any IP subnet, and the system enforces isolation regardless of
   overlapping CIDRs between tenants. [User]
 - **FR-4:** Default resources are labeled as defaults and visible in list
-  and detail views. They follow the unified networking create/read/delete
-  contract, with mutable NetworkACL rules and Subnet ACL association; deletion
-  is blocked while any resource depends on them. [User]
+  and detail views. They follow the unified networking read/create/delete
+  contract; NetworkACL rules and Subnet ACL association are fixed at creation,
+  and deletion is blocked while any resource depends on them. [User]
 - **FR-5:** Creating custom VirtualNetworks does not affect default
   resources — both coexist. [User]
 
@@ -191,10 +191,10 @@ dual-stack networking are not supported.
   Subnet is associated with the default NetworkACL
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
-- [ ] Default networking resources support create/read/delete; NetworkACL
-  rules and the Subnet's NetworkACL association can be updated. A Tenant
-  Admin can create replacement resources with customized settings once
-  dependencies on the defaults have been removed
+- [ ] Default networking resources support read/create/delete; NetworkACL
+  rules and the Subnet's NetworkACL association cannot be updated after
+  creation. A Tenant Admin can create replacement resources with customized
+  settings once dependencies on the defaults have been removed
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
   auto-created ExternalIP and ExternalIPAttachment to be cleaned up
   automatically
@@ -268,7 +268,8 @@ Resolved: E2E tests for simplified creation are defined in each per-service desi
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: draft, revise
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

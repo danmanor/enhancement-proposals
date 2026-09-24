@@ -28,9 +28,9 @@ VirtualNetwork management (shipped under
 context, since the NAT Gateway field extends its list and detail pages — it is otherwise
 unchanged by this design. NetworkACL management and Subnet association are added below.
 Workload network attachments refer to a Subnet only; the Subnet's ACL is shown as
-read-only context during workload creation. ACL rules and Subnet associations are
-editable; VirtualNetwork/Subnet address configuration and workload attachments remain
-immutable after creation.
+read-only context during workload creation. NetworkACL rules and Subnet associations
+are fixed at creation; VirtualNetwork/Subnet address configuration and workload
+attachments also remain immutable after creation.
 
 ## Proposal
 
@@ -75,14 +75,15 @@ Pure consumer of the existing private `ExternalIPPools` service
 - **List:** the VirtualNetwork detail page's **Network ACLs** tab lists the ACLs
   scoped to that VirtualNetwork. Columns: **Name**, **Associated Subnets**,
   **Ingress Rules**, **Egress Rules**, **Status** (`NetworkACLStatusLabel`).
-- **Create/edit form:** **Name**, ingress rule table, and egress rule table. Each
+- **Create form:** **Name**, ingress rule table, and egress rule table. Each
   rule row has **Priority** (1–32766), **Action** (ALLOW or DENY), **Protocol**
   (ALL, TCP, UDP, ICMP), optional TCP/UDP **Destination Port Range**, and an
   IPv4 **CIDR**. The UI rejects duplicate priorities within one direction and
-  validates port endpoints and canonical IPv4 CIDRs before submission. Rule
-  updates use `useUpdateNetworkACL()`; order is displayed from lowest to highest
-  priority. Traffic with no matching rule is denied, and the form explains that
-  reply traffic needs a reverse-direction rule.
+  validates port endpoints and canonical IPv4 CIDRs before submission. The
+  rule set is immutable after creation; order is displayed from lowest to
+  highest priority. Traffic with no matching rule is denied, and the form
+  explains that reply traffic needs a reverse-direction rule. ACL details show
+  the rules read-only.
 - **Delete:** available only when no Subnet references the ACL; the server
   returns `FAILED_PRECONDITION` if a reference remains.
 
@@ -91,9 +92,9 @@ Pure consumer of the existing private `ExternalIPPools` service
 - **Subnet create form:** requires a NetworkACL selector scoped to the selected
   VirtualNetwork. A Subnet cannot be created without exactly one ACL.
 - **Subnet list/detail:** show the associated ACL name and status.
-- **Reassociate:** an edit action selects another READY ACL from the same
-  VirtualNetwork and calls `useUpdateSubnet()` with the `spec.network_acl`
-  field mask. The UI shows Pending until the new association becomes READY.
+- **Association lifecycle:** the ACL is selected during Subnet creation and
+  cannot be changed later. Subnet details show the associated ACL name and
+  status read-only.
 - **Policy boundary:** same-Subnet traffic is not filtered by the ACL. Cross-Subnet
   traffic must pass source egress and destination ingress rules. Workload forms
   display the selected Subnet's ACL but do not provide an ACL picker.
@@ -146,8 +147,8 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | Pool create: non-IPv4 address family | Server's `INVALID_ARGUMENT` shown as a form-level error. |
 | Pool create: empty, malformed, multiple, or overlapping CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
-| NetworkACL update has duplicate priorities or an invalid rule | Validation error is shown beside the rule row; no update is submitted. |
-| Subnet association references an ACL in another VirtualNetwork or a non-READY ACL | Server's `INVALID_ARGUMENT` or `FAILED_PRECONDITION` is shown in the form; current association remains displayed. |
+| NetworkACL create has duplicate priorities or an invalid rule | Validation error is shown beside the rule row; no create is submitted. |
+| Subnet creation references an ACL in another VirtualNetwork or a non-READY ACL | Server's `INVALID_ARGUMENT` or `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
 | NetworkACL delete while associated with a Subnet | Server's `FAILED_PRECONDITION` is shown; the ACL remains listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
@@ -171,16 +172,16 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 - **Status labels:** `NatGatewayStatusLabel`, `ExternalIpStatusLabel`,
   `ExternalIpPoolStatusLabel`, and `NetworkACLStatusLabel` — wrappers around
   `ResourceStatusLabel`/`StatusKind`.
-- **Hooks and fixtures:** add NetworkACL list/create/update/delete hooks and
-  Subnet update support, plus `NetworkACLs`, `NATGateways`, `ExternalIPs`, and
+- **Hooks and fixtures:** add NetworkACL list/create/delete hooks, plus
+  `NetworkACLs`, `NATGateways`, `ExternalIPs`, and
   private `ExternalIPPools` to `createMockConnectTransport.ts`.
 
 ---
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-2476 — Self-Subject Access Review API
-- **Total test cases:** 17
+- **Total test cases:** 15
 - **Requirements covered:** 6 of 6 (3 user stories + 3 technical requirements)
 - **Interface changes covered:** 1 of 1
 
@@ -83,7 +83,7 @@ scope and target resource name are supplied in the review object's top-level
 
 ### US-2: Tenant User Infrastructure Operations
 
-**User Story:** As a tenant user, I want to check whether I have permission to create or delete infrastructure resources and to perform supported NetworkACL rule or Subnet NetworkACL-association updates in a specific tenant, so that the UI and CLI can validate permissions upfront without implying that address configuration or workload attachments are mutable
+**User Story:** As a tenant user, I want to check whether I have permission to create or delete infrastructure resources in a specific tenant, so that the UI and CLI can validate permissions upfront
 
 #### TC-US2-01: Check permission to create ComputeInstance
 
@@ -128,66 +128,11 @@ scope and target resource name are supplied in the review object's top-level
 - Response `status.allowed` is `true`
 - `status.reason` is empty
 
-#### TC-US2-03: Check permission to update NetworkACL rules and Subnet association
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
-
-##### Preconditions
-
-- Tenant user is authenticated with JWT token
-- User is a member of tenant `org-a`
-- Another user in `org-a` has created READY NetworkACLs named `other-acl` and
-  `replacement-acl` in VirtualNetwork `prod-net`, plus Subnet `other-subnet`
-  in `prod-net` whose `network_acl` association is `other-acl`
-- Current user does not own the ACLs or Subnet
-
-##### Steps
-
-1. Send `CreateSelfSubjectAccessReviewRequest` with
-   `spec.service="osac.public.v1.NetworkACLs"`, `spec.method="Update"`,
-   `metadata.tenant="org-a"`, `metadata.name="other-acl"`
-2. Send a second request with `spec.service="osac.public.v1.Subnets"`,
-   `spec.method="Update"`, `metadata.tenant="org-a"`,
-   `metadata.name="other-subnet"`
-3. Observe both responses
-
-##### Expected Results
-
-- Both responses have `status.allowed` set to `false`
-- Both `status.reason` values are empty; the response does not describe either resource
-
 ### US-3: Tenant User Resource-Scoped Permissions
 
-**User Story:** As a tenant user, I want to check resource-scoped permissions (update or delete operations on a specific resource by name) before enabling edit or delete actions, so that I know whether I can modify a particular resource before attempting the operation
+**User Story:** As a tenant user, I want to check resource-scoped permissions for supported operations on a specific resource by name before enabling actions, so that I know which operations are available before attempting them
 
-#### TC-US3-01: Check permission for supported NetworkACL and Subnet updates by name
-
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
-
-##### Preconditions
-
-- Tenant user is authenticated with JWT token
-- User is a member of tenant `org-a`
-- User has created READY NetworkACLs named `owned-acl` and `replacement-acl`
-  in VirtualNetwork `prod-net`, and Subnet `owned-subnet` in `prod-net` whose
-  `network_acl` association is `owned-acl`
-
-##### Steps
-
-1. Send `CreateSelfSubjectAccessReviewRequest` with `spec.service="osac.public.v1.NetworkACLs"`, `spec.method="Update"`, `metadata.tenant="org-a"`, `metadata.name="owned-acl"`
-2. Send a second request with `spec.service="osac.public.v1.Subnets"`, `spec.method="Update"`, `metadata.tenant="org-a"`, `metadata.name="owned-subnet"`
-3. Observe both responses
-
-##### Expected Results
-
-- Both responses have `status.allowed` set to `true`
-- Both `status.reason` values are empty
-
-#### TC-US3-02: Check permission to delete specific VirtualNetwork owned by another user
+#### TC-US3-01: Check permission to delete specific VirtualNetwork owned by another user
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -271,7 +216,7 @@ scope and target resource name are supplied in the review object's top-level
 ##### Steps
 
 1. Request a review for an unknown service.
-2. Request a review for a known service with an unsupported method, including `Create` on `osac.public.v1.ExternalIPPools`.
+2. Request a review for a known service with an unsupported method, including `Create` on `osac.public.v1.ExternalIPPools` and `Update` on `osac.public.v1.NetworkACLs` and `osac.public.v1.Subnets`.
 3. Request a review for `osac.public.v1.SelfSubjectAccessReviews` with method `Create`.
 
 ##### Expected Results
@@ -437,13 +382,13 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 17 |
+| Total test cases | 15 |
 | Critical | 5 |
-| High | 12 |
+| High | 10 |
 | Medium | 0 |
 | Low | 0 |
 | Manual | 1 |
-| Automated | 16 |
+| Automated | 14 |
 | Requirements with test cases | 6 / 6 |
 | Interface changes with test cases | 1 / 1 |
 
@@ -451,9 +396,8 @@ All interface changes are exercised by test cases.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise, revise, revise, revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

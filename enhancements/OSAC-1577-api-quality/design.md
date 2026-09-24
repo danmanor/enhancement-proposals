@@ -357,7 +357,7 @@ The FK from `subnet_id` to `active_subnets(id)` enforces that the referenced sub
 Subnet network policy is also a resource reference: each Subnet has exactly
 one active NetworkACL association. Materialize that association in
 `subnet_network_acl_refs` with `network_acl_id` referencing
-`active_network_acls(id)`. Subnet create/update writes this row; Subnet
+`active_network_acls(id)`. Subnet creation writes this row; Subnet
 soft-delete removes it. The reference prevents deleting an ACL while any
 Subnet remains associated with it.
 
@@ -625,9 +625,8 @@ None. All changes use existing build and test infrastructure. protoc-gen-cleanap
 
 ## Provenance
 
-Authored: revise [manual] @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

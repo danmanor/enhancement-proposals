@@ -25,10 +25,10 @@ BMaaS networking provides single-NIC BaremetalInstance provisioning with optiona
 ## Summary
 
 This document is a per-service expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md). The unified EP defines the shared architecture and [deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary); BMaaS networking supports connected deployments only and does not add air-gapped or disconnected networking support. This document defines how BMaaS consumes that architecture.
-Networking resources support Create, List/Get, and Delete, except NetworkACL
-rules and Subnet-to-ACL associations, which are mutable. `BaremetalInstance`
-network attachment fields remain immutable after creation; changing them
-requires delete and recreate.
+Networking resources support read (List/Get), create, and delete. NetworkACL
+rules and Subnet-to-ACL associations are immutable after creation.
+`BaremetalInstance` network attachment fields also remain immutable after
+creation; changing them requires delete and recreate.
 
 BMaaS networking also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#networking-hub-support-boundary):
@@ -195,7 +195,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
      --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
      --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
-   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied. Rule lists may be updated later; changes apply to every workload on each associated Subnet without changing workload attachments.
+   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied. The complete rule set is fixed at ACL creation; changing policy requires recreating affected networking resources.
    Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
 
 3. **Create Subnet:**
@@ -203,7 +203,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
      --network-acl my-acl --name my-subnet
    ```
-   `Subnet.spec.network_acl` references exactly one active NetworkACL in the same VirtualNetwork and may be reassociated later. The ACL may be reused by other Subnets in that VirtualNetwork. Dispatcher → fabric_manager creates VLAN/fabric segment. If the NetworkClass has a k8s_manager: also creates CUDN overlay (but BM doesn't use it — the overlay exists for VMs that may share the same subnet).
+   `Subnet.spec.network_acl` references exactly one active NetworkACL in the same VirtualNetwork and is immutable after Subnet creation. The ACL may be reused by other Subnets in that VirtualNetwork. Dispatcher → fabric_manager creates VLAN/fabric segment. If the NetworkClass has a k8s_manager: also creates CUDN overlay (but BM doesn't use it — the overlay exists for VMs that may share the same subnet).
 
 #### Phase 2: Tenant Creates BM Server
 
@@ -314,7 +314,9 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
 
 11. **Tenant deletes networking resources** (independently):
-    - Delete ExternalIPAttachments, ExternalIPs, NetworkACL, Subnet, VirtualNetwork — each via its own dispatcher-triggered delete job; reassign or remove every Subnet association before deleting a shared ACL
+    - Delete ExternalIPAttachments and ExternalIPs via their dispatcher-triggered delete jobs
+    - Delete every Subnet that references a NetworkACL via its dispatcher-triggered delete job
+    - Delete the NetworkACL, then the VirtualNetwork, via their dispatcher-triggered delete jobs
 
 **BMaaS-specific deletion dependency guard:**
 
@@ -429,7 +431,7 @@ The `mutateBMI()` function in the fulfillment-service's BM reconciler currently 
 - Interfaces with role `lifecycle` are rejected in `network_attachments` — lifecycle interfaces (PXE boot, BMC) are reserved for the provisioning system and are not tenant-attachable
 - If `interface` is omitted: defaults to the first port with `role=fabric` from the BareMetalInstanceType (consistent with the omitted-list default)
 - If a single attachment is present: `primary` is implicit; omitted or `true` is accepted and `false` is rejected
-- The complete resolved `network_attachments` list is immutable after creation; changing it requires deleting and recreating the BaremetalInstance. NetworkACL rules and Subnet-to-ACL association can be updated separately and affect the server without changing its attachment.
+- The complete resolved `network_attachments` list is immutable after creation; changing it requires deleting and recreating the BaremetalInstance. NetworkACL rules and Subnet-to-ACL association are also immutable after creation; changing policy requires recreating affected networking resources and may require recreating dependent workloads.
 
 ### Implementation Details/Notes/Constraints
 
@@ -670,9 +672,9 @@ The bare-metal-fulfillment-operator needs additional RBAC permissions: get/list/
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
 - OPA policies enforce tenant-scoped operations according to each resource API;
-  most networking resources use create/list/get/delete. NetworkACL rules and
-  Subnet-to-ACL associations support updates; supported non-network workload
-  updates remain available
+  networking resources use read/create/delete. NetworkACL rules and
+  Subnet-to-ACL associations are immutable after creation; supported
+  non-network workload updates remain available
 - Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
@@ -977,9 +979,8 @@ Consequences:
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
