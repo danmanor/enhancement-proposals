@@ -285,7 +285,9 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 7. **osac-operator networking controller (after reboot):**
    - Waits for BMF to set `NetworkHandoffComplete=True`, then queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
-   - Writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the existing BaremetalInstance CR and sets `IPDiscoveryComplete=True`.
+   - Records the discovered IP in the internal NetworkAttachment CR status,
+     projects it to `status.networkAttachmentStatuses[].ipAddress` on the
+     BaremetalInstance CR, and sets `IPDiscoveryComplete=True`.
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
 
@@ -660,8 +662,8 @@ controller dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`,
 passing the sole attachment's subnet reference and selected port MAC address.
 The role queries the fabric manager's DHCP lease API for the subnet, matches
 the port MAC to find the DHCP-assigned IP, and returns it. The networking
-controller writes the discovered IP to
-`status.networkAttachmentStatuses[].ipAddress` and sets
+controller records the discovered IP in the internal NetworkAttachment CR
+status, writes it to `status.networkAttachmentStatuses[].ipAddress`, and sets
 `IPDiscoveryComplete=True` on the BaremetalInstance CR.
 
 **MAC resolution — the `osac.openshift.io/interface-macs` contract.** Bare-metal servers are not registered as named fabric servers, so their DHCP leases appear in the fabric manager's IPAM as MAC-only host entries (no server name). To match a lease, the networking controller reads the selected NIC MAC from a JSON map of OSAC interface name → NIC MAC on the associated `BareMetalHost`, e.g. `{"eth9":"52:54:00:16:04:83"}`, under the `osac.openshift.io/interface-macs` annotation. It resolves the sole attachment's interface to a MAC and passes it to the job as an extra var. The `query_dhcp_lease` role matches the IPAM host by MAC (the fabric manager stores lease MACs lowercase; the role compares against the lowercased `mac[].address` values). When no MAC is supplied, the role falls back to matching by server name — the path named CaaS fabric servers use. The osac-operator service account therefore needs read access to the `BareMetalHost` annotation; inventory tooling must populate it before DHCP discovery.
@@ -888,7 +890,7 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 
 ### ~~4. How is the host's runtime IP discovered after network reconfiguration?~~ — Resolved
 
-Resolved: After BMF sets `NetworkHandoffComplete=True`, the osac-operator networking controller queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease`). It matches the server's port MAC — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers), writes to `status.networkAttachmentStatuses[].ipAddress`, and sets `IPDiscoveryComplete=True`. The feedback controller syncs the status to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between network segments).
+Resolved: After BMF sets `NetworkHandoffComplete=True`, the osac-operator networking controller queries the fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease`). It matches the server's port MAC — resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to find the assigned IP (falling back to server-name matching for named fabric servers), records it in the internal NetworkAttachment CR status, writes it to `status.networkAttachmentStatuses[].ipAddress`, and sets `IPDiscoveryComplete=True`. The feedback controller syncs the status to fulfillment-service via Signal RPC. `move_network_attachment` remains switch-side only (moves the fabric port between network segments).
 
 ## Test Plan
 

@@ -684,7 +684,7 @@ precondition checks and requeue:
 
 | Target type | Required precondition | Source of target IP |
 |-------------|----------------------|---------------------|
-| ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
+| ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | NetworkAttachment controller reads KubeVirt VMI network status, writes the internal request and ComputeInstance statuses; feedback syncs status to fulfillment-service |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
 | BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | osac-operator's networking controller waits for BMF's `NetworkHandoffComplete`, then queries fabric manager DHCP via the shared dispatcher (`query_dhcp_lease` role), matches the port MAC from the BareMetalHost `osac.openshift.io/interface-macs` annotation, and writes the IP to BMI status |
 
@@ -702,18 +702,28 @@ to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
 or configure host-side networking — DHCP handles IP address, gateway,
 prefix, and DNS automatically.
 
-After the host receives its IP via DHCP, the IP is discovered and
-written to the resource's CR status for two purposes:
+After the workload receives its IP via DHCP, the NetworkAttachment controller
+records the observed address in the internal request CR status and projects it
+to the target workload's status for two purposes:
 - ExternalIPAttachment controller reads the primary IP for DNAT target
-- Tenant visibility (API response includes the allocated IP)
+- Tenant visibility where that workload API exposes an attachment IP. CaaS
+  worker NIC IPs remain operator-internal; the Cluster API exposes its service
+  endpoints instead.
 
 IP discovery mechanism per service type:
 
 | Service | Discovery source | Who writes status | Status field |
 |---------|-----------------|-------------------|-------------|
-| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | NetworkAttachment controller records the observed address; feedback projects it to fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
-| CaaS | Fabric DHCP lease for each worker BMI after BMF sets `NetworkHandoffComplete` | NetworkAttachment controller records the address in BMI status; the CaaS worker/ClusterOrder reconciliation path aggregates per-worker status | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | After BMF sets `NetworkHandoffComplete`, NetworkAttachment controller queries fabric DHCP via the shared dispatcher (`query_dhcp_lease` role); matches the BareMetalHost interface MAC to the lease, falling back to server name only for named fabric servers (see [BMaaS networking design](/enhancements/OSAC-1437-bmaas-networking/design.md#ip-discovery)) | NetworkAttachment controller records the observed address and projects it to BMI status; feedback syncs it to fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | NetworkAttachment CR records the address; controller projects it to ComputeInstance status and sets `IPDiscoveryComplete` | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
+| CaaS | Fabric DHCP lease for each worker BMI after BMF sets `NetworkHandoffComplete` | NetworkAttachment CR records one result per BMI; controller writes BMI status and sets `IPDiscoveryComplete`; ClusterOrder reconciliation aggregates per-worker status | Per-worker `BareMetalInstanceStatus.network_attachment_statuses[].ip_address`; aggregate `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
+| BMaaS | After BMF sets `NetworkHandoffComplete`, NetworkAttachment controller queries fabric DHCP via the shared dispatcher (`query_dhcp_lease` role); matches the BareMetalHost interface MAC to the lease, falling back to server name only for named fabric servers (see [BMaaS networking design](/enhancements/OSAC-1437-bmaas-networking/design.md#ip-discovery)) | NetworkAttachment CR records the observed address; controller projects it to BMI status and sets `IPDiscoveryComplete`; feedback syncs it to fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+
+For CaaS, worker NIC addresses are separate from the cluster API and ingress
+VIPs. The CaaS template discovers the MetalLB VIPs and writes them to
+`ClusterOrderStatus.apiEndpoint` and `ingressEndpoint`; fulfillment-service
+syncs them to Cluster status. VIPs are not part of the `NetworkAttachment`
+status. The ExternalIPAttachment controller separately waits for the relevant
+VIP and an allocated ExternalIP before creating DNAT.
 
 ### Shared Workload Attachment Request and Controller
 
@@ -835,25 +845,50 @@ submits a BMI-target request after provisioning completes.
 | BMaaS BaremetalInstance | BMF submits a request after `ProvisionTemplateComplete=True` | Move the fabric port, wait for target-segment readiness, then query DHCP after BMF's handoff reboot |
 | CaaS Cluster | fulfillment-service Cluster lifecycle submits one request after resolving the Cluster attachment and creating the ClusterOrder; the same request covers later scale-up workers | Networking controller fans out across `ClusterOrder.status.workers[].resourceID`, waits for each BMI's `ProvisionTemplateComplete=True`, moves each worker port, queries DHCP after BMF's handoff reboot, and writes per-BMI status for CaaS aggregation |
 
+Attachment configuration and IP discovery are separate gates. For every
+target, `NetworkAttachmentsReady=True` means the network configuration or
+fabric port move is complete. `IPDiscoveryComplete=True` means the address for
+the attachment has been observed. The workload lifecycle must not report its
+resource Ready until both gates are satisfied for every required attachment.
+VMaaS discovers the address
+from KubeVirt VMI status; BMaaS and each CaaS worker discover it from the fabric
+DHCP lease after BMF completes the handoff reboot.
+
 Fulfillment-service creates each internal request CR from the private proto.
 The osac-operator NetworkAttachment controller owns reconciliation of those
 CRs and the networking operations. The workload CRs hold networking
 conditions, attachment-status entries, and AAP job histories; for a Cluster
-target, the request CR also holds aggregate progress while each worker BMI
-holds its per-worker status. The controller owns networking finalizers on the
+target, the request CR holds aggregate progress and observed worker results,
+while each worker BMI holds its per-worker conditions and attachment-status
+projection. The controller owns networking finalizers on the
 affected ComputeInstance and BMI CRs. It resolves the target's existing
 attachment through the target reference and uses the shared NetworkClass
 resolver/dispatcher where a provider operation is required. For ComputeInstance
 and BaremetalInstance targets, it creates and updates
 `NetworkAttachmentsReady` on that target's status: Unknown/pending when
-reconciliation begins, False with a reason while an operation is failing, and
-True only after the required attachment operation completes. For a Cluster
-target, it records aggregate request progress on the internal request CR and
-creates or updates `NetworkAttachmentsReady` on each worker BMI. The CaaS
-ClusterOrder controller aggregates those per-BMI outcomes; BMF consumes each
-BMI condition before rebooting. Request producers do not create or set these
-conditions and wait for networking readiness before advancing their workload
-lifecycle.
+reconciliation begins, False with a reason while configuration is failing,
+and True after the interface is configured or the fabric port move completes.
+After the target obtains an address, the controller records it and sets
+`IPDiscoveryComplete=True`. For a Cluster target, the internal request CR
+records aggregate progress and one observed result per worker BMI; the
+controller creates or updates both conditions on each worker BMI. The
+ClusterOrder controller aggregates the per-BMI outcomes and addresses. BMF
+consumes `NetworkAttachmentsReady` before rebooting and waits for
+`IPDiscoveryComplete` before reporting each BMI Ready. The VMaaS lifecycle
+controller likewise waits for both conditions. Request producers do not set
+networking conditions.
+
+The internal `NetworkAttachment` CR status is the networking controller's
+work record for observed results. For a ComputeInstance or direct BMaaS target,
+it stores the single result at `status.attachment`, including `ipAddress`. For
+a Cluster target, it stores `status.workers[]`, keyed by
+`bareMetalInstanceId`, with each worker's `ipAddress` and readiness conditions;
+aggregate CR conditions are true only when all current workers satisfy them.
+This is one desired Cluster attachment with a result for each worker, not
+multiple tenant attachments. The matching ComputeInstance or BMI status
+exposes its attachment IP to the workload API; for CaaS, ClusterOrder status
+aggregates the per-worker IPs for operator use. The private Create proto
+remains target-only and never carries observed IPs.
 
 On deletion, the workload lifecycle owner initiates cleanup and preserves the
 state needed for networking reconciliation until detach completes. For
@@ -1215,8 +1250,9 @@ IP when the target is a cluster (see
 
 #### Resource Status — Discovered IPs
 
-After provisioning, resources receive IPs via DHCP. Feedback controllers
-discover these IPs and write them to status for two purposes: tenant
+After provisioning, resources receive IPs via DHCP or their platform network.
+The NetworkAttachment controller records the discovered address in the
+internal request CR status and projects it to the workload status for tenant
 visibility and ExternalIPAttachment DNAT target resolution.
 
 **ComputeInstanceStatus:**
@@ -1233,9 +1269,11 @@ message ComputeInstanceStatus {
 }
 ```
 
-Feedback controller watches KubeVirt VMI `status.interfaces[].ipAddress`,
-maps each interface to the corresponding attachment by CUDN NAD reference,
-and fires Signal RPC to fulfillment-service.
+NetworkAttachment controller watches KubeVirt VMI
+`status.interfaces[].ipAddress`, maps each interface to the corresponding
+attachment by CUDN NAD reference, and writes the IP to both the internal
+request CR and `ComputeInstanceStatus`. The feedback controller syncs that
+status to fulfillment-service.
 
 **BaremetalInstanceStatus:**
 

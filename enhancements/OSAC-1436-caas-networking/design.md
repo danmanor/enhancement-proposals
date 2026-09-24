@@ -75,6 +75,20 @@ Per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/desi
 5. The networking controller queries each tenant-network DHCP lease, writes the discovered address to BMI status, and sets `IPDiscoveryComplete=True`. The ClusterOrder controller aggregates per-worker readiness and IP status; BMF waits for discovery before reporting each BMI Ready.
 6. Assisted-installer worker registration and cluster installation proceed on the tenant network after each host handoff.
 
+The single Cluster-target `NetworkAttachment` CR records one result per worker,
+keyed by BMI resource ID, including that worker's discovered attachment IP.
+Each BMI status also exposes its own attachment IP and
+`IPDiscoveryComplete`; the ClusterOrder controller aggregates worker IPs into
+`status.nodeSets[].agents[].ipAddress` for operator use. The Cluster does not
+publish worker NIC addresses as a single cluster IP.
+
+The API and ingress VIPs are separate from worker attachment IPs. MetalLB
+allocates the VIPs to the HostedCluster Services, and the CaaS template writes
+them to ClusterOrder `status.apiEndpoint` and `status.ingressEndpoint`.
+Fulfillment-service syncs those endpoint fields to Cluster status. VIPs do not
+go in `NetworkAttachment` status; the ExternalIPAttachment controller waits
+for the relevant VIP and an allocated ExternalIP before creating DNAT.
+
 The Cluster-target request contains no subnet, security-group, interface, or IP values. The Cluster remains the source of the single attachment; each derived BMI attachment carries the per-node-set fabric interface needed for that physical host. BMF submits a BMI-target request only for BMaaS instances created directly through BMaaS, not for CaaS workers. CaaS does not dispatch `move_network_attachment` or query DHCP itself. On cluster deletion or worker scale-down, the worker reconciler requests BMI deletion; BMF and the networking controller complete host and fabric cleanup before BMI deletion completes and before the worker entry is removed. See the [shared private proto definition](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller).
 
 ### Non-Goals

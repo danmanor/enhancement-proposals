@@ -62,7 +62,8 @@ network readiness.
    the networking controller resolves the target and prepares its CUDN/NAD
    attachment.
 6. The ComputeInstance controller creates the VM and waits for the networking
-   controller to set `NetworkAttachmentsReady=True` before reporting Ready.
+   controller to set `NetworkAttachmentsReady=True` and
+   `IPDiscoveryComplete=True` before reporting Ready.
 
 ### What Already Works
 
@@ -156,8 +157,9 @@ network readiness.
 
    b. Triggers AAP job: `osac-create-compute-instance` for VM compute
       resources. It waits for the NetworkAttachment controller to attach the
-      VM to the CUDN and set `NetworkAttachmentsReady=True` before reporting
-      the ComputeInstance Ready.
+      VM interface to the CUDN and set `NetworkAttachmentsReady=True`, then
+      waits for `IPDiscoveryComplete=True` before reporting the ComputeInstance
+      Ready.
 
 6. **AAP template (`osac.templates.ocp_virt_vm`):**
    - Creates the VM compute resources without owning attachment
@@ -170,18 +172,23 @@ network readiness.
 
 #### IP Discovery (feedback loop)
 
-7. **osac-operator NetworkAttachment controller** discovers VM IPs:
-   - Creates `NetworkAttachmentsReady=Unknown` on ComputeInstance status when
-     it first observes the internal request CR; reports False with a reason
-     while attachment work is failing
+7. **osac-operator NetworkAttachment controller** configures the attachment
+   and discovers the VM IP:
+   - Creates `NetworkAttachmentsReady=Unknown` and
+     `IPDiscoveryComplete=Unknown` on ComputeInstance status when it first
+     observes the internal request CR; reports False with a reason when either
+     stage fails
+   - Sets `NetworkAttachmentsReady=True` once the interface is configured on
+     the CUDN; this condition does not mean an IP has already been assigned
    - Watches KubeVirt VMI (VirtualMachineInstance) network status
    - Reads the assigned IP from the VM's sole `vmi.status.interfaces[].ipAddress`
    - Maps the interface to the corresponding `compute_network_attachment` by CUDN NAD reference
    - Writes observed address to the NetworkAttachment CR and projects
      `compute_network_attachment_statuses` onto ComputeInstanceStatus
-   - Sets `NetworkAttachmentsReady=True` once the interface and address are
-     available; the ComputeInstance controller consumes this condition and the
-     feedback controller syncs its status to fulfillment-service
+   - Sets `IPDiscoveryComplete=True` only after the address is present in
+     NetworkAttachment status and ComputeInstanceStatus; the ComputeInstance
+     controller waits for both conditions, and the feedback controller syncs
+     the address and conditions to fulfillment-service
    - Tenant can inspect: `osac get computeinstance my-vm -o yaml` shows the assigned IP for the attachment
 
 #### External Access (optional, auto-provisioned when `auto_external_ip_attachment=true`)
@@ -271,8 +278,11 @@ type ComputeNetworkAttachmentStatus struct {
 
 The NetworkAttachment controller populates its observed status by watching the
 KubeVirt VMI `status.interfaces` and mapping the interface IP to the sole
-attachment by CUDN NAD reference. The feedback controller synchronizes the
-network-owned `ComputeNetworkAttachmentStatuses` and readiness condition to
+attachment by CUDN NAD reference. It sets `NetworkAttachmentsReady` after the
+interface is configured, then sets `IPDiscoveryComplete` after it writes the
+address to both the NetworkAttachment CR status and
+`ComputeNetworkAttachmentStatuses`. The feedback controller synchronizes the
+network-owned attachment status and both readiness conditions to
 fulfillment-service.
 
 #### Server Validation (fulfillment-service)
