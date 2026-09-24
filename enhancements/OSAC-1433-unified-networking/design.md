@@ -724,8 +724,10 @@ integrate with the shared controller as their networking work is implemented.
 Each workload keeps its existing service-specific attachment field as the
 source of intent. The supported contract is at most one attachment per
 workload, and the fulfillment API and corresponding CRD must validate that
-limit before rollout. For CaaS, the Cluster's single tenant attachment is
-copied into each worker BMI's derived attachment when CaaS creates the BMI.
+limit before rollout. For CaaS, the Cluster owns one tenant attachment. CaaS
+copies its resolved subnet and security groups into each worker BMI's derived
+attachment and adds that node set's resolved fabric interface when it creates
+the BMI.
 The private fulfillment-service `NetworkAttachment` proto is a reconciliation
 request accepted by `NetworkAttachments.Create`, not a second copy of the
 desired attachment. The proposed type belongs in
@@ -740,6 +742,7 @@ package osac.private.v1;
 import "buf/validate/validate.proto";
 import "cleanapi/cleanapi.proto";
 import "osac/private/v1/baremetal_instance_type.proto";
+import "osac/private/v1/cluster_type.proto";
 import "osac/private/v1/compute_instance_type.proto";
 
 option (cleanapi.file).package = "osac.public.v1";
@@ -748,14 +751,15 @@ message NetworkAttachment {
   option (buf.validate.message).cel = {
     id: "network_attachment_target_id"
     message: "the selected target must have a non-empty id"
-    expression: "has(this.compute_instance) ? this.compute_instance.id != '' : this.baremetal_instance.id != ''"
+    expression: "(has(this.compute_instance) && this.compute_instance.id != '') || (has(this.cluster) && this.cluster.id != '') || (has(this.baremetal_instance) && this.baremetal_instance.id != '')"
   };
 
   oneof target {
     option (buf.validate.oneof).required = true;
 
     ComputeInstanceLocalReference compute_instance = 1;
-    BareMetalInstanceLocalReference baremetal_instance = 2;
+    ClusterLocalReference cluster = 2;
+    BareMetalInstanceLocalReference baremetal_instance = 3;
   }
 }
 ```
@@ -796,44 +800,54 @@ The selected reference must contain a non-empty `id`; duplicate Create calls
 for the same target return the same internal request. The message deliberately
 contains no subnet, security-group, interface, or IP fields: fulfillment-service
 and the networking controller read the immutable attachment from the referenced
-workload. A Cluster is not a request target in this design. CaaS fans its one
-Cluster attachment out into each worker BMI, and BMF submits one request per BMI
-when that BMI reaches its network handoff. The private API has no update or
-detach payload; network cleanup is triggered by target deletion and gated by
-the workload and networking finalizers described below.
+workload. `ClusterLocalReference` is included because CaaS owns its single
+attachment at Cluster scope. One Cluster-target request and CR represent that
+attachment; the networking controller fans it out into host operations for the
+worker BMIs listed by the matching ClusterOrder's `status.workers[].resourceID`.
+For each worker, the BMI's derived attachment supplies the node-set-specific
+fabric interface. The private API has no update or detach payload; network
+cleanup is triggered by target deletion and gated by the workload and networking
+finalizers described below.
 
 The lifecycle owner for the target workload submits the private request when
 that workload reaches the point where attachment work can proceed. The
 fulfillment-service accepts the private proto request and its reconciliation
 path materializes one internal `NetworkAttachment` CR for each target
 attachment. The CR references the target and reads its attachment from that
-target; it does not copy attachment fields into the CR. For a CaaS worker, BMI
-attachment fields are derived from the Cluster's tenant attachment, which
-remains the CaaS source of intent. The
-`BareMetalWorkerReconciler` passes the Cluster's resolved attachment into each
-BMI create request; BMF owns each BMI's provisioning lifecycle and submits the
-network request when that BMI is ready for network handoff.
+target; it does not copy attachment fields into the CR. For CaaS, the
+fulfillment-service Cluster lifecycle submits one Cluster-target request after
+resolving the attachment and creating the ClusterOrder. The NetworkAttachment
+controller resolves that ClusterOrder from the Cluster ID, watches its worker
+references (including later scale-up), and reconciles each referenced BMI only
+after BMF reports `ProvisionTemplateComplete=True`. The CaaS worker controller
+passes the Cluster's resolved subnet and security groups, plus the node-set
+fabric interface, into each BMI create request. BMF owns each BMI's provisioning
+and handoff lifecycle; it consumes the networking controller's per-BMI
+readiness and performs the handoff reboot. For direct BMaaS instances, BMF
+submits a BMI-target request after provisioning completes.
 
 | Target workload | Request producer and timing | Networking-owned work |
 |-----------------|----------------------------|-----------------------|
 | VMaaS ComputeInstance | ComputeInstance lifecycle controller submits a request after attachment defaulting and before the instance can become Ready | Configure the KubeVirt attachment, observe the VMI address, and report attachment readiness |
 | BMaaS BaremetalInstance | BMF submits a request after `ProvisionTemplateComplete=True` | Move the fabric port, wait for target-segment readiness, then query DHCP after BMF's handoff reboot |
-| CaaS worker BaremetalInstance | CaaS resolves one Cluster attachment and passes it in each BMI create request; BMF submits that BMI's network request after `ProvisionTemplateComplete=True` | Reuse the BM attachment flow per worker; BMF gates the host handoff while the networking controller moves the port, discovers the IP, and reports status for CaaS aggregation |
+| CaaS Cluster | fulfillment-service Cluster lifecycle submits one request after resolving the Cluster attachment and creating the ClusterOrder; the same request covers later scale-up workers | Networking controller fans out across `ClusterOrder.status.workers[].resourceID`, waits for each BMI's `ProvisionTemplateComplete=True`, moves each worker port, queries DHCP after BMF's handoff reboot, and writes per-BMI status for CaaS aggregation |
 
 Fulfillment-service creates each internal request CR from the private proto.
 The osac-operator NetworkAttachment controller owns reconciliation of those
 CRs and the networking operations, job history, attachment status, and cleanup
 finalizer associated with them. It resolves the target's existing attachment
 through the target reference and uses the shared NetworkClass
-resolver/dispatcher where a provider operation is required. It creates and updates the
-`NetworkAttachmentsReady` condition on the target workload's status: it
-initializes the condition as Unknown/pending when reconciliation begins,
-reports False with a reason while an operation is failing, and sets True only
-after the required attachment operation completes. The request producer does
-not create or set this condition. It waits on the condition (or equivalent
-request status) before advancing workload lifecycle. For BMIs, BMF consumes
-the condition whether the BMI was created directly by BMaaS or on behalf of
-CaaS.
+resolver/dispatcher where a provider operation is required. For ComputeInstance
+and BaremetalInstance targets, it creates and updates
+`NetworkAttachmentsReady` on that target's status: Unknown/pending when
+reconciliation begins, False with a reason while an operation is failing, and
+True only after the required attachment operation completes. For a Cluster
+target, it records aggregate request progress on the internal request CR and
+creates or updates `NetworkAttachmentsReady` on each worker BMI. The CaaS
+ClusterOrder controller aggregates those per-BMI outcomes; BMF consumes each
+BMI condition before rebooting. Request producers do not create or set these
+conditions and wait for networking readiness before advancing their workload
+lifecycle.
 
 On deletion, the workload lifecycle owner asks for cleanup and waits for the
 networking controller to finish any required detach before tearing down the
@@ -841,8 +855,9 @@ target. The networking controller keeps the target present with its networking
 finalizer until cleanup completes. For BMaaS instances and CaaS worker BMIs,
 BMF first powers the host off and reports `NetworkOffboardShutdownComplete`;
 the networking controller then returns the port to the provisioning network
-and reports `NetworkOffboardComplete`. The CaaS worker reconciler waits for BMI
-deletion to complete before removing the worker. For VMaaS, the
+and reports `NetworkOffboardComplete`. A Cluster-target request remains until
+all associated worker BMI operations have completed cleanup; the CaaS worker
+reconciler waits for BMI deletion before removing the worker. For VMaaS, the
 ComputeInstance lifecycle controller provides the corresponding safe-to-detach
 gate.
 
@@ -1225,21 +1240,25 @@ message BareMetalInstanceStatus {
 }
 ```
 
-After BMF sets `ProvisionTemplateComplete=True`, it submits the private
-`NetworkAttachment` proto request for the BMI. Fulfillment-service
-reconciliation materializes the internal `NetworkAttachment` CR, and the
-osac-operator networking controller starts the port move. It creates or updates
+For a BMI created directly through BMaaS, after BMF sets
+`ProvisionTemplateComplete=True` it submits the private `NetworkAttachment`
+proto request targeting that BMI. Fulfillment-service reconciliation
+materializes the internal `NetworkAttachment` CR, and the osac-operator
+networking controller starts the port move. It creates or updates
 `NetworkAttachmentsReady` on BMI status; BMF consumes that condition to order
 the handoff reboot and sets `NetworkHandoffComplete=True`. The networking
 controller then queries DHCP, matches the server's port MAC to the fabric
 manager's lease, writes the discovered IP to BMI status, and sets
-`IPDiscoveryComplete=True`. The feedback controller syncs status to
-fulfillment-service. The internal CR is the networking-owned work record; the
-existing BMI attachment remains the sole desired-state source. This flow also
-applies to CaaS worker BMIs, with CaaS passing the resolved cluster attachment
-to BMF when it creates each BMI. See the [BMaaS controller design](/enhancements/OSAC-1437-bmaas-networking/design.md#controller-boundary-and-status-ownership).
+`IPDiscoveryComplete=True`. For CaaS, one Cluster-target request is created
+from the Cluster lifecycle; the networking controller fans it out to the
+Cluster's worker BMIs. Each worker uses the same BMI-level readiness, reboot,
+DHCP-discovery, and cleanup handoff, but BMF does not create a separate
+request for that CaaS worker. The feedback controller syncs BMI status to
+fulfillment-service. The internal request CR is the networking-owned work
+record; the existing workload attachment remains the sole desired-state
+source. See the [BMaaS controller design](/enhancements/OSAC-1437-bmaas-networking/design.md#controller-boundary-and-status-ownership).
 
-For BMI-targeted attachments created by BMaaS or CaaS, the networking controller owns `NetworkAttachmentsReady`,
+For per-BMI operations reconciled from a BMaaS BMI target or a CaaS Cluster target, the networking controller owns `NetworkAttachmentsReady`,
 `IPDiscoveryComplete`, `NetworkOffboardComplete`, attachment-status entries,
 networking AAP job histories, and `osac.openshift.io/baremetalinstance-networking`.
 BMF owns host-lifecycle conditions, including `NetworkHandoffComplete` and
@@ -1597,10 +1616,10 @@ No additional infrastructure beyond existing OSAC components and managers.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (22 behind origin/main)
-Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (39 behind origin/main)
+Final: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 06d340f90 (39 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

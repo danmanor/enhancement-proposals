@@ -38,7 +38,7 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
-`BaremetalInstance` keeps its repeated `BareMetalNetworkAttachment` field for API compatibility, with a contract of at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The fulfillment-service copies that attachment into the existing BaremetalInstance CR. At the networking handoff, BMF submits the shared private `NetworkAttachment` request; fulfillment reconciliation materializes an internal `NetworkAttachment` CR that the osac-operator networking controller reconciles. BMF retains host provisioning, reboot, and lifecycle orchestration. The same request/controller boundary is used for VMaaS and CaaS. See [PRD](prd.md) for detailed requirements.
+`BaremetalInstance` keeps its repeated `BareMetalNetworkAttachment` field for API compatibility, with a contract of at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The fulfillment-service copies that attachment into the existing BaremetalInstance CR. At the networking handoff for a BMaaS instance, BMF submits the shared private `NetworkAttachment` request targeting that BMI; fulfillment reconciliation materializes an internal `NetworkAttachment` CR that the osac-operator networking controller reconciles. BMF retains host provisioning, reboot, and lifecycle orchestration. VMaaS submits a ComputeInstance-target request, while CaaS submits one Cluster-target request that the networking controller fans out to worker BMIs; in both cases the service lifecycle owner submits the request and BMF consumes the per-BMI networking readiness for CaaS workers. See [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#shared-workload-attachment-request-and-controller) for the shared proto and [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
@@ -1155,10 +1155,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (22 behind origin/main)
-Final: revise @ design 0.11.3 - 858df2d, workspace HEAD @ 06d340f90 (39 behind origin/main)
+Final: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 06d340f90 (39 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"858df2d","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"HEAD","commits_behind_main":39,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
