@@ -368,7 +368,7 @@ type NetworkDefaults struct {
 type NetworkACLRule struct {
     Action      string `json:"action"` // ALLOW or DENY
     Priority    uint32 `json:"priority"` // unique per direction, 1..32766
-    Protocol    string `json:"protocol"` // all, tcp, udp, or icmp
+    Protocol    string `json:"protocol"` // ALL, TCP, UDP, or ICMP; case-sensitive, lowercase values are rejected
     PortFrom    *int32 `json:"portFrom,omitempty"` // optional TCP/UDP destination range
     PortTo      *int32 `json:"portTo,omitempty"`
     IPv4CIDR    string `json:"ipv4CIDR"` // ingress source or egress destination
@@ -826,7 +826,8 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

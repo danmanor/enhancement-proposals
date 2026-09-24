@@ -463,12 +463,12 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- The repeated `network_attachments` field remains wire-compatible, with validation limiting new requests to one entry; attachment-level policy references are not part of the contract
-- No user action required
+- The repeated `network_attachments` field remains wire-compatible for the Subnet-only attachment shape. Existing network policies must be mapped to NetworkACL rules on READY Subnets, including reverse-direction rules for required reply traffic.
+- Tenants may need to recreate workloads when different policies require separate Subnets. Existing single-attachment resources remain usable after their Subnets have READY NetworkACL associations.
 
 Minor version upgrades (`x.N → x.N+1`):
 - The CLI and API continue using the existing `--network-attachment` flag and `network_attachments` field
-- No breaking changes — existing single-attachment resources remain functional
+- The single-attachment shape remains compatible after each workload's Subnet has a READY NetworkACL association. Workloads that need policy separation across Subnets require recreation.
 
 ### Downgrade
 
@@ -556,7 +556,8 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
