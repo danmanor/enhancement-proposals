@@ -849,9 +849,11 @@ osac cluster create --name my-cluster \
 # template: { name: "shared-template", shared: true }
 ```
 
-For each reference field, the CLI accepts `--<field>` (name) and
-`--<field>-id` (identifier). For full reference fields, `--<field>-project`
-scopes within a project and `--<field>-shared` targets the shared tenant.
+The CLI accepts `--<field>` with a name for both local and full reference
+fields. Local references require this name form and do not accept
+`--<field>-id`; only full reference fields also accept `--<field>-id` with an
+identifier. For full reference fields, `--<field>-project` scopes within a
+project and `--<field>-shared` targets the shared tenant.
 
 The CLI's `describe` output displays references with their resolved names:
 
@@ -1234,9 +1236,9 @@ osac-ux) and use existing CI infrastructure.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, revise
+Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, revise, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

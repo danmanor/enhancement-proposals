@@ -135,7 +135,10 @@ This feature modifies the shared `Metadata` protobuf message. No new services, C
 
 **Behavioral changes to existing resources:**
 - All `Create*` RPCs reject requests with missing or invalid names (previously accepted empty)
-- All `Update*` RPCs for resource APIs that support Update reject name changes via database trigger (some tables already enforced this; now all do). NetworkACL and Subnet networking fields have no Update operation under OSAC-1433.
+- All `Update*` RPCs for resource APIs that support Update reject name changes via database trigger (some tables already enforced this; now all do).
+- Networking resources under OSAC-1433 expose read (List/Get), Create, and
+  Delete only; NetworkACL rules and Subnet-to-NetworkACL associations are fixed
+  at creation.
 - All `Create*` RPCs reject duplicate names within scope boundaries (most resources previously accepted duplicates)
 
 ## UX Alignment
@@ -488,8 +491,9 @@ None.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Phases: revise, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
