@@ -204,8 +204,9 @@ dual-stack networking are not supported.
 - [ ] Deleting a resource with auto-provisioned ExternalIP causes the
   auto-created ExternalIP and ExternalIPAttachment to be cleaned up
   automatically
-- [ ] Creating a resource with explicit network attachments bypasses
-  defaults entirely — no default resources are referenced
+- [ ] A complete explicit network attachment is preserved and bypasses
+  attachment defaults; an omitted or partial attachment receives defaults for
+  missing fields as specified in FR-6
 - [ ] When no ExternalIPPool has available capacity, the create API call
   returns an error and the resource is not persisted
 - [ ] A resource created without explicit network attachments shows the
@@ -278,9 +279,11 @@ Resolved: E2E tests for simplified creation are defined in each per-service desi
 
 ## Provenance
 
-Authored: respond @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, respond
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
