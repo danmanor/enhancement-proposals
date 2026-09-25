@@ -19,7 +19,7 @@ Authenticated users (tenant admins and tenant users) currently have no way to ch
   - Optional scope in top-level `metadata.tenant` and `metadata.name` (tenant context and target resource name); the authenticated user's identity is always determined from request authentication context, never from request fields
 - **Response** indicating whether the authenticated user would be authorized:
   - `allowed` boolean field showing whether the permission check passed
-  - Optional `reason` field providing explanation when permission is denied
+  - The `reason` field is reserved for future use and is always empty in v1; denied checks do not return an explanation
 - **Advisory results** — permission check results reflect authorization state at check time; the actual operation must independently re-evaluate authorization since permissions and resource state may change between the check and the operation
 - **Authorization consistency** — permission check results must match the authorization decision that would be made for the same user attempting the same service method with the same `metadata.tenant` and `metadata.name` at the time of the check
 - **User identity determination** — the API determines the authenticated user's identity, tenants, and roles automatically from authentication context (no separate identity parameters)
@@ -59,7 +59,10 @@ This feature depends on internal fulfillment-service components (authentication,
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

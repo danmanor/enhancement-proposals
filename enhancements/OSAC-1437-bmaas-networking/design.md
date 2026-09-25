@@ -85,7 +85,7 @@ fulfillment-service → creates BaremetalInstance CR → hub cluster
 - Auto ExternalIP attachment (`auto_external_ip_attachment`) for single-call inbound connectivity
 - bare-metal-fulfillment-operator `reconcileNetworking` phase: dispatcher moves the selected interface's fabric port onto the tenant subnet's network segment (provisioning network → tenant) via the generic `move_network_attachment` role
 - Provisioning network: an idle (unassigned) server keeps its fabric NIC on an OSAC-owned provisioning network (DHCP + gateway + SNAT) so it has internet during metal3 inspection; provisioning moves the port provisioning network → tenant, deletion moves it tenant → provisioning network (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
-- IP discovery after provisioning: operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches the port MAC (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to the DHCP-assigned IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
+- IP discovery follows the tenant-network handoff reboot: after `reconcileReboot` sets `NetworkHandoffComplete=True`, the operator queries the tenant Subnet's DHCP lease API via dispatcher (`query_dhcp_lease` role), matches the port MAC (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to the tenant-network IP, writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP for DNAT
 - BareMetalInstanceType `network_ports` list with structured port definitions (name, role, type, speed)
 - Remove unused `networkClass` field from BareMetalInstance spec entirely (unused per reviewer feedback)
 
@@ -270,7 +270,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    e. `reconcilePower` (unchanged)
 
 7. **IP discovery and feedback (`reconcileIPDiscovery` — runs after reboot):**
-   - After `reconcileReboot` completes and the host has received a DHCP lease on the tenant network, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
+   - After `reconcileReboot` completes with `NetworkHandoffComplete=True` and the tenant-network DHCP lease is available, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
    - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern
@@ -569,7 +569,7 @@ the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
 
 IP discovery is decoupled from switch port configuration. The `move_network_attachment` role is switch-side only — it moves the server's fabric port onto the tenant subnet's network segment during `reconcileNetworking`, after OS provisioning and before the handoff reboot. It does not query DHCP leases or return an IP address.
 
-After `reconcileProvisioning` completes and the host has received a DHCP lease from the fabric's DHCP server, the operator runs `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the sole attachment's subnet reference and the server's selected port MAC address. The role queries the fabric manager's DHCP lease API for the subnet, matches the port MAC to find the corresponding DHCP-assigned IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+After `reconcileReboot` completes and sets `NetworkHandoffComplete=True`, the host is running on the tenant network and its tenant-network DHCP lease is available. Only then does the operator run `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the sole attachment's Subnet reference and the server's selected port MAC address. The role queries the DHCP lease API for that tenant Subnet, matches the port MAC to find the tenant-network IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
 
 **MAC resolution — the `osac.openshift.io/interface-macs` contract.** Bare-metal servers are not registered as named fabric servers, so their DHCP leases appear in the fabric manager's IPAM as MAC-only host entries (no server name). To match a lease, the operator must know the selected NIC MAC. Inventory tooling annotates each `BareMetalHost` with a JSON map of OSAC interface name → NIC MAC, e.g. `{"eth9":"52:54:00:16:04:83"}`, under the `osac.openshift.io/interface-macs` annotation. During `reconcileIPDiscovery` the operator reads this annotation, resolves the sole attachment's interface to a MAC, and passes it to the job as an extra var. The `query_dhcp_lease` role matches the IPAM host by MAC (the fabric manager stores lease MACs lowercase; the role compares against the lowercased `mac[].address` values). When no MAC is supplied, the role falls back to matching by server name — the path named CaaS fabric servers use, which BMaaS is converging onto.
 
@@ -581,7 +581,7 @@ The operator writes both the discovered IP and `primary: true` to the status ent
 |-----------|---------------|
 | fulfillment-service | Validate network_attachments, create CR, copy to K8s CR via mutateBMI, auto-provision ExternalIP |
 | osac-operator networking controllers | Reconcile NetworkACL resources and Subnet associations; mark a Subnet Ready only after its ACL association is Ready |
-| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), OS provisioning (AAP), **IP discovery** via `query_dhcp_lease` dispatcher call after provisioning, power management |
+| bare-metal-fulfillment-operator | Inventory assignment, switch-side networking (dispatcher), OS provisioning (AAP), **IP discovery** via `query_dhcp_lease` after `reconcileReboot` sets `NetworkHandoffComplete=True`, power management |
 | AAP BM provisioning template | OS provisioning only (host-side networking handled by DHCP) |
 | osac-operator feedback controller | Signal fulfillment-service on status changes (unchanged), sync IP addresses from CR status to DB |
 | osac-operator BMI cleanup controller | Clean up auto-provisioned ExternalIPAttachment → ExternalIP on BaremetalInstance deletion (phased requeue, `baremetalinstance-cleanup` finalizer) |
@@ -776,7 +776,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with a second `--network-attachment`, verify the CLI and API return a maximum-one error
 - E2E: verify NetworkACL priority ordering, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
-- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
+- E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after `reconcileReboot` sets `NetworkHandoffComplete=True`, matches port MAC to the tenant-network IP, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 - E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
 
@@ -823,7 +823,7 @@ Tech Preview criteria:
 - [ ] Dispatcher integration for `move_network_attachment` (provision + deprovision via one job template); provisioning network provisioned and initial per-server attach done at deployment
 - [ ] BareMetalInstanceType with network ports (`BareMetalNetworkPortSpec`) available and tested
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, operator writes to CR status, feedback syncs to fulfillment-service)
+- [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after `reconcileReboot` sets `NetworkHandoffComplete=True`, matches port MAC to the tenant-network IP, operator writes to CR status, feedback syncs to fulfillment-service)
 - [ ] Tenant handoff signaling (NetworkAttachmentsReady, NetworkHandoffComplete, IPDiscoveryComplete, Ready) implemented
 - [ ] Integration tests pass (E2E coverage for max-one validation, auto ExternalIP, IP feedback, isolation-until-ready)
 - [ ] Documentation: API reference, user guide for simplified BM creation
@@ -930,7 +930,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 **Resolution:**
 1. Check BaremetalInstance status: `kubectl get baremetalinstance <name> -n <namespace> -o jsonpath='{.status.networkAttachmentStatuses[?(@.primary==true)].ipAddress}'`
 2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
-3. If provisioning completed but IP missing, investigate `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease). Confirm the BareMetalHost carries the `osac.openshift.io/interface-macs` annotation with the attachment's interface — without it, MAC matching is skipped and only named fabric servers resolve
+3. If `NetworkHandoffComplete=True` but the IP is missing, investigate the `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease). Confirm the BareMetalHost carries the `osac.openshift.io/interface-macs` annotation with the attachment's interface — without it, MAC matching is skipped and only named fabric servers resolve
 
 ### Disabling the feature
 
@@ -980,7 +980,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
