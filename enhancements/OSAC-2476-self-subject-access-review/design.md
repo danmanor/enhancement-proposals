@@ -41,7 +41,7 @@ The fulfillment-service uses OPA for authorization, with policies evaluated in `
 
 ## Proposal
 
-Add a new `SelfSubjectAccessReview` type to the fulfillment-service public API with a create-only service (no List/Get/Update/Delete operations). The type follows Kubernetes conventions: spec describes the hypothetical operation to check (service name, method, optional tenant/name scoping), and status returns the evaluation result. The `reason` field is reserved for future use and is always empty in v1.
+Add a new `SelfSubjectAccessReview` type to the fulfillment-service public API with a create-only service (no List/Get/Update/Delete operations). The type follows Kubernetes conventions: spec describes the hypothetical operation to check (service name and method), top-level metadata optionally scopes it to a tenant and target name, and status returns the evaluation result. The `reason` field is reserved for future use and is always empty in v1.
 
 Implementation creates an `AuthorizationEvaluator` interface that extracts OPA policy evaluation from `GrpcAuthzInterceptor` into a reusable and extendable component. The interface enables alternative implementations (mocking for tests, future policy backends) while maintaining authorization consistency. The `SelfSubjectAccessReviews.Create` handler:
 
@@ -873,9 +873,11 @@ No version skew concerns. The fulfillment-service is the only component that imp
 
 ## Provenance
 
-Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, respond
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

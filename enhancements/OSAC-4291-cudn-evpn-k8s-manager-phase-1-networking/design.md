@@ -89,7 +89,7 @@ OSAC's NetworkClass dispatcher already supports dual-manager provisioning (fabri
 
 **Central Design Statement:**
 
-Phase 1 extends an existing fabric routing domain and its Subnets into OpenShift. **Only single-subnet VirtualNetworks support VMs.** The first Subnet gets a CUDN immediately (on provisioning, not VM creation). The Subnet's explicit NetworkACL association remains an independent, VirtualNetwork-scoped resource that may be reused by other Subnets. The configured fabric manager owns provisioning and enforcement of that ACL. `NetworkACL.status.phase == "Ready"` is the authoritative signal that its rules are active; `Subnet.status.conditions[type=NetworkACLAssociationReady] == True` is the authoritative signal that this policy is enforced on that specific Subnet. The Subnet is not READY until both signals and its other provisioning work complete. A completed fabric job or VNI ConfigMap does not prove ACL enforcement. The policy is not attached to the VM or CUDN, and the CUDN/K8s manager does not implement ACL behavior. If additional Subnets are added, the CUDN persists but VMaaS blocks VMs in all Subnets. Multi-subnet VirtualNetworks are fabric-only until secondary CUDN/multi-NIC support is available.
+Phase 1 extends an existing fabric routing domain and its Subnets into OpenShift. **VMs require a single Subnet with a READY CUDN and namespace.** The first eligible Subnet gets a CUDN immediately (on provisioning, not VM creation). A single fabric-only Subnet is not VM-eligible, and deleting the CUDN-backed Subnet does not promote a remaining fabric-only Subnet. To restore VM support, create a new VirtualNetwork with a first Subnet that receives a READY CUDN. The Subnet's explicit NetworkACL association remains an independent, VirtualNetwork-scoped resource that may be reused by other Subnets. The configured fabric manager owns provisioning and enforcement of that ACL. `NetworkACL.status.phase == "Ready"` is the authoritative signal that its rules are active; `Subnet.status.conditions[type=NetworkACLAssociationReady] == True` is the authoritative signal that this policy is enforced on that specific Subnet. The Subnet is not READY until both signals and its other provisioning work complete. A completed fabric job or VNI ConfigMap does not prove ACL enforcement. The policy is not attached to the VM or CUDN, and the CUDN/K8s manager does not implement ACL behavior. If additional Subnets are added, the CUDN persists but VMaaS blocks VMs in all Subnets. Multi-subnet VirtualNetworks are fabric-only until secondary CUDN/multi-NIC support is available.
 
 This design introduces a new k8s manager (`cudn_evpn`) registered via osac-installer ConfigMap, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`.
 
@@ -99,7 +99,7 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
 |---------------|-----------------|----------------|------------|
 | VirtualNetwork | fabric manager VPC (L3 ipVRF) | — | — |
 | Subnet's NetworkACL association | Independent ACL scoped to the parent VirtualNetwork; `NetworkACL.status.phase == "Ready"` and the Subnet's `NetworkACLAssociationReady=True` condition report active enforcement | — | Required before the Subnet is READY |
-| First Subnet (alone) | fabric manager VNet (L2 macVRF) | CUDN (primary) | ✅ VMs allowed |
+| First Subnet (alone, CUDN and namespace READY) | fabric manager VNet (L2 macVRF) | CUDN (primary) | ✅ VMs allowed |
 | First Subnet (with second+) | fabric manager VNet (L2 macVRF) | CUDN (persists) | ❌ VMs blocked |
 | Second+ Subnets | fabric manager VNet (L2 macVRF) | — | ❌ Fabric-only |
 
@@ -261,7 +261,7 @@ spec:
 ```
 
 **Provisioning behavior:**
-- **First subnet (alone):** Operator provisions fabric + k8s manager (CUDN), VMs allowed
+- **First subnet (alone):** Operator provisions fabric + k8s manager (CUDN); VMs are allowed after the CUDN and namespace are READY
 - **Second+ subnets:** Operator provisions fabric-only (no CUDN), first subnet's CUDN persists
 - **Multiple subnets (2+):** VMs blocked in ALL subnets by VMaaS validation (subnet count > 1)
 - **Explicit annotation:** skip k8s manager even if this is the only Subnet (fabric-only by choice)
@@ -275,6 +275,7 @@ spec:
 - Subnet controller checks: did this Subnet provision a CUDN? (checks if namespace exists, namespace name = subnet name)
 - **First Subnet (has CUDN):** k8s deprovision (CUDN + namespace) → fabric deprovision (fabric manager VNet)
 - **Second+ Subnets (no CUDN):** skip k8s deprovision → fabric deprovision only (fabric manager VNet)
+- Deleting the CUDN-backed Subnet does not promote a surviving fabric-only Subnet; VM placement remains blocked without a READY CUDN namespace
 - VirtualNetwork deletion waits for ALL child Subnets deleted before deleting fabric manager VPC
 
 
@@ -315,6 +316,8 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
     k8sManager := ncResp.GetNetworkClass().GetKubernetesManager()
     if k8sManager == "cudn_evpn" {
         // List existing Subnets under this VirtualNetwork
+        // Acquire the shared VirtualNetwork-scoped admission lock before reading topology.
+        // Hold it through committing this Subnet so VM placement cannot race the check.
         listResp, err := s.List(ctx, &v1.ListSubnetsRequest{
             Filter: fmt.Sprintf("spec.virtualNetwork='%s'", vnetResp.GetVirtualNetwork().GetId()),
         })
@@ -322,37 +325,33 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
             return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
         }
 
-        // If at least one subnet exists, check if it has VMs (via k8s API)
+        // Check authoritative VM placement admissions, including pending placements.
         if len(listResp.GetSubnets()) > 0 {
-            firstSubnet := listResp.GetSubnets()[0]
-
-            // Check if first subnet has CUDN namespace with VMs
-            hasVMs, err := s.checkSubnetHasVMs(ctx, firstSubnet.GetMetadata().GetName())
+            hasVMs, err := s.checkVirtualNetworkHasVMs(ctx, vnetResp.GetVirtualNetwork().GetId())
             if err != nil {
-                return nil, status.Errorf(codes.Internal, "failed to check VMs in first subnet: %v", err)
+                return nil, status.Errorf(codes.Internal, "failed to check VM placements in VirtualNetwork: %v", err)
             }
 
             if hasVMs {
                 return nil, status.Errorf(codes.FailedPrecondition,
                     "Cannot create additional subnets under VirtualNetwork %q: "+
-                    "first subnet %q has running VMs. "+
+                    "active or in-progress VM placements exist. "+
                     "Phase 1 limitation: cudn_evpn supports only one subnet per VirtualNetwork when VMs are present. "+
                     "To add subnets for bare-metal workloads, delete VMs first or create a new VirtualNetwork.",
-                    vnetResp.GetVirtualNetwork().GetMetadata().GetName(),
-                    firstSubnet.GetMetadata().GetName())
+                    vnetResp.GetVirtualNetwork().GetMetadata().GetName())
             }
 
-            // First subnet exists but has no VMs → allow second subnet (will be fabric-only)
+            // No active or in-progress VM placements → allow second subnet (fabric-only).
         }
     }
 
     // ... continue with normal create flow ...
 }
 
-func (s *SubnetServer) checkSubnetHasVMs(ctx context.Context, subnetName string) (bool, error) {
-    // Query k8s for VirtualMachines in namespace (namespace name = subnet name)
-    // Returns true if any VMs exist, false otherwise
-    // Implementation uses k8s client to list VMs in namespace
+func (s *SubnetServer) checkVirtualNetworkHasVMs(ctx context.Context, virtualNetworkID string) (bool, error) {
+    // Query active ComputeInstance placement admissions for this VirtualNetwork,
+    // including pending/provisioning placements. Keep an admission active until
+    // the VM is fully removed; do not rely only on the eventually-consistent K8s VM list.
 }
 ```
 
@@ -362,6 +361,10 @@ func (s *SubnetServer) checkSubnetHasVMs(ctx context.Context, subnetName string)
 - Fail-fast at API level prevents confusion (clear error before provisioning starts)
 - Once VMs exist, topology is locked (cannot add fabric-only subnets for bare-metal)
 - Tenant must choose: VMs-only VirtualNetwork OR delete VMs to add bare-metal subnets OR create new VirtualNetwork
+
+#### Atomic VirtualNetwork Admission
+
+Subnet creation, Subnet deletion, and VM placement use one distributed admission lock keyed by VirtualNetwork ID. Each path acquires the lock before reading current Subnet and VM-placement state and holds it through persisting the admitted create or delete. VM placement records its admission before releasing the lock; Subnet creation checks active and in-progress placements, not only Kubernetes VM objects. Subnet deletion uses the same lock and proceeds only when no placement or VM remains. All service replicas share the lock, and an operation fails or retries if it cannot acquire the lock or recheck state while holding it. This prevents concurrent Subnet creation and VM placement from both succeeding based on stale counts.
 
 #### VMaaS: VM Placement Validation
 
@@ -377,6 +380,8 @@ VMaaS enforces subnet count validation before allowing VM placement in EVPN-brid
 ```go
 // VMaaS ComputeInstance controller (pseudo-code)
 func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, subnet *osacv1.Subnet) error {
+    // Caller holds the shared VirtualNetwork-scoped admission lock until the
+    // ComputeInstance placement has been persisted.
     // Check if subnet has cudn_evpn k8s manager
     networkClass := getNetworkClass(ctx, subnet)
     if networkClass.Spec.KubernetesManager != "cudn_evpn" {
@@ -402,7 +407,12 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
             subnet.Name, subnet.Spec.VirtualNetwork, subnetCount)
     }
 
-    // Single subnet → VM placement allowed
+    // One Subnet is necessary but not sufficient: the target must have a
+    // READY CUDN and namespace.
+    if !cudnNamespaceReady(ctx, subnet) {
+        return fmt.Errorf("Cannot create VM in Subnet %q: CUDN namespace is not Ready.", subnet.Name)
+    }
+
     return nil
 }
 ```
@@ -411,10 +421,11 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
 
 | Scenario | Subnet Count | CUDN Provisioned | VM Placement |
 |----------|--------------|------------------|--------------|
-| Single subnet under VPC | 1 | ✅ Yes (first subnet) | ✅ **Allowed** - Creates VM in CUDN namespace |
+| Single CUDN-backed subnet under VPC | 1 | ✅ Yes, CUDN and namespace READY | ✅ **Allowed** - Creates VM in CUDN namespace |
 | First subnet with VMs, second+ added | 2+ | ✅ Yes (persists) | ❌ **Blocked** - VMaaS validation: subnet count > 1 |
 | Multiple subnets, no VMs | 2+ | ✅ Yes (first subnet, persists) | ❌ **Blocked** - VMaaS validation: subnet count > 1 |
 | Single subnet with skip annotation | 1 | ❌ No (explicit fabric-only) | ❌ **Blocked** - No CUDN to place VM into |
+| Fabric-only subnet remains after deleting the CUDN-backed subnet | 1 | ❌ No; no automatic promotion | ❌ **Blocked** - Create a new VirtualNetwork with a CUDN-backed first Subnet |
 
 **Error Messages:**
 
@@ -1387,9 +1398,9 @@ Where is the authoritative MAC value? Does fabric manager VNet gateway MAC come 
 
 - `internal/servers/subnet_server_test.go`:
   - Subnet creation succeeds for first Subnet with a READY NetworkACL explicitly associated in the same VirtualNetwork
-  - Subnet creation succeeds for second Subnet when the first has no VMs and both Subnets explicitly reference a READY ACL in the same VirtualNetwork
-  - Subnet creation fails (400 Bad Request) when VMs exist and a second Subnet is requested (FailedPrecondition code)
-  - Error message includes "first subnet has running VMs" and "delete VMs first or create new VirtualNetwork"
+  - Subnet creation succeeds for second Subnet when no active or in-progress VM placements exist and both Subnets explicitly reference a READY ACL in the same VirtualNetwork
+  - Subnet creation fails (400 Bad Request / FailedPrecondition) when active or in-progress VM placements exist and a second Subnet is requested
+  - Error message identifies active VM placements and says to delete VMs first or create a new VirtualNetwork
   - Subnet creation fails when the NetworkACL association is missing, not READY, or scoped to another VirtualNetwork
   - Subnet creation succeeds with skip-k8s-manager annotation
 
@@ -1414,10 +1425,11 @@ Where is the authoritative MAC value? Does fabric manager VNet gateway MAC come 
 **VMaaS (Go + Ginkgo):**
 
 - `internal/controller/computeinstance_controller_test.go`:
-  - VM creation succeeds when single subnet under VirtualNetwork (CUDN exists)
+  - VM creation succeeds only when the VirtualNetwork has one Subnet and that Subnet's CUDN and namespace are READY
   - VM creation fails (validation error) when multiple Subnets exist, even if the first Subnet's CUDN persists
   - Error message includes subnet count and "requires single subnet for VMs"
-  - VM creation fails when namespace doesn't exist (provisioning in progress)
+  - VM creation fails when the target is a single fabric-only Subnet or its CUDN namespace is missing/not READY
+  - VM creation remains blocked when deleting the CUDN-backed Subnet leaves a fabric-only Subnet; no automatic promotion occurs
 
 **osac-aap (Ansible + ansible-test):**
 
@@ -1452,8 +1464,9 @@ Where is the authoritative MAC value? Does fabric manager VNet gateway MAC come 
 **fulfillment-service + osac-operator (Kind cluster, mocked fabric manager):**
 
 - Create VirtualNetwork and a READY NetworkACL scoped to it; create first Subnet with an explicit reference to that ACL → succeeds
-- With a VM present on the first Subnet, create a second Subnet referencing the same ACL → API returns 400 FailedPrecondition
+- With an active or in-progress VM placement on the first Subnet, create a second Subnet referencing the same ACL → API returns 400 FailedPrecondition
 - Remove the VM, retry the second Subnet create with the same explicit ACL association → succeeds as fabric-only
+- Race a second-Subnet create against VM placement from a one-Subnet, VM-free VirtualNetwork → exactly one topology admission succeeds; never admit both a VM and a multi-Subnet VirtualNetwork
 - Attempt VM placement while the VirtualNetwork has multiple Subnets → VMaaS rejects placement
 - Create a second VirtualNetwork and its READY NetworkACL, then create a Subnet explicitly associated with that ACL → succeeds (different VirtualNetwork)
 
@@ -1657,9 +1670,8 @@ None. All infrastructure (OCP cluster, physical fabric managed by the configured
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise, revise, revise, revise, revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
