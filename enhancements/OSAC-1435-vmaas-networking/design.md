@@ -472,12 +472,16 @@ Minor version upgrades (`x.N → x.N+1`):
 
 ### Downgrade
 
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service and osac-operator images to `N`
-- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
-
-Acceptable downgrade steps:
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-provisioned: "true"`)
+VMaaS rollback follows the coordinated procedure in the
+[Unified Networking Downgrade section](/enhancements/OSAC-1433-unified-networking/design.md#downgrade).
+After ACL cutover begins, rolling back only fulfillment-service or
+osac-operator is unsupported. Freeze network and workload writes, restore the
+pre-upgrade database, networking resources, NetworkClass configuration, and
+workload attachment state with no ACL-only objects or Subnet associations,
+then roll back the API and CRD schemas, fulfillment-service, osac-operator,
+networking controllers, configured networking manager, and clients together.
+If the pre-upgrade state cannot be restored, keep the ACL-aware release and
+fix forward.
 
 ## Version Skew Strategy
 
@@ -556,8 +560,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, revise
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
