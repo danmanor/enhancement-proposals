@@ -271,7 +271,6 @@ Extends the **External IP** list page (`ExternalIpsListPage`) and the
 | Scenario | UI behavior |
 |---|---|
 | Cluster create: selected Subnet or its associated NetworkACL is not Ready | Server's `FAILED_PRECONDITION` shown as form-level error on Networking step. |
-| Cluster create: selected Subnet is outside the selected Virtual Network | Server's `INVALID_ARGUMENT` shown as form-level error on Networking step. |
 | Cluster create: ExternalIPPool exhausted | Server's `RESOURCE_EXHAUSTED` shown as form-level error on Review step. |
 | Cluster create: no default Subnet configured | Server's `FAILED_PRECONDITION` shown as form-level error when network_attachment omitted. |
 | Cluster create: BareMetalInstanceType missing fabric port | Server's `INVALID_ARGUMENT` shown as form-level error on Review step. |
@@ -282,6 +281,11 @@ Extends the **External IP** list page (`ExternalIpsListPage`) and the
 | Cluster detail: detach ExternalIPAttachment fails | Server error shown in the confirmation modal; Detach action stays available for retry. |
 | Cluster detail: no unattached ExternalIPs available | Attach modal shows empty state: "No unattached External IPs available. Create one in Networking → External IPs." |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
+
+The selected Virtual Network only filters the Subnet picker; the create
+request sends the selected Subnet reference. The server validates that the
+Subnet and its associated NetworkACL are READY, but cannot compare the Subnet
+with the UI-only Virtual Network selection.
 
 ## Implementation Details
 
@@ -445,10 +449,10 @@ Add to `createMockConnectTransport.ts`:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

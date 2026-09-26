@@ -765,8 +765,8 @@ introduced by this EP.
 IDs), trigger queries must add tenant predicates when switching from ID-based
 to name-based matching. The scoping rule depends on the reference type:
 
-- **Same-tenant local references** (Subnet→VN, NetworkACL→VN, CI→Subnet,
-  CI→InstanceType): Currently match on `id` with no tenant filter. After
+- **Same-tenant local references** (Subnet→VN, NetworkACL→VN, Subnet→NetworkACL,
+  CI→Subnet, CI→InstanceType): Currently match on `id` with no tenant filter. After
   migration, add `tenant = new.tenant` (forward triggers) or
   `tenant = old.tenant` (reverse triggers) to scope lookups within the
   correct tenant.
@@ -787,11 +787,19 @@ Example path changes:
 |---|---|---|---|
 | `check_virtual_network_not_in_use()` (Z0003) | virtual_networks | `= old.id` → `data->'spec'->'virtual_network'->>'name'` | Add `tenant = old.tenant` |
 | `check_subnet_not_in_use()` (Z0003) | subnets | `->>'subnet'` → `->'subnet'->>'name'` | Add `tenant = old.tenant` |
+| `check_network_acl_not_in_use()` (Z0003) | network_acls | `subnets.data->'spec'->'network_acl'->>'name'` | Add `tenant = old.tenant` |
 | `check_instance_type_not_in_use()` (Z0003) | instance_types | `->>'instance_type'` → `->'instance_type'->>'name'` | Add `tenant = old.tenant` |
 | `check_subnet_virtual_network_ref()` (Z0002) | subnets | `id = vn_id` → `name = vn_name` | Add `tenant = new.tenant` |
+| `check_subnet_network_acl_ref()` (Z0002) | subnets | `id = acl_id` → `name = acl_name` | Add `tenant = new.tenant` |
 | `check_compute_instance_subnet_refs()` (Z0002) | compute_instances | `id = subnet_id` → `name = subnet_name` | Add `tenant = new.tenant` |
 | `check_cluster_catalog_item_ref()` (Z0002) | clusters | Drop `id =` alternative | Already scoped |
 | `check_ci_catalog_item_ref()` (Z0002) | compute_instances | Drop `id =` alternative | Already scoped |
+
+For the required Subnet-to-NetworkACL edge, retain both forward and reverse
+reference protection. The Z0002 path must serialize Subnet creation against a
+concurrent NetworkACL delete, and the Z0003 path (or an equivalent active
+reference constraint) must reject deleting an ACL while an active Subnet uses
+it. Interceptor existence validation alone does not provide these guarantees.
 
 #### CEL Filter Expression Changes
 
@@ -1103,6 +1111,8 @@ details on the URI/ARN trade-off.
   in platform scope. Verify resolution succeeds.
 - Database trigger enforcement: Delete a VirtualNetwork that has Subnets.
   Verify the trigger prevents deletion (SQLSTATE Z0003).
+- NetworkACL reverse-delete protection: Create a Subnet with a READY NetworkACL,
+  then soft-delete the ACL. Verify deletion fails with ErrInUse (SQLSTATE Z0003).
 - CEL filter with new path: List Subnets filtered by
   `this.spec.virtual_network.name == "prod-net"`. Verify correct results.
 - Oneof reference target (Chunk 3): Create a PublicIPAttachment referencing a
@@ -1127,10 +1137,15 @@ details on the URI/ARN trade-off.
 - Both-mismatch resolution (Chunk 2): Create two CatalogItems, then create
   a ComputeInstance providing `id` of one and `name` of the other. Verify
   `InvalidArgument` with a message explaining the inconsistency.
-- Concurrent create/delete (Chunk 1): Create a READY NetworkACL scoped to a
-  VirtualNetwork, then concurrently create a Subnet referencing that
+- Concurrent create/delete (Chunk 1, VirtualNetwork): Create a READY NetworkACL
+  scoped to a VirtualNetwork, then concurrently create a Subnet referencing that
   VirtualNetwork and ACL while deleting the VirtualNetwork. Verify the
   `FOR SHARE` serialization prevents a dangling reference from committing.
+- Concurrent create/delete (Chunk 1, NetworkACL): Concurrently create a Subnet
+  referencing a READY NetworkACL and soft-delete that ACL. Verify only one
+  operation commits: if Subnet creation wins, ACL deletion fails with ErrInUse;
+  if ACL deletion wins, Subnet creation fails with ErrReference. No active Subnet
+  may reference an inactive ACL.
 - Project-scoped full reference (Chunk 2): Create a CatalogItem in project
   `team-a`, then create a ComputeInstance referencing it with
   `project = "team-a"`. Verify the stored reference includes the resolved
@@ -1236,9 +1251,11 @@ osac-ux) and use existing CI infrastructure.
 
 ## Provenance
 
-Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, revise, respond
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

@@ -369,7 +369,11 @@ func (s *SubnetServer) checkVirtualNetworkHasVMs(ctx context.Context, virtualNet
 
 #### Atomic VirtualNetwork Admission
 
-Subnet creation, Subnet deletion, and VM placement use one distributed admission lock keyed by VirtualNetwork ID. Each path acquires the lock before reading current Subnet and VM-placement state and holds it through persisting the admitted create, placement, or deletion request. The Subnet Delete API acquires the lock and persists a VirtualNetwork-scoped `Requested` reservation before accepting the deletion; the controller creates the same reservation idempotently if it observes a delete initiated through another path. VM placement records its admission before releasing the lock; Subnet creation checks active and in-progress placements, not only Kubernetes VM objects. The `Requested` reservation blocks new Subnet creates and VM placements while existing placements drain. The controller checks active and in-progress placement admissions and VM objects on each reconcile; only when none remain does it transition the reservation to `Admitted` and start cleanup. Both reservation states remain active until fabric and K8s cleanup succeeds and the Subnet finalizer is removed. The distributed lease is not held across asynchronous deprovisioning. All service replicas honor the shared lock and reservation, and an operation fails or retries if it cannot acquire the lock or recheck state while holding it. This prevents stale admissions and deletion-versus-placement races.
+Subnet creation, Subnet deletion, and VM placement use one distributed admission lock keyed by VirtualNetwork ID. Each successful lock acquisition returns a monotonically increasing fencing token scoped to that VirtualNetwork. Each path acquires the lock before reading current Subnet and VM-placement state.
+
+**Fenced admission writes:** The shared persistence layer must atomically verify that the fencing token is still current and its lease is unexpired in the same transaction that writes a Subnet-create admission, VM-placement admission, or `Requested` deletion reservation. The controller must perform the same check when promoting a reservation to `Admitted`. If the lease expired or a newer token superseded it, reject the write; the operation must reacquire the lock and repeat its state checks. A separate token check before the write is insufficient.
+
+The Subnet Delete API persists a VirtualNetwork-scoped `Requested` reservation before accepting the deletion; the controller creates the same reservation idempotently if it observes a delete initiated through another path. VM placement records its admission before releasing the lock; Subnet creation checks active and in-progress placements, not only Kubernetes VM objects. The `Requested` reservation blocks new Subnet creates and VM placements while existing placements drain. The controller checks active and in-progress placement admissions and VM objects on each reconcile; only when none remain does it transition the reservation to `Admitted` and start cleanup. Both reservation states remain active until fabric and K8s cleanup succeeds and the Subnet finalizer is removed. The distributed lease is not held across asynchronous deprovisioning. All service replicas honor the shared lock and reservation. This prevents stale admissions and deletion-versus-placement races.
 
 #### VMaaS: VM Placement Validation
 
@@ -1508,6 +1512,7 @@ Where is the authoritative MAC value? Does fabric manager VNet gateway MAC come 
 - Remove the VM, retry the second Subnet create with the same explicit ACL association → succeeds as fabric-only
 - Race a second-Subnet create against VM placement from a one-Subnet, VM-free VirtualNetwork → exactly one topology admission succeeds; never admit both a VM and a multi-Subnet VirtualNetwork
 - Race Subnet deletion against an in-progress VM placement before a VM object exists → deletion request persists a `Requested` reservation, blocks new placements and Subnet creates, and does not start cleanup until the placement completes
+- For Subnet creation, VM placement, the `Requested` deletion reservation, and the `Requested`→`Admitted` transition, expire one replica's lock lease, acquire a newer fencing token on another replica, then resume the stale writer; verify each stale or expired write is rejected atomically and retried only after reacquiring the lock and repeating its state checks
 - Verify VM placement and additional Subnet creation remain blocked through both deletion reservation states, deprovisioning retries, and finalizer removal
 - Attempt VM placement while the VirtualNetwork has multiple Subnets → VMaaS rejects placement
 - Create a second VirtualNetwork and its READY NetworkACL, then create a Subnet explicitly associated with that ACL → succeeds (different VirtualNetwork)
@@ -1713,10 +1718,10 @@ None. All infrastructure (OCP cluster, physical fabric managed by the configured
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

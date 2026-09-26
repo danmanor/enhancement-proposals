@@ -2,13 +2,13 @@
 
 ## Overview
 
-**Last updated:** 2026-09-24
+**Last updated:** 2026-09-26
 
 - **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
-- **Total test cases:** 16
+- **Total test cases:** 17
 - **Requirements covered:** 9 of 9 (R1-R9)
 - **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
-- **Additional operational tests:** 2 deletion lifecycle tests + 1 skip-k8s-manager annotation test
+- **Additional operational tests:** 2 deletion lifecycle tests + 1 skip-k8s-manager annotation test + 1 admission-fencing concurrency test
 
 **Mandatory Subnet policy precondition:** Every Subnet create request must explicitly reference a READY NetworkACL scoped to the same VirtualNetwork. The associated ACL policy must be actively enforced before the Subnet can become READY. Missing, unready, or cross-VirtualNetwork ACL references are rejected; no case treats an ACL-less or unenforced Subnet as READY.
 
@@ -312,6 +312,30 @@
 - The first Subnet's persistent CUDN does not make the multi-Subnet VirtualNetwork eligible for VM placement.
 - The Subnets and their active NetworkACL associations remain unchanged.
 
+#### TC-R5-05: Reject stale VirtualNetwork admission writes after lease turnover
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-2 | critical | automated |
+
+##### Preconditions
+
+- A `cudn_evpn` VirtualNetwork has one READY Subnet with active same-VirtualNetwork NetworkACL enforcement.
+- The test can pause admission persistence and control lease expiry and token issuance across two service replicas.
+
+##### Steps
+
+1. For each path—Subnet creation, VM placement, and the `Requested` Subnet deletion reservation—have replica A acquire a fencing token and pause immediately before persisting its admission. For the deletion-promotion case, seed a `Requested` reservation after placements have drained and pause before the `Admitted` transition.
+2. Expire A's lease and have replica B acquire a newer token for the same VirtualNetwork.
+3. Resume A's write attempt.
+4. Retry the operation with the current token and re-evaluate the VirtualNetwork state.
+
+##### Expected Results
+
+- Each expired or superseded write is rejected atomically; no stale Subnet, placement, deletion admission, or transition to `Admitted` is persisted.
+- A retry is accepted only after acquiring the current lock token and repeating the state checks.
+- Deletion reservations continue to block new Subnet creates and VM placements until cleanup completes and the finalizer is removed.
+
 ### R6: Non-conflicting IP address assignment
 
 #### TC-R6-01: VM receives an OVN DHCP address without fabric DHCP overlap
@@ -503,9 +527,11 @@ None identified. All requirements map to test cases, all interface changes exerc
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise, revise, revise, revise, revise, revise, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

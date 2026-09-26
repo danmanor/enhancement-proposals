@@ -376,15 +376,23 @@ A single migration (next available number after 79), executed in one transaction
 5. Attach `maintain_active_objects` triggers to parent tables
 6. Create or migrate materialized ref tables for each parent-child relationship;
    `compute_instance_subnet_refs` uses the composite primary key
-   `(compute_instance_id, attachment_index)` rather than one row per instance
-7. Backfill ref tables from existing JSONB data for active resources
+   (`compute_instance_id, attachment_index`) rather than one row per instance
+7. Preflight every active Subnet's persisted `spec.network_acl.id` and verify it
+   resolves to an active row in `active_network_acls`. Run this check after
+   source tables are locked and active tables are populated, within the same
+   transaction. If any active Subnet has a missing, unresolved, or inactive ACL
+   association, raise an error that identifies its tenant and Subnet and abort
+   the transaction before ACL-reference backfill. Legacy Subnets require an
+   explicit tenant-directed conversion before migration; do not infer or assign
+   an ACL automatically.
+8. Backfill ref tables from existing JSONB data for active resources
    (`WHERE deletion_timestamp = 'epoch'`): insert each ComputeInstance
    attachment with its stable array index into
-   `compute_instance_subnet_refs`, and insert each active Subnet's
-   persisted NetworkACL association into `subnet_network_acl_refs`
-8. Attach ref materialization triggers to `compute_instances` and `subnets`
-9. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
-10. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
+   `compute_instance_subnet_refs`, and insert each active Subnet's persisted
+   NetworkACL association into `subnet_network_acl_refs`
+9. Attach ref materialization triggers to `compute_instances` and `subnets`
+10. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
+11. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
 
 The existing Pattern B helper tables (`tenant_domains`, `project_membership_subjects`, `storage_tier_backends`) are unaffected — they enforce uniqueness constraints, not soft-deletion constraints.
 
@@ -587,6 +595,7 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 - Create a parent, soft-delete it, attempt to create a child referencing it — verify rejection with ErrReference
 - Create a parent, create a child, delete the child, then soft-delete the parent — verify success
 - Create a Subnet with a NetworkACL association, soft-delete and undelete the Subnet, then verify the ACL reference is restored and prevents ACL deletion
+- Run the migration preflight with an active Subnet missing an ACL or referencing an inactive ACL; verify the transaction aborts with tenant and Subnet details before inserting ACL-reference rows. After explicit tenant-directed conversion to an active ACL, verify the backfill succeeds.
 - Concurrent test: two requests simultaneously — one soft-deleting a parent, one creating a child — verify that exactly one succeeds
 
 ### E2E Tests
@@ -634,10 +643,10 @@ None. All changes use existing build and test infrastructure. protoc-gen-cleanap
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
