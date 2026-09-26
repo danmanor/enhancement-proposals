@@ -88,19 +88,25 @@ The design covers three capabilities: default networking (including NATGateway) 
    **NetworkClass replacement lifecycle:** `VirtualNetwork.spec.network_class`
    is required and immutable. The old NetworkClass cannot be deleted while any
    VirtualNetwork references it; reverse-reference checks must block that
-   delete. To replace the deployment-wide class, create and validate the
-   replacement first, pause default-based creates for every affected existing
-   tenant (not only tenant onboarding), and keep them paused while the old
-   default VirtualNetwork, NetworkACL, Subnet, and NATGateway are replaced.
-   Recreate tenant VirtualNetworks and their dependent NetworkACLs, Subnets,
-   and NATGateways, and drain/delete resources that still reference the old
-   class. Existing workload attachments are create-time-only and are not
-   rebound; tenants must recreate workloads that need the replacement network,
-   while new workloads use replacement attachments/defaults. Resume
-   default-based creates only after the replacement defaults are READY. Delete
-   the old VirtualNetworks and then the old NetworkClass only after all
-   references are gone. The ExternalIPPool does not reference NetworkClass in
-   this design and is not rebound by this transition.
+   delete. Only one NetworkClass may exist per deployment, so v1 cannot create
+   the replacement alongside the old class and does not support a seamless
+   transition. Replacing it requires a disruptive maintenance cutover:
+
+   1. Validate the replacement configuration offline and schedule downtime.
+   2. Pause tenant onboarding, default-based creates, and tenant network and
+      workload changes across every affected tenant.
+   3. Drain workloads and delete dependent networking resources in their
+      required deletion order, including NATGateways, Subnets, NetworkACLs,
+      and VirtualNetworks. Delete the old NetworkClass only after all
+      VirtualNetwork references are gone.
+   4. Create the replacement as the deployment's sole NetworkClass. Recreate
+      tenant VirtualNetworks, NetworkACLs, Subnets, NATGateways, and workload
+      attachments; recreate workloads that need the replacement network.
+   5. Resume tenant and default-based creates only after the replacement
+      defaults and affected tenant networking resources are READY.
+
+   The ExternalIPPool does not reference NetworkClass in this design and is
+   not rebound by this transition.
 
 2. **Cloud Provider Admin creates Tenant:**
    ```bash
@@ -848,9 +854,11 @@ Consequences:
 
 ## Provenance
 
-Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, revise, respond
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

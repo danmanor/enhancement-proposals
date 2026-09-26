@@ -1048,7 +1048,7 @@ Infrastructure: fulfillment-service Ginkgo suite (`ginkgo run -r internal`), whi
 - Template deletion blocked by a materialized resource, then allowed after the resource is gone.
 - Catalog Item deletion succeeds after resource creation.
 - Secret deletion blocked while a Catalog Item references a governed `pull_secret_secret`.
-- The explicit `Subnet.spec.network_acl` association points to a NetworkACL in the same VirtualNetwork. The existing resource-owned deletion guard rejects deleting a NetworkACL while any Subnet references it; reassign or delete the Subnet first. Catalog Items do not create or own this association.
+- The explicit `Subnet.spec.network_acl` association points to a NetworkACL in the same VirtualNetwork. The existing resource-owned deletion guard rejects deleting a NetworkACL while any Subnet references it; delete the referencing Subnet first; recreate it with a different ACL if a new association is required. Catalog Items do not create or own this association.
 
 **Visibility filtering.**
 
@@ -1101,8 +1101,8 @@ Graduation criteria will be defined when targeting a release. Expected stages: D
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
