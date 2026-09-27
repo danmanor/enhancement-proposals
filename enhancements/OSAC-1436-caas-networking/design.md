@@ -96,12 +96,12 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 2. **Create NetworkACL:**
    ```bash
    osac create network-acl --virtual-network my-net --name my-acl \
-     --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
-     --ingress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
-     --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
-     --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
-   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied. The complete rule set is fixed at ACL creation. Changing policy requires recreating the affected networking resources. Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
+   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic is denied. The complete rule set is fixed at ACL creation. Changing policy requires recreating the affected networking resources. Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
 
 3. **Create Subnet:**
    ```bash
@@ -413,7 +413,7 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
 - The NetworkACL associated with the cluster Subnet controls traffic uniformly for all cluster nodes; it is not part of the Cluster or BMI attachment
-- Ingress and egress rules are stateless and evaluated independently in ascending priority order; first match decides allow or deny, and unmatched traffic is denied
+- Ingress and egress rules are stateless and evaluated independently using the shared match-specificity order; first match decides allow or deny, and unmatched traffic is denied
 - Return traffic requires an explicit reverse-direction rule
 - Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
@@ -565,7 +565,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
 - E2E: create Cluster with omitted network_attachment, verify the default Subnet is populated and its associated NetworkACL governs cluster traffic
-- E2E: verify NetworkACL priority ordering, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
+- E2E: verify NetworkACL specificity-based matching, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
 - E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
 
 ### Tricky Test Cases

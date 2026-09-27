@@ -392,12 +392,19 @@ Subnet creation stores a reference to that ACL rather than creating a separate
 ACL object. The policy is enforced at the Subnet boundary and applies uniformly
 to every workload attached to the Subnet. [PRD: FR-2, FR-4]
 
-Each direction is evaluated independently. Rules are sorted by ascending
-priority, where `1` is evaluated first and `32766` last. Priorities must be
-unique within an ingress list or an egress list. The first matching rule
-decides the packet: `ALLOW` permits it and `DENY` drops it. If no rule matches,
-the packet is denied. Because the ACL is stateless, reply packets need their
-own matching rule in the reverse direction. [Locked: D2]
+Each direction is evaluated independently. The effective rule order is
+computed from the match fields, not from the order in which rules are supplied:
+CIDR prefixes are sorted longest to shortest; for equal prefixes, protocols
+are ordered `ICMP`, `UDP`, `TCP`, then `ALL`; for equal prefixes and protocol,
+destination-port ranges are sorted from smallest to largest, with rules
+that match all ports after port-specific rules. The action is not an ordering
+field, so a more-specific `ALLOW` can precede a broader `DENY`, and a
+more-specific `DENY` can precede a broader `ALLOW`. Rules with identical match
+fields in one direction are rejected to prevent conflicting actions from
+having equal precedence. The first matching rule in the computed order decides
+the packet; `ALLOW` permits it and `DENY` drops it. If no rule matches, the
+packet is denied. Because the ACL is stateless, reply packets need their own
+matching rule in the reverse direction. [Locked: D2]
 
 For ingress rules, `ipv4_cidr` matches the packet source address; for egress
 rules it matches the destination address. A rule may match any supported
@@ -420,11 +427,10 @@ message NetworkACLSpec {
 
 message NetworkACLRule {
   NetworkACLAction action = 1;       // ALLOW or DENY
-  uint32 priority = 2;               // unique per direction, 1..32766
-  Protocol protocol = 3;             // ALL, TCP, UDP, or ICMP
-  optional int32 port_from = 4;      // optional; TCP/UDP only
-  optional int32 port_to = 5;        // optional; TCP/UDP only
-  string ipv4_cidr = 6;              // ingress source or egress destination
+  Protocol protocol = 2;             // ALL, TCP, UDP, or ICMP
+  optional int32 port_from = 3;      // optional; TCP/UDP only
+  optional int32 port_to = 4;        // optional; TCP/UDP only
+  string ipv4_cidr = 5;              // ingress source or egress destination
 }
 
 message SubnetSpec {
@@ -471,23 +477,22 @@ fails with `FAILED_PRECONDITION`; it never selects an ACL from another
 VirtualNetwork. Tenant-created custom NetworkACLs require a READY parent
 VirtualNetwork.
 
-Validation rejects duplicate priorities within a direction, priorities
-outside 1..32766, unknown actions or protocols, incomplete or reversed port
-ranges, port ranges with non-TCP/UDP protocols, malformed or non-canonical
-IPv4 CIDRs, and references across VirtualNetworks. Rule priority order is
-direction-local, so the same number can appear once in ingress and once in
-egress. For TCP/UDP, either both port endpoints are supplied or neither is;
-an omitted range matches all destination ports for that protocol. [PRD:
-FR-2, FR-4]
+Validation rejects duplicate match fields within a direction, unknown actions
+or protocols, incomplete or reversed port ranges, port ranges with non-TCP/UDP
+protocols, malformed or non-canonical IPv4 CIDRs, and references across
+VirtualNetworks. For TCP/UDP, either both port endpoints are supplied or
+neither is; an omitted range matches all destination ports for that protocol.
+Rule input order and action do not determine precedence. [PRD: FR-2, FR-4]
 
 The current deployment-level ACL policy is hard-coded to permit all traffic.
 That deployment policy is separate from NetworkACL rules. Each
 VirtualNetwork's default ACL is materialized from the provider-configured
 NetworkClass defaults. Each direction includes an allow-all catch-all rule
-for `0.0.0.0/0` at priority `32766`; earlier-priority deny rules can restrict
-matching traffic. Because the ACL is stateless, each packet is evaluated
-independently; return traffic passes only when reverse-direction evaluation
-allows it.
+for `0.0.0.0/0`, which is evaluated after more-specific matching rules.
+NetworkClass deny rules can therefore restrict matching traffic regardless of
+their position in the input list. Because the ACL is stateless, each packet is
+evaluated independently; return traffic passes only when reverse-direction
+evaluation allows it.
 
 Creating a custom NetworkACL does not seed default rules. A custom ACL with
 empty ingress and egress lists denies all traffic that reaches its Subnet
@@ -575,10 +580,10 @@ The fabric manager creates an isolated tenant segment on the fabric.
 
 ```bash
 osac create network-acl --virtual-network my-net --name web-acl \
-  --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
-  --ingress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
-  --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
-  --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
+  --ingress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+  --ingress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+  --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+  --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
 ```
 
 The example allows HTTPS from the illustrative client range and to the

@@ -148,7 +148,7 @@
 
 - The VirtualNetwork has exactly one Subnet and uses the cudn_evpn k8s manager.
 - The Subnet explicitly references a READY NetworkACL scoped to the same VirtualNetwork; policy enforcement completes before the Subnet becomes READY.
-- The associated NetworkACL has priority-1 `DENY` rules for protocol `ALL` in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. These rules match the VM-to-bare-metal flow and its reply.
+- The associated NetworkACL has `ALLOW ALL` catch-all rules for `0.0.0.0/0` and more-specific `DENY ALL` rules in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. The subnet-specific deny rules match the VM-to-bare-metal flow and its reply.
 - The CUDN is provisioned for the single Subnet.
 - A VirtualMachine runs in the CUDN namespace with IP 200.200.1.3.
 - A bare-metal endpoint is attached to the configured fabric in the same Subnet with IP 200.200.1.10.
@@ -157,7 +157,7 @@
 ##### Steps
 
 1. Verify the VM is running: `oc get vmi -n <namespace>`.
-2. Inspect the associated ACL and confirm its active priority-1 ingress and egress `DENY ALL` rules match both the request and reply addresses.
+2. Inspect the associated ACL and confirm its ingress and egress `DENY ALL` rules for `200.200.1.0/24` are evaluated before the broader `ALLOW ALL` catch-all because their CIDR prefixes are longer, and match both the request and reply addresses.
 3. Connect to the VM console: `virtctl console <vm-name>`.
 4. Ping the bare-metal endpoint: `ping 200.200.1.10`.
 5. Verify FRR shows a Type-2 route for the VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`.
