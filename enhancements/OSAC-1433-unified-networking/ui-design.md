@@ -90,7 +90,8 @@ Pure consumer of the existing private `ExternalIPPools` service
 #### Subnet NetworkACL Association
 
 - **Subnet create form:** requires a NetworkACL selector scoped to the selected
-  VirtualNetwork. A Subnet cannot be created without exactly one ACL.
+  VirtualNetwork. The API rejects creation requests with no ACL or more than
+  one ACL reference; the form requires exactly one selected ACL.
 - **Subnet list/detail:** show the associated ACL name and status.
 - **Association lifecycle:** the ACL is selected during Subnet creation and
   cannot be changed later. Subnet details show the associated ACL name and

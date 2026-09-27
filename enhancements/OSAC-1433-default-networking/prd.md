@@ -109,11 +109,12 @@ dual-stack networking are not supported.
   [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
   parameters (IPv4 CIDRs and stateless ingress and egress NetworkACL rules) on
-  the NetworkClass. The tenant default ACL denies unmatched ingress and
-  permits egress by default through an `ALLOW ALL` rule for `0.0.0.0/0` at
-  priority `32766`. Since the ACL is stateless, return traffic requires
-  explicit reverse-direction ingress rules. Defaults are required — a
-  NetworkClass without defaults is rejected at creation time. [User]
+  the NetworkClass. The tenant default ACL permits all IPv4 ingress and
+  egress through an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766` in
+  each direction. Because the ACL is stateless, traffic in each direction is
+  evaluated independently; return traffic passes by matching the
+  reverse-direction allow-all rule. Defaults are required — a NetworkClass
+  without defaults is rejected at creation time. [User]
 - **FR-3:** All tenants receive the same default IPv4 CIDR ranges as
   configured on the NetworkClass. Tenants are isolated at the
   network level — the unified networking API provides VirtualNetworks
@@ -192,9 +193,9 @@ dual-stack networking are not supported.
 - [ ] Default VirtualNetwork, NetworkACL, IPv4 Subnet, and NATGateway exist
   and are READY before the tenant's first resource creation, and the default
   Subnet is associated with the default NetworkACL
-- [ ] The tenant default NetworkACL denies unmatched ingress and permits
-  egress with an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766`; return
-  traffic passes only when a matching reverse-direction rule allows it
+- [ ] The tenant default NetworkACL permits all IPv4 ingress and egress with
+  an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766` in each direction;
+  return traffic passes by matching the reverse-direction allow-all rule
 - [ ] Default resources appear in list views with a label identifying
   them as defaults
 - [ ] Default networking resources support read/create/delete; NetworkACL
@@ -240,13 +241,13 @@ dual-stack networking are not supported.
 ### 7.2 Default NetworkACL too permissive
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** The tenant default policy denies unmatched ingress and
-  permits egress; Cloud Infrastructure Admin can add ingress exceptions or
-  restrict egress with earlier-priority DENY rules in the NetworkClass before
-  tenant onboarding. Changing NetworkClass defaults does not update existing
-  tenant ACLs; tightening an existing tenant's policy requires the coordinated
-  replacement process in the [default resource lifecycle](design.md#default-resource-lifecycle),
-  including every Subnet referencing that ACL and its dependent workloads.
+- **Mitigation:** The tenant default policy permits all ingress and egress.
+  Cloud Infrastructure Admin can add earlier-priority DENY rules in the
+  NetworkClass before tenant onboarding. Changing NetworkClass defaults does
+  not update existing tenant ACLs; tightening an existing tenant's policy
+  requires the coordinated replacement process in the
+  [default resource lifecycle](design.md#default-resource-lifecycle), including
+  every Subnet referencing that ACL and its dependent workloads.
 
 ### 7.3 Auto ExternalIP orphans on partial failure
 
