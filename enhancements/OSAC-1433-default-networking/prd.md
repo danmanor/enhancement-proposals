@@ -99,8 +99,10 @@ dual-stack networking are not supported.
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork, NetworkACL, IPv4 Subnet, and NATGateway for the tenant.
-  The default Subnet is associated with the default NetworkACL. The tenant
+  VirtualNetwork, its default NetworkACL, an IPv4 Subnet, and a NATGateway
+  for the tenant. Every other VirtualNetwork also receives its own default
+  NetworkACL, but no additional Subnet is created automatically. The default
+  Subnet is associated with the default NetworkACL. The tenant
   transitions to READY only after all default networking resources and the
   Subnet-to-NetworkACL association are READY. If default networking
   provisioning fails, the tenant remains in a non-READY state with a
@@ -109,7 +111,8 @@ dual-stack networking are not supported.
   [User]
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
   parameters (IPv4 CIDRs and stateless ingress and egress NetworkACL rules) on
-  the NetworkClass. The tenant default ACL permits all IPv4 ingress and
+  the NetworkClass. Those rules are used for the default ACL created in every
+  VirtualNetwork. Each default ACL permits all IPv4 ingress and
   egress through an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766` in
   each direction. Because the ACL is stateless, traffic in each direction is
   evaluated independently; return traffic passes by matching the
@@ -123,9 +126,13 @@ dual-stack networking are not supported.
 - **FR-4:** Default resources are labeled as defaults and visible in list
   and detail views. They follow the unified networking read/create/delete
   contract; NetworkACL rules and Subnet ACL association are fixed at creation,
-  and deletion is blocked while any resource depends on them. [User]
-- **FR-5:** Creating custom VirtualNetworks does not affect default
-  resources — both coexist. [User]
+  and deletion is blocked while any resource depends on them. A
+  VirtualNetwork's default ACL cannot be deleted directly; it is removed with
+  its VirtualNetwork. [User]
+- **FR-5:** Creating custom VirtualNetworks does not affect the tenant's
+  default VirtualNetwork, Subnet, or NATGateway. Each custom VirtualNetwork
+  gets its own default ACL, but no Subnet is created automatically. A Subnet
+  created without an explicit ACL uses that VirtualNetwork's default ACL. [User]
 
 #### Optional Network Attachments
 
@@ -190,14 +197,23 @@ dual-stack networking are not supported.
   `--external-ip-attachment` and no explicit network attachments — the
   server is placed on the default subnet with an auto-provisioned
   ExternalIP
-- [ ] Default VirtualNetwork, NetworkACL, IPv4 Subnet, and NATGateway exist
-  and are READY before the tenant's first resource creation, and the default
+- [ ] Each VirtualNetwork has exactly one READY default NetworkACL and is not
+  reported READY until its default ACL is READY. At tenant
+  onboarding, the default VirtualNetwork's ACL, IPv4 Subnet, and NATGateway
+  are READY before the tenant's first workload creation, and the default
   Subnet is associated with the default NetworkACL
-- [ ] The tenant default NetworkACL permits all IPv4 ingress and egress with
-  an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766` in each direction;
+- [ ] A Subnet create request that omits its ACL uses the READY default ACL
+  from the same VirtualNetwork; an explicit single ACL is preserved only when
+  READY and scoped to that VirtualNetwork, and multiple ACL references are
+  rejected. The resolved reference is stored on the Subnet.
+- [ ] Each VirtualNetwork's default NetworkACL permits all IPv4 ingress and
+  egress with an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766` in each direction;
   return traffic passes by matching the reverse-direction allow-all rule
 - [ ] Default resources appear in list views with a label identifying
-  them as defaults
+  them as defaults; the ACL default label is scoped to its VirtualNetwork
+- [ ] A VirtualNetwork's system-created default ACL cannot be deleted directly
+  and is removed as part of VirtualNetwork deletion after dependent resources
+  have been deleted
 - [ ] Default networking resources support read/create/delete; NetworkACL
   rules and the Subnet's NetworkACL association cannot be updated after
   creation. A Tenant Admin can create replacement resources with customized
@@ -241,7 +257,8 @@ dual-stack networking are not supported.
 ### 7.2 Default NetworkACL too permissive
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** The tenant default policy permits all ingress and egress.
+- **Mitigation:** Each VirtualNetwork's default policy permits all ingress
+  and egress.
   Cloud Infrastructure Admin can add earlier-priority DENY rules in the
   NetworkClass before tenant onboarding. Changing NetworkClass defaults does
   not update existing tenant ACLs; tightening an existing tenant's policy
@@ -281,10 +298,10 @@ Resolved: E2E tests for simplified creation are defined in each per-service desi
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":67,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

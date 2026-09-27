@@ -299,8 +299,9 @@ This enhancement modifies existing protobuf message definitions. It does not
 add new gRPC services, CRDs, webhooks, or finalizers.
 
 The Subnet example uses an existing READY NetworkACL whose `virtual_network`
-references `prod-net`; the Subnet's required `network_acl` reference must name
-that same-VirtualNetwork resource.
+references `prod-net`. If `network_acl` is supplied, it must name a READY ACL
+in that same VirtualNetwork. If omitted, Subnet creation resolves it to
+`prod-net`'s system-created default ACL and stores the resolved reference.
 
 **Modified proto files (public API):**
 
@@ -309,7 +310,7 @@ that same-VirtualNetwork resource.
 | `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, and `SubnetLocalReference`. Replace string fields in `ComputeInstanceSpec` and `ComputeNetworkAttachment`; attachments contain only a subnet reference and reserve field 2. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
 | `baremetal_instance_common_type.proto` | Reuse `SubnetLocalReference` in `BareMetalNetworkAttachment`; the subnet determines the applicable NetworkACL, field 2 is reserved, and `interface` remains field 3. |
 | `cluster_common_type.proto` | Reuse `SubnetLocalReference` in `ClusterNetworkAttachment`; the subnet determines the applicable NetworkACL and field 2 is reserved. |
-| `subnet_type.proto` | Add `VirtualNetworkLocalReference` and `NetworkACLLocalReference`. Replace `SubnetSpec.virtual_network` and type required, singular `SubnetSpec.network_acl` as a local reference. The required association is immutable after Subnet creation. |
+| `subnet_type.proto` | Add `VirtualNetworkLocalReference` and `NetworkACLLocalReference`. Replace `SubnetSpec.virtual_network` and type singular `SubnetSpec.network_acl` as a local reference. The field may be omitted on create and resolves to the VirtualNetwork's default ACL; the stored association is required and immutable after Subnet creation. |
 | `virtual_network_type.proto` | Add `NetworkClassReference`. Replace `VirtualNetworkSpec.network_class`. |
 | `network_acl_type.proto` | Add `VirtualNetworkLocalReference`. Replace `NetworkACLSpec.virtual_network`; ingress and egress rule lists are immutable after NetworkACL creation. |
 | `external_ip_attachment_type.proto` | Add `ExternalIPLocalReference`, `ComputeInstanceLocalReference`, `ClusterLocalReference`, `BareMetalInstanceLocalReference`. Replace string fields in `ExternalIPAttachmentSpec` oneof. |
@@ -350,7 +351,7 @@ structure.
 | UI code location | Current wire format | New wire format | Notes |
 |---|---|---|---|
 | `networking.ts` `CreateVirtualNetworkInput.networkClass` | `spec: { network_class: networkClass }` (string) | `spec: { network_class: { name: networkClass } }` | Local var already holds the name |
-| `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName }, network_acl: { name: aclName } }` | `network_acl` is required, READY, and scoped to the referenced VirtualNetwork |
+| `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName }, network_acl: { name: aclName } }` | `network_acl` is optional on create; when supplied it must be READY and scoped to the referenced VirtualNetwork; when omitted the service resolves the same-VirtualNetwork default ACL |
 | `networking.ts` `CreateNetworkACLInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Same pattern as Subnet |
 | `networking.ts` `virtualNetworkFilterForSubnetList` | `this.spec.virtual_network == "${id}"` | `this.spec.virtual_network.name == "${name}"` | CEL filter path change |
 | `ip-management.ts` `useCreatePublicIP` body | `spec: { pool: string }` | `spec: { pool: { name: poolName } }` | |
@@ -474,7 +475,7 @@ resource can be in a different tenant or project from the referencing resource:
 |-------|---------------|-----------|
 | `SubnetSpec.virtual_network` | `VirtualNetworkLocalReference` | Subnet is always in the same tenant/project as its parent VirtualNetwork |
 | `NetworkACLSpec.virtual_network` | `VirtualNetworkLocalReference` | Same reasoning as Subnet |
-| `SubnetSpec.network_acl` | `NetworkACLLocalReference` | Required, singular association; Subnet and NetworkACL are in the same tenant/project and VirtualNetwork; immutable after Subnet creation |
+| `SubnetSpec.network_acl` | `NetworkACLLocalReference` | Optional on create, then a required singular stored association; omission resolves to the default ACL in the same VirtualNetwork; immutable after Subnet creation |
 | `ComputeNetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
 | `BareMetalNetworkAttachment.subnet` | `SubnetLocalReference` | BareMetalInstance and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
 | `ClusterNetworkAttachment.subnet` | `SubnetLocalReference` | Cluster and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
@@ -1252,10 +1253,10 @@ osac-ux) and use existing CI infrastructure.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

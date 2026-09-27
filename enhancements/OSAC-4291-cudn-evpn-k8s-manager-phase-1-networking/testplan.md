@@ -10,7 +10,7 @@
 - **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
 - **Additional operational tests:** 2 deletion lifecycle tests + 1 skip-k8s-manager annotation test + 1 admission-fencing concurrency test
 
-**Mandatory Subnet policy precondition:** Every Subnet create request must explicitly reference a READY NetworkACL scoped to the same VirtualNetwork. The associated ACL policy must be actively enforced before the Subnet can become READY. Missing, unready, or cross-VirtualNetwork ACL references are rejected; no case treats an ACL-less or unenforced Subnet as READY.
+**Mandatory Subnet policy precondition:** Every persisted Subnet has exactly one READY NetworkACL scoped to the same VirtualNetwork, and the policy must be actively enforced before the Subnet can become READY. A create request may omit `network_acl`; the service resolves it to the VirtualNetwork's default ACL. Explicit references must be READY and same-VirtualNetwork. An omitted ACL without exactly one READY default, an unready explicit ACL, or a cross-VirtualNetwork reference is rejected; no case treats an ACL-less or unenforced Subnet as READY.
 
 ## Test Cases
 
@@ -528,10 +528,10 @@ None identified. All requirements map to test cases, all interface changes exerc
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

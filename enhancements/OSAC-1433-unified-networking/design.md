@@ -108,9 +108,11 @@ defers validation to asynchronous operator reconciliation.
 ### API operation constraint
 
 Networking resources support read, create, and delete; read includes `List`
-and `Get`. NetworkACL rules and the Subnet's required `spec.network_acl`
-association are immutable after creation. Changing policy or association
-requires recreating the affected resources. NetworkACL identity,
+and `Get`. NetworkACL rules and a Subnet's resolved `spec.network_acl`
+association are immutable after creation. A Subnet create request may omit
+the ACL reference; the service resolves it to the default ACL for that
+VirtualNetwork and persists the resulting reference. Changing policy or
+association requires recreating the affected resources. NetworkACL identity,
 VirtualNetwork scope, metadata, and other networking resource fields remain
 immutable after creation. VirtualNetwork and Subnet address configuration and
 workload network attachments are create-time-only. Controllers may update
@@ -378,12 +380,17 @@ ExternalIPAttachment (tenant-managed)
 
 ### NetworkACL — Stateless Subnet Policy
 
-`NetworkACL` is a tenant-managed resource scoped to one VirtualNetwork. It
-contains ordered ingress and egress rules. A Subnet references exactly one
-NetworkACL in its parent VirtualNetwork; an ACL can be reused by multiple
-Subnets in that VirtualNetwork. The policy is enforced at the Subnet boundary
-and applies uniformly to every workload attached to the Subnet. [PRD: FR-2,
-FR-4]
+`NetworkACL` is a tenant-scoped resource within one VirtualNetwork. Each
+VirtualNetwork has exactly one system-created default NetworkACL, built from
+the provider-configured default rules. Tenants can also create custom
+NetworkACLs. A Subnet stores exactly one reference to an ACL in its parent
+VirtualNetwork; on Subnet creation, an omitted ACL resolves to that
+VirtualNetwork's default ACL. An explicit custom ACL may instead be selected.
+One ACL can be reused by multiple Subnets in the same VirtualNetwork. The
+default ACL is scoped to the VirtualNetwork and may be shared by its Subnets;
+Subnet creation stores a reference to that ACL rather than creating a separate
+ACL object. The policy is enforced at the Subnet boundary and applies uniformly
+to every workload attached to the Subnet. [PRD: FR-2, FR-4]
 
 Each direction is evaluated independently. Rules are sorted by ascending
 priority, where `1` is evaluated first and `32766` last. Priorities must be
@@ -423,26 +430,46 @@ message NetworkACLRule {
 message SubnetSpec {
   VirtualNetworkLocalReference virtual_network = 1; // required, immutable
   string ipv4_cidr = 2;                             // required, immutable
-  NetworkACLLocalReference network_acl = 3;          // required, immutable
+  NetworkACLLocalReference network_acl = 3; // optional on create; resolved and immutable thereafter
 }
 ```
 
-The schema sketch shows the tenant-facing resource relationship. The required
-`network_acl` reference is a single immutable reference, and one ACL can be
-shared by multiple Subnets in its VirtualNetwork. ACL rule lists are also
-immutable after creation. An ACL cannot be deleted while a Subnet references
-it, and the ACL's VirtualNetwork scope cannot be changed. Changing policy
-requires recreating the affected networking resources.
+The schema sketch shows the tenant-facing resource relationship: the Subnet
+points to its ACL through one `network_acl` reference; the ACL does not contain
+a Subnet reference and can be shared by multiple Subnets in its
+VirtualNetwork. On create, the reference may be omitted and is resolved to the
+VirtualNetwork's default ACL before the Subnet is persisted. Every stored
+Subnet therefore has exactly one immutable ACL reference. ACL rule lists are
+also immutable after creation. A custom ACL cannot be deleted while a Subnet
+references it. A system-created default ACL cannot be deleted directly; it is
+removed as part of deleting its VirtualNetwork after dependent Subnets, custom
+ACLs, and NATGateway are gone. The ACL's VirtualNetwork scope cannot be
+changed. Changing policy requires recreating the affected networking
+resources.
 
 ### NetworkACL API and Validation
 
 The public `NetworkACLs` service provides `List`, `Get`, `Create`, and `Delete`
 at `/api/fulfillment/v1/network_acls`. The public `Subnets` service provides
-`List`, `Get`, `Create`, and `Delete`; Subnet creation requires exactly one
-`spec.network_acl` reference. Requests with no ACL or more than one ACL are
-rejected before persistence or provisioning. Neither service exposes
-`Update`. `NetworkACL` creation requires a READY parent VirtualNetwork, and
-Subnet creation must reference a READY NetworkACL in the same VirtualNetwork.
+`List`, `Get`, `Create`, and `Delete`. Neither service exposes `Update`.
+During VirtualNetwork provisioning, once its underlying network is available,
+the system creates one default NetworkACL from the NetworkClass default rules.
+A VirtualNetwork is READY only after its underlying network and default ACL
+are READY. The default ACL is visible
+through normal List/Get operations but cannot be deleted directly;
+VirtualNetwork deletion removes it after dependent Subnets, custom ACLs, and
+NATGateway have been deleted.
+
+Subnet creation always results in exactly one `spec.network_acl` reference
+stored on the Subnet. If the request omits the reference, the service resolves
+the one READY default ACL in the same VirtualNetwork and stores that
+association. A request with one explicit ACL uses it only when it is READY
+and belongs to the same VirtualNetwork. Requests containing multiple ACL
+references are rejected before persistence or provisioning. If an omitted
+reference cannot resolve to exactly one READY default ACL, Subnet creation
+fails with `FAILED_PRECONDITION`; it never selects an ACL from another
+VirtualNetwork. Tenant-created custom NetworkACLs require a READY parent
+VirtualNetwork.
 
 Validation rejects duplicate priorities within a direction, priorities
 outside 1..32766, unknown actions or protocols, incomplete or reversed port
@@ -454,25 +481,28 @@ an omitted range matches all destination ports for that protocol. [PRD:
 FR-2, FR-4]
 
 The current deployment-level ACL policy is hard-coded to permit all traffic.
-That deployment policy is separate from tenant-managed NetworkACL rules and
-from the tenant default ACL provisioned at onboarding. The tenant default ACL
-permits all IPv4 ingress and egress traffic through an allow-all rule in each
-direction. Because it is stateless, each packet is evaluated independently;
-return traffic passes by matching the allow-all rule in the reverse direction.
+That deployment policy is separate from NetworkACL rules. Each
+VirtualNetwork's default ACL is materialized from the provider-configured
+NetworkClass defaults. Those defaults permit all IPv4 ingress and egress
+through an allow-all rule in each direction; more-specific deny rules may use
+earlier priorities. Because the ACL is stateless, each packet is evaluated
+independently; return traffic passes by matching the allow-all rule in the
+reverse direction.
 
-Creating a tenant-managed NetworkACL does not seed default rules. An ACL with
+Creating a custom NetworkACL does not seed default rules. A custom ACL with
 empty ingress and egress lists denies all traffic that reaches its Subnet
 boundary; users must provide every required flow, including reverse-direction
-rules for replies. The tenant default ACL policy is materialized separately by
-default networking.
+rules for replies. The system-created per-VirtualNetwork default ACL is
+separate from custom ACLs and uses the NetworkClass defaults.
 
-Deleting a NetworkACL that is associated with one or more Subnets fails with
-`FAILED_PRECONDITION`. Deleting a VirtualNetwork is blocked until its Subnets,
-NetworkACLs, and NATGateway have been removed. ACL rule lists and the Subnet
-association are fixed at creation; neither resource exposes an Update method.
-To change policy, delete dependent Subnets and the ACL, then recreate them with
-the desired rule set and association. A Subnet remains Pending until its
-network segment and its associated ACL policy are active.
+Deleting a custom NetworkACL that is associated with one or more Subnets fails
+with `FAILED_PRECONDITION`. Deleting a default ACL directly also fails with
+`FAILED_PRECONDITION`; deleting its VirtualNetwork removes the default ACL
+after Subnets, custom ACLs, and NATGateway are gone. ACL rule lists and the
+Subnet association are fixed at creation; neither resource exposes an Update
+method. To change a Subnet's policy, delete dependent workloads and the Subnet,
+then recreate the Subnet with the desired ACL. A Subnet remains Pending until
+its network segment and its associated ACL policy are active.
 
 ### ExternalIPPool
 
@@ -558,12 +588,15 @@ CIDRs must be replaced with the deployment's actual trusted client and
 endpoint ranges. Rules are stateless: omitting either reverse rule blocks that
 flow's replies.
 
-**Create Subnet and associate the ACL:**
+**Create Subnet with the VirtualNetwork's default ACL:**
 
 ```bash
-osac create subnet --virtual-network my-net --network-acl web-acl \
-  --cidr 10.0.1.0/24 --name my-subnet
+osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
 ```
+
+When `--network-acl` is omitted, the service stores a reference to `my-net`'s
+default ACL on the Subnet. To use a custom ACL, create it first and pass
+`--network-acl web-acl`; the ACL must be READY and belong to `my-net`.
 
 The fabric manager creates the network segment and installs the Subnet's ACL
 policy. If the NetworkClass has a K8s manager, it also creates an overlay on
@@ -1043,11 +1076,12 @@ single supplied attachment:
 | One BMaaS attachment with no interface | Default only the interface to the first `fabric` port from `BareMetalInstanceType.network_ports`. |
 | One complete attachment | Preserve all supplied values and validate readiness, tenant scope, and VirtualNetwork relationships. |
 
-Every Subnet already has one NetworkACL association, so resolving a workload
-attachment does not choose or copy an ACL. If the selected Subnet or its ACL
-is absent or not Ready, workload creation fails with a validation or
-precondition error. The fully resolved attachment is stored with the workload
-and is immutable after creation.
+Every stored Subnet already has one NetworkACL association, so resolving a
+workload attachment does not choose or copy an ACL. An explicitly selected
+Subnet is preserved; it is never replaced by the tenant default. If the
+selected Subnet or its ACL is absent or not READY, workload creation fails
+with a validation or precondition error. The fully resolved attachment is
+stored with the workload and is immutable after creation.
 
 #### Resource Specs
 
@@ -1227,9 +1261,12 @@ All fields are immutable after creation.
 #### NetworkACL Reconciliation and Readiness
 
 The operator creates and deletes each NetworkACL through the manager assigned
-to the VirtualNetwork's NetworkClass. Subnet creation supplies the required
-`spec.network_acl` reference, which remains fixed for that Subnet's lifetime.
-An ACL may be reused by multiple Subnets in its VirtualNetwork. [PRD: FR-4]
+to the VirtualNetwork's NetworkClass. On Subnet creation, the service resolves
+an omitted `spec.network_acl` to the system-created default ACL in that
+VirtualNetwork. An explicitly supplied ACL must be READY and belong to that
+VirtualNetwork. The service persists exactly one resolved ACL reference, which
+remains fixed for the Subnet's lifetime. An ACL may be reused by multiple
+Subnets in its VirtualNetwork. [PRD: FR-4]
 
 A Subnet is READY only after its network segment and its associated ACL are
 active. ACLs and Subnet associations are create-time configuration; changes
@@ -1269,9 +1306,9 @@ caller knows what to remove first.
 
 | Resource | Reject delete if active … exist |
 |---|---|
-| VirtualNetwork | No Subnet, NetworkACL, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
+| VirtualNetwork | No Subnet, custom NetworkACL, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet; its system-created default ACL is removed as part of VNet deletion |
 | Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
-| NetworkACL | No Subnet CRs with `spec.networkACL` referencing this ACL |
+| NetworkACL | No Subnet CRs with `spec.networkACL` referencing this custom ACL; a default ACL is removed only with its VirtualNetwork |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
 
@@ -1288,13 +1325,16 @@ NATGateway (leaf)
   must be gone before --> ExternalIP
   must be gone before --> VirtualNetwork
 
-NetworkACL
+Custom NetworkACL
   must be gone before --> VirtualNetwork
   (blocked by ComputeInstances / Clusters / BaremetalInstances referencing it)
 
 ComputeInstance / Cluster / BaremetalInstance
   must be gone before --> Subnet
   (blocked by manually-created ExternalIPAttachments targeting it)
+
+VirtualNetwork
+  deletion removes --> its system-created default NetworkACL
 
 Subnet
   must be gone before --> NetworkACL
@@ -1547,9 +1587,10 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
     dead weight per resource type.
 
 12. **Networking API lifecycle.** Networking resources use read, create, and
-    delete operations. NetworkACL rules and the Subnet's `network_acl`
-    association are immutable after creation; changing them requires deleting
-    and recreating affected resources. Workload attachments also remain
+    delete operations. A Subnet create request may omit `network_acl`, which
+    resolves to the default ACL in its VirtualNetwork; the resolved reference
+    and ACL rules are immutable after creation. Default ACLs are system-created
+    and removed with their VirtualNetwork. Workload attachments also remain
     immutable after creation; status reconciliation remains internal.
 
 ## Test Plan
@@ -1596,18 +1637,22 @@ per-workload policy to a Subnet-wide ACL.
 2. Deploy the ACL-aware fulfillment-service, API and CRD schemas,
    osac-operator, networking controllers, configured networking manager, and
    compatible clients as one coordinated release.
-3. For each VirtualNetwork, use the new API to create the planned
-   VirtualNetwork-scoped NetworkACLs. Wait for each ACL to become READY, then
-   create replacement Subnets with an explicit `spec.network_acl` in the same
-   VirtualNetwork. Existing Subnets cannot be reassociated in place; recreate
-   affected Subnets and workloads as required by their deletion dependencies.
+3. Create one default NetworkACL for each existing VirtualNetwork from the
+   NetworkClass defaults and wait for each to become READY. This backfill does
+   not change existing Subnet associations. Then create the tenant-approved
+   custom NetworkACLs; wait for them to become READY before creating
+   replacement Subnets with either an explicit `spec.network_acl` or the
+   same-VirtualNetwork default. Existing Subnets cannot be reassociated in
+   place; recreate affected Subnets and workloads as required by their
+   deletion dependencies.
 4. Keep each affected Subnet and workload creation using it gated until its
    associated ACL policy is active. A Subnet becomes READY only when its
    associated policy is active. If policy mapping requires moving a workload
    to a different Subnet, recreate it only after the destination Subnet is
    READY; attachments remain immutable.
-5. Validate the tenant-approved policy mapping, ACL readiness, Subnet
-   associations, and representative connectivity. Reopen network and workload
+5. Validate that each VirtualNetwork has one READY default ACL, the
+   tenant-approved policy mapping, Subnet associations, and representative
+   connectivity. Reopen network and workload
    writes only after every affected Subnet has an active policy. Keep any
    incomplete tenant migration gated.
 
@@ -1668,9 +1713,11 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Authored: respond @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, respond
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

@@ -90,7 +90,7 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Each Subnet has an explicit association to an independent NetworkACL scoped to its VirtualNetwork. The configured fabric manager owns NetworkACL provisioning and enforcement, and the Subnet becomes READY only after its associated policy is active. This CUDN/K8s integration consumes the Subnet's network-segment data and does not create an ACL per Subnet or implement ACL behavior in the K8s manager.
+- Each Subnet stores exactly one association to a NetworkACL scoped to its VirtualNetwork. A create request may omit the ACL and use that VirtualNetwork's system-created default ACL, or explicitly select a READY custom ACL. The configured fabric manager owns NetworkACL provisioning and enforcement, and the Subnet becomes READY only after its associated policy is active. This CUDN/K8s integration consumes the Subnet's network-segment data and does not create an ACL per Subnet or implement ACL behavior in the K8s manager.
 
 - A VirtualNetwork with a single Subnet may host VMs. Once VMs exist, adding a second Subnet is rejected. If a second Subnet is added while no VMs exist, the VirtualNetwork becomes fabric-only and VM placement is rejected in all its Subnets.
 
@@ -99,7 +99,7 @@ The following are out of scope for Phase 1:
 ## Acceptance Criteria
 
 - [ ] A NetworkClass with `fabric_manager: "primary"` and `k8s_manager: "cudn_evpn"` can be created and transitions to READY state
-- [ ] Each Subnet has an explicit NetworkACL association to a READY ACL scoped to the same VirtualNetwork, and the Subnet becomes READY only after the associated ACL policy is active
+- [ ] Each Subnet stores exactly one association to a READY ACL scoped to the same VirtualNetwork, and becomes READY only after that ACL policy is active; an omitted create-time ACL resolves to the VirtualNetwork default
 - [ ] Creating a VirtualNetwork, a READY same-VirtualNetwork NetworkACL, and a single Subnet explicitly associated with that ACL provisions both fabric manager VNet and overlay network on OCP
 - [ ] VMs deployed on the subnet receive IP addresses that do not conflict with fabric manager DHCP allocations
 - [ ] VMs are discoverable and directly reachable from bare-metal servers on the same Subnet at L2
@@ -138,9 +138,8 @@ The following are out of scope for Phase 1:
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
-Phases: revise, revise
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
