@@ -63,7 +63,13 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - **FR-1:** Tenants can create isolated VirtualNetworks and Subnets. Resources in different VirtualNetworks cannot communicate, and resources in the same Subnet share a broadcast domain. [Jira: OSAC-1433]
 - **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, a unique numeric priority from 1 through 32766 within its direction, protocol, an optional TCP or UDP destination-port range, and a canonical IPv4 CIDR. Lower priorities are evaluated first; the first matching rule decides, and traffic that matches no rule is denied. [User]
 - **FR-3:** NetworkACLs are stateless. Ingress and egress are evaluated independently, and return traffic requires a matching rule in the reverse direction. [User]
-- **FR-4:** A Subnet has exactly one associated NetworkACL. Tenants can reuse one NetworkACL on multiple Subnets in the same VirtualNetwork. The policy applies uniformly to every workload attached to that Subnet. Traffic between workloads on the same Subnet is not filtered by the Subnet's NetworkACL. For traffic between Subnets, source egress and destination ingress rules are evaluated independently. [User]
+- **FR-4:** A Subnet has exactly one associated NetworkACL. Subnet creation is
+  rejected if no ACL or more than one ACL is supplied. Tenants can reuse one
+  NetworkACL on multiple Subnets in the same VirtualNetwork. The policy applies
+  uniformly to every workload attached to that Subnet. Traffic between
+  workloads on the same Subnet is not filtered by the Subnet's NetworkACL. For
+  traffic between Subnets, source egress and destination ingress rules are
+  evaluated independently. [User]
 - **FR-5:** NetworkACL rules and a Subnet's NetworkACL association are fixed at creation. Changing them requires deleting and recreating the affected networking resources. A VirtualNetwork's and Subnet's address configuration and a workload's network attachment also remain fixed after creation. [User]
 - **FR-6:** ComputeInstance, Cluster, and BaremetalInstance attachments identify a Subnet and do not carry traffic-policy references. A BaremetalInstance attachment may also identify one physical interface. Each workload supports at most one tenant network attachment. [User; OSAC-1433]
 - **FR-7:** The networking API provides read (list/get), create, and delete operations for networking resources. NetworkACL rules and Subnet-to-NetworkACL associations cannot be updated after creation. Workload attachments remain immutable after workload creation. [User; OSAC-1433]
@@ -74,17 +80,21 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - **FR-12:** The supported deployment profile is connected networking with one provider-owned hub. ExternalIPPool accepts exactly one canonical IPv4 CIDR. IPv6, dual-stack, disconnected deployment, and multi-hub networking requests are rejected or reported unsupported. [Jira: OSAC-1433]
 - **FR-13:** At tenant onboarding, the system creates a default VirtualNetwork,
   Subnet, NetworkACL, and NATGateway from provider-configured defaults. The
-  tenant default ACL denies ingress by default and permits egress by default;
-  because it is stateless, return traffic requires explicit reverse-direction
-  ingress rules. The default Subnet is associated with the default NetworkACL,
-  and tenant readiness waits until that association is ready. Workload creation
-  can omit network attachment details to use these defaults. [User; OSAC-1433]
+  tenant default ACL permits all IPv4 ingress and egress by default. Because
+  it is stateless, each direction is evaluated independently, and return
+  traffic passes by matching the allow-all rule in the reverse direction.
+  The default Subnet is associated with the default NetworkACL, and tenant
+  readiness waits until that association is ready. Workload creation can omit
+  network attachment details to use these defaults. [User; OSAC-1433]
 - **FR-14:** Existing workload traffic policies require tenant-assisted migration where their scope or stateful behavior cannot be represented by a Subnet-level stateless ACL. Tenants can group workloads by intended policy, place each group on a Subnet with the corresponding shared NetworkACL, and add reverse-direction rules where return traffic is required. [User]
 
 ### 3.2 Non-Functional Requirements
 
 - **NFR-1:** Network isolation, ACL enforcement, address assignment, and external access behave consistently for VMaaS, CaaS, and BMaaS workloads. [Jira: OSAC-1433]
-- **NFR-2:** Tenants receive validation errors before persistence or provisioning when a request violates the IPv4-only, same-VirtualNetwork association, single-attachment, or single-hub constraints. [OSAC-1433; User]
+- **NFR-2:** Tenants receive validation errors before persistence or
+  provisioning when a request violates the IPv4-only, same-VirtualNetwork
+  association, exactly-one-ACL-per-Subnet, single-attachment, or single-hub
+  constraints. [OSAC-1433; User]
 
 ## 4. Acceptance Criteria
 
@@ -92,7 +102,9 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - [ ] A tenant can create a NetworkACL with ingress and egress rules that include ALLOW or DENY, order, protocol, optional TCP/UDP destination ports, and an IPv4 CIDR.
 - [ ] Each direction has unique priorities from 1 through 32766; lower values are evaluated first, the first matching rule determines the result, and unmatched traffic is denied.
 - [ ] Reply traffic is evaluated independently and passes only when the reverse direction has a matching rule.
-- [ ] A Subnet can reference exactly one NetworkACL, and one NetworkACL can be associated with multiple Subnets in the same VirtualNetwork.
+- [ ] A Subnet creation request with no ACL or more than one ACL is rejected;
+  a request with exactly one valid ACL succeeds. One NetworkACL can be
+  associated with multiple Subnets in the same VirtualNetwork.
 - [ ] NetworkACL rules and Subnet-to-NetworkACL associations are set at creation and cannot be updated; changes require deleting and recreating affected networking resources.
 - [ ] All resources on one Subnet receive the same ACL policy; same-Subnet traffic is not filtered by that ACL.
 - [ ] Cross-Subnet traffic must pass the source Subnet's egress rules and the destination Subnet's ingress rules.
@@ -100,6 +112,7 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - [ ] Workloads of all three service types can use the same networking resources, and each workload has at most one tenant network attachment.
 - [ ] ExternalIPAttachment supports all three service types for inbound traffic, and NATGateway remains optional for outbound traffic.
 - [ ] Default tenant readiness is not reported until the default NetworkACL is ready and associated with the default Subnet.
+- [ ] The tenant default NetworkACL allows all IPv4 traffic in both directions; return traffic passes because it matches the reverse-direction allow-all rule.
 - [ ] Default-based workload creation stores and returns the resolved Subnet attachment.
 - [ ] Unsupported IPv6, dual-stack, disconnected, and multi-hub configurations are rejected before provisioning.
 - [ ] Existing policies that cannot be represented exactly are migrated through tenant-directed workload grouping and explicit reverse-direction ACL rules.

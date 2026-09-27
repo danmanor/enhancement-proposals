@@ -427,21 +427,22 @@ message SubnetSpec {
 }
 ```
 
-The schema sketch shows the tenant-facing resource relationship. The
-`network_acl` reference is required at Subnet creation and is immutable after
-creation. There is never more than one active ACL association for a Subnet.
-ACL rule lists are also immutable after creation. An ACL cannot be deleted
-while a Subnet references it, and the ACL's VirtualNetwork scope cannot be
-changed. Changing policy requires recreating the affected networking resources.
+The schema sketch shows the tenant-facing resource relationship. The required
+`network_acl` reference is a single immutable reference, and one ACL can be
+shared by multiple Subnets in its VirtualNetwork. ACL rule lists are also
+immutable after creation. An ACL cannot be deleted while a Subnet references
+it, and the ACL's VirtualNetwork scope cannot be changed. Changing policy
+requires recreating the affected networking resources.
 
 ### NetworkACL API and Validation
 
 The public `NetworkACLs` service provides `List`, `Get`, `Create`, and `Delete`
 at `/api/fulfillment/v1/network_acls`. The public `Subnets` service provides
-`List`, `Get`, `Create`, and `Delete`; the required `spec.network_acl` reference
-is supplied at creation. Neither service exposes `Update`. `NetworkACL`
-creation requires a READY parent VirtualNetwork, and Subnet creation must
-reference a READY NetworkACL in the same VirtualNetwork.
+`List`, `Get`, `Create`, and `Delete`; Subnet creation requires exactly one
+`spec.network_acl` reference. Requests with no ACL or more than one ACL are
+rejected before persistence or provisioning. Neither service exposes
+`Update`. `NetworkACL` creation requires a READY parent VirtualNetwork, and
+Subnet creation must reference a READY NetworkACL in the same VirtualNetwork.
 
 Validation rejects duplicate priorities within a direction, priorities
 outside 1..32766, unknown actions or protocols, incomplete or reversed port
@@ -454,10 +455,10 @@ FR-2, FR-4]
 
 The current deployment-level ACL policy is hard-coded to permit all traffic.
 That deployment policy is separate from tenant-managed NetworkACL rules and
-from the tenant default ACL provisioned at onboarding. Tenant default ACL
-behavior is deny-by-default for ingress and permit-by-default for egress; the
-stateless tenant ACL still requires explicit reverse-direction ingress rules
-for any egress replies that must pass.
+from the tenant default ACL provisioned at onboarding. The tenant default ACL
+permits all IPv4 ingress and egress traffic through an allow-all rule in each
+direction. Because it is stateless, each packet is evaluated independently;
+return traffic passes by matching the allow-all rule in the reverse direction.
 
 Creating a tenant-managed NetworkACL does not seed default rules. An ACL with
 empty ingress and egress lists denies all traffic that reaches its Subnet

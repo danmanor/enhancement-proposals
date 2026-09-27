@@ -76,12 +76,12 @@ The design covers three capabilities: default networking (including NATGateway) 
 1. **Cloud Infrastructure Admin creates the NetworkClass with defaults:**
    The NetworkClass is created with the deployment-wide IPv4 CIDRs and
    tenant-default ingress and egress NetworkACL rules before tenant onboarding.
-   The tenant default ACL denies unmatched ingress and permits egress by
-   default. The NetworkClass egress rule set explicitly includes an `ALLOW
-   ALL` rule for `0.0.0.0/0` at priority `32766`; more-specific deny rules use
-   earlier priorities. In the stateless rule model, that egress permit does
-   not allow reply traffic automatically, so reverse-direction ingress rules
-   must be configured for replies that need to pass.
+   The tenant default ACL permits all IPv4 ingress and egress by default. The
+   NetworkClass ingress and egress rule sets each include an `ALLOW ALL` rule
+   for `0.0.0.0/0` at priority `32766`; more-specific deny rules use earlier
+   priorities. The ACL remains stateless, so each direction is evaluated
+   independently; reply traffic passes by matching the allow-all rule in the
+   reverse direction.
    NetworkClass changes follow the unified create/read/delete contract and
    require replacement.
 
@@ -301,8 +301,8 @@ message NetworkClassSpec {
 message NetworkDefaults {
   string virtual_network_cidr = 1;  // e.g., "10.0.0.0/16"
   string ipv4_subnet_cidr = 2;      // e.g., "10.0.1.0/24"
-  repeated NetworkACLRule ingress_rules = 3; // default config leaves this empty
-  // Default config includes ALLOW ALL 0.0.0.0/0 at priority 32766.
+  // Each rule set includes ALLOW ALL 0.0.0.0/0 at priority 32766.
+  repeated NetworkACLRule ingress_rules = 3;
   repeated NetworkACLRule egress_rules = 4;
 }
 
@@ -386,9 +386,9 @@ type NetworkClassSpec struct {
 type NetworkDefaults struct {
     VirtualNetworkCIDR string           `json:"virtualNetworkCIDR,omitempty"`
     IPv4SubnetCIDR     string           `json:"ipv4SubnetCIDR,omitempty"`
-    IngressRules       []NetworkACLRule `json:"ingressRules,omitempty"` // default config leaves this empty
-    // Default config includes ALLOW ALL 0.0.0.0/0 at priority 32766.
-    EgressRules        []NetworkACLRule `json:"egressRules,omitempty"`
+    // Each rule set includes ALLOW ALL 0.0.0.0/0 at priority 32766.
+    IngressRules []NetworkACLRule `json:"ingressRules,omitempty"`
+    EgressRules  []NetworkACLRule `json:"egressRules,omitempty"`
 }
 
 type NetworkACLRule struct {
@@ -591,17 +591,16 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: Default NetworkACL too permissive
 
-**Impact:** The tenant default ACL permits egress unless an earlier rule
-denies it; an overly broad exception may expose workloads to unintended
-outbound access. Unmatched ingress is denied, and return traffic still needs
-an explicit reverse-direction rule. Changing NetworkClass defaults does not
-update existing tenant ACLs.
+**Impact:** The tenant default ACL permits all ingress and egress unless an
+earlier rule denies traffic. Workloads may receive unsolicited inbound
+traffic or initiate outbound connections. Changing NetworkClass defaults does
+not update existing tenant ACLs.
 
-**Mitigation:** Cloud Infrastructure Admin limits ingress exceptions and can
-restrict egress with earlier-priority DENY rules in NetworkClass before tenant
-onboarding. Tightening an existing tenant's policy requires the coordinated
-replacement process in [Default Resource Lifecycle](#default-resource-lifecycle),
-including every Subnet referencing the ACL and its dependent workloads.
+**Mitigation:** Cloud Infrastructure Admin can add earlier-priority DENY rules
+in NetworkClass before tenant onboarding. Tightening an existing tenant's
+policy requires the coordinated replacement process in
+[Default Resource Lifecycle](#default-resource-lifecycle), including every
+Subnet referencing the ACL and its dependent workloads.
 
 **Reviewed by:** Cloud Infrastructure Admin
 
@@ -657,14 +656,15 @@ Resolved: Return error, no resource persisted.
 ### Unit Tests
 
 - fulfillment-service: NetworkClass defaults validation (valid CIDR and rule
-  fields, deny unmatched ingress, and include default egress ALLOW ALL at
-  priority 32766)
+  fields, and include ALLOW ALL rules for both ingress and egress at priority
+  32766)
 - fulfillment-service: resource-specific attachment resolution (resolve omitted or empty fields, fill partial attachments, preserve complete explicit attachments)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
 - fulfillment-service: default resource creation at tenant onboarding (VN, NetworkACL, IPv4 Subnet associated with the ACL, NATGateway, and default labels)
 - fulfillment-service: DefaultNetworkingReady condition tracking (true when VN, NetworkACL, Subnet and association, and NATGateway are READY via feedback; false when any fails)
 - fulfillment-service: NetworkACL defaults validation (rule actions, unique priorities, protocol, optional ports, canonical IPv4 CIDRs)
+- fulfillment-service: default NetworkACL allows all IPv4 ingress and egress through the configured priority-32766 rules
 - osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
@@ -681,7 +681,10 @@ Resolved: Return error, no resource persisted.
 - E2E: verify NetworkACL rules and Subnet associations have no Update operation and remain fixed after creation
 - E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
 - E2E: verify changing NetworkACL rules or Subnet association requires deleting and recreating the affected networking resources
-- E2E: verify an associated NetworkACL cannot be deleted and a Subnet cannot become READY without one active NetworkACL
+- E2E: verify Subnet creation rejects missing or multiple ACL references and
+  succeeds with exactly one valid ACL
+- E2E: verify an associated NetworkACL cannot be deleted while any Subnet
+  references it, and a Subnet cannot become READY without one active ACL
 
 ### Tricky Test Cases
 
