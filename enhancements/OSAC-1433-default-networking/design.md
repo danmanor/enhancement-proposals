@@ -22,7 +22,7 @@ superseded-by:
 
 At tenant onboarding, default networking provisions an IPv4 VirtualNetwork,
 its system-created default NetworkACL, a Subnet associated with that ACL,
-and an optional NATGateway. Every other VirtualNetwork also receives one
+and a NATGateway. Every other VirtualNetwork also receives one
 system-created default NetworkACL, but no Subnet is created automatically.
 A Subnet create request that omits an ACL resolves to the default ACL in that
 same VirtualNetwork; an explicit ACL is preserved after validation. Workload
@@ -99,12 +99,11 @@ The design covers three capabilities: default networking (including NATGateway) 
    The NetworkClass is created with the deployment-wide IPv4 CIDRs and
    provider-default ingress and egress NetworkACL rules before tenant
    onboarding. Every VirtualNetwork receives one default ACL from these rules.
-   The default ACL permits all IPv4 ingress and egress by default. The
-   NetworkClass ingress and egress rule sets each include an `ALLOW ALL` rule
-   for `0.0.0.0/0` at priority `32766`; more-specific deny rules use earlier
-   priorities. The ACL remains stateless, so each direction is evaluated
-   independently; reply traffic passes by matching the allow-all rule in the
-   reverse direction.
+   Each default ACL's ingress and egress rule sets include an `ALLOW ALL`
+   catch-all for `0.0.0.0/0` at priority `32766`; more-specific deny rules in
+   the NetworkClass use earlier priorities and take precedence. The ACL
+   remains stateless, so each direction is evaluated independently; reply
+   traffic passes only when the reverse-direction evaluation allows it.
    NetworkClass changes follow the unified create/read/delete contract and
    require replacement.
 
@@ -340,7 +339,8 @@ message NetworkClassSpec {
 message NetworkDefaults {
   string virtual_network_cidr = 1;  // e.g., "10.0.0.0/16"
   string ipv4_subnet_cidr = 2;      // e.g., "10.0.1.0/24"
-  // Each rule set includes ALLOW ALL 0.0.0.0/0 at priority 32766.
+  // Each rule set includes an ALLOW ALL catch-all at priority 32766;
+  // earlier-priority rules take precedence.
   repeated NetworkACLRule ingress_rules = 3;
   repeated NetworkACLRule egress_rules = 4;
 }
@@ -431,7 +431,8 @@ type NetworkClassSpec struct {
 type NetworkDefaults struct {
     VirtualNetworkCIDR string           `json:"virtualNetworkCIDR,omitempty"`
     IPv4SubnetCIDR     string           `json:"ipv4SubnetCIDR,omitempty"`
-    // Each rule set includes ALLOW ALL 0.0.0.0/0 at priority 32766.
+    // Each rule set includes an ALLOW ALL catch-all at priority 32766;
+    // earlier-priority rules take precedence.
     IngressRules []NetworkACLRule `json:"ingressRules,omitempty"`
     EgressRules  []NetworkACLRule `json:"egressRules,omitempty"`
 }
@@ -507,7 +508,7 @@ type ClusterSpec struct {
   At tenant onboarding, fulfillment-service creates the default VirtualNetwork,
   waits for its default ACL to become READY, then creates the default IPv4
   Subnet without `spec.network_acl`; the service resolves and stores the
-  same-VN default ACL reference. It also creates the optional NATGateway.
+  same-VN default ACL reference. It also creates the default NATGateway.
   This is the same ACL creation and Subnet defaulting behavior used for every
   tenant-created VirtualNetwork and Subnet.
 - **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
@@ -656,10 +657,11 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: Default NetworkACL too permissive
 
-**Impact:** Each VirtualNetwork's default ACL permits all ingress and egress
-unless an earlier rule denies traffic. Workloads may receive unsolicited
-inbound traffic or initiate outbound connections. Changing NetworkClass
-defaults does not update existing default ACLs.
+**Impact:** Each VirtualNetwork's default ACL has an `ALLOW ALL` catch-all at
+priority `32766` for ingress and egress. Earlier-priority rules are evaluated
+first, so configured DENY rules can restrict matching traffic. Workloads may
+receive unsolicited inbound traffic or initiate outbound connections.
+Changing NetworkClass defaults does not update existing default ACLs.
 
 **Mitigation:** Cloud Infrastructure Admin can add earlier-priority DENY rules
 in NetworkClass before tenant onboarding. Tightening an existing tenant's
@@ -721,8 +723,8 @@ Resolved: Return error, no resource persisted.
 ### Unit Tests
 
 - fulfillment-service: NetworkClass defaults validation (valid CIDR and rule
-  fields, and include ALLOW ALL rules for both ingress and egress at priority
-  32766)
+  fields, and include ALLOW ALL catch-all rules for both ingress and egress at
+  priority 32766, with earlier-priority rules evaluated first)
 - fulfillment-service: resource-specific attachment resolution (resolve omitted or empty fields, fill partial attachments, preserve complete explicit attachments)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
@@ -731,7 +733,7 @@ Resolved: Return error, no resource persisted.
   association, NATGateway, and default labels)
 - fulfillment-service: DefaultNetworkingReady condition tracking (true when VN, NetworkACL, Subnet and association, and NATGateway are READY via feedback; false when any fails)
 - fulfillment-service: NetworkACL defaults validation (rule actions, unique priorities, protocol, optional ports, canonical IPv4 CIDRs)
-- fulfillment-service: default NetworkACL allows all IPv4 ingress and egress through the configured priority-32766 rules
+- fulfillment-service: default NetworkACL includes the configured priority-32766 allow-all catch-all in each direction; earlier-priority DENY rules take precedence
 - osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
@@ -965,4 +967,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

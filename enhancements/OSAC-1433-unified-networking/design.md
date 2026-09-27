@@ -483,11 +483,11 @@ FR-2, FR-4]
 The current deployment-level ACL policy is hard-coded to permit all traffic.
 That deployment policy is separate from NetworkACL rules. Each
 VirtualNetwork's default ACL is materialized from the provider-configured
-NetworkClass defaults. Those defaults permit all IPv4 ingress and egress
-through an allow-all rule in each direction; more-specific deny rules may use
-earlier priorities. Because the ACL is stateless, each packet is evaluated
-independently; return traffic passes by matching the allow-all rule in the
-reverse direction.
+NetworkClass defaults. Each direction includes an allow-all catch-all rule
+for `0.0.0.0/0` at priority `32766`; earlier-priority deny rules can restrict
+matching traffic. Because the ACL is stateless, each packet is evaluated
+independently; return traffic passes only when reverse-direction evaluation
+allows it.
 
 Creating a custom NetworkACL does not seed default rules. A custom ACL with
 empty ingress and egress lists denies all traffic that reaches its Subnet
@@ -1720,4 +1720,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
