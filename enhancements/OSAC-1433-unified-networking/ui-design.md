@@ -67,13 +67,15 @@ Pure consumer of the existing private `ExternalIPPools` service
   `useCreateVirtualNetwork()`.
 - **Detail page** (`VirtualNetworkDetailPage`) at `/networking/virtual-networks/:id`,
   with tabs for **Subnets**, **Network ACLs**, **Details**.
-- **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has Subnets,
-  NetworkACLs, or NATGateways.
+- **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has
+  Subnets, custom NetworkACLs, or NATGateways. Its system-created default ACL
+  is removed as part of deleting the VirtualNetwork.
 
 #### NetworkACL Management
 
 - **List:** the VirtualNetwork detail page's **Network ACLs** tab lists the ACLs
-  scoped to that VirtualNetwork. Columns: **Name**, **Associated Subnets**,
+  scoped to that VirtualNetwork. Mark the system-created default ACL with a
+  **Default** badge. Columns: **Name**, **Associated Subnets**,
   **Ingress Rules**, **Egress Rules**, **Status** (`NetworkACLStatusLabel`).
 - **Create form:** **Name**, ingress rule table, and egress rule table. Each
   rule row has **Priority** (1–32766), **Action** (ALLOW or DENY), **Protocol**
@@ -84,14 +86,17 @@ Pure consumer of the existing private `ExternalIPPools` service
   highest priority. Traffic with no matching rule is denied, and the form
   explains that reply traffic needs a reverse-direction rule. ACL details show
   the rules read-only.
-- **Delete:** available only when no Subnet references the ACL; the server
-  returns `FAILED_PRECONDITION` if a reference remains.
+- **Delete:** custom ACLs can be deleted only when no Subnet references them;
+  the server returns `FAILED_PRECONDITION` if a reference remains. A default
+  ACL has no direct Delete action and is removed with its VirtualNetwork.
 
 #### Subnet NetworkACL Association
 
-- **Subnet create form:** requires a NetworkACL selector scoped to the selected
-  VirtualNetwork. The API rejects creation requests with no ACL or more than
-  one ACL reference; the form requires exactly one selected ACL.
+- **Subnet create form:** provides an ACL selector scoped to the selected
+  VirtualNetwork, defaulted to that VN's READY default ACL. A tenant may select
+  one READY custom ACL instead. The API also accepts a request with no ACL
+  field and resolves it to the same-VN default ACL; it rejects multiple ACL
+  references, cross-VN references, or a non-READY ACL.
 - **Subnet list/detail:** show the associated ACL name and status.
 - **Association lifecycle:** the ACL is selected during Subnet creation and
   cannot be changed later. Subnet details show the associated ACL name and
@@ -149,8 +154,10 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | Pool create: empty, malformed, multiple, or overlapping CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | NetworkACL create has duplicate priorities or an invalid rule | Validation error is shown beside the rule row; no create is submitted. |
+| Subnet creation omits an ACL but its VirtualNetwork has no single READY default ACL | Server's `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
 | Subnet creation references an ACL in another VirtualNetwork or a non-READY ACL | Server's `INVALID_ARGUMENT` or `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
-| NetworkACL delete while associated with a Subnet | Server's `FAILED_PRECONDITION` is shown; the ACL remains listed. |
+| Custom NetworkACL delete while associated with a Subnet | Server's `FAILED_PRECONDITION` is shown; the ACL remains listed. |
+| Direct delete of a VirtualNetwork's default ACL | Delete action is not offered; server rejects the request with `FAILED_PRECONDITION`. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
 ## Implementation details
@@ -182,7 +189,10 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
