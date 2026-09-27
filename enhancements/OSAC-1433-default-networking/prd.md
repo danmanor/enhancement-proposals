@@ -112,12 +112,13 @@ dual-stack networking are not supported.
 - **FR-2:** The Cloud Infrastructure Admin configures default networking
   parameters (IPv4 CIDRs and stateless ingress and egress NetworkACL rules) on
   the NetworkClass. Those rules are used for the default ACL created in every
-  VirtualNetwork. Each default ACL permits all IPv4 ingress and
-  egress through an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766` in
-  each direction. Because the ACL is stateless, traffic in each direction is
-  evaluated independently; return traffic passes by matching the
-  reverse-direction allow-all rule. Defaults are required — a NetworkClass
-  without defaults is rejected at creation time. [User]
+  VirtualNetwork. Each default ACL rule set includes an `ALLOW ALL` catch-all
+  rule for `0.0.0.0/0` at priority `32766` in each direction. Earlier-priority
+  NetworkClass rules can override the catch-all. Because the ACL is stateless,
+  traffic in each direction is evaluated independently; reply traffic passes
+  only when the reverse-direction evaluation allows it. Defaults are
+  required — a NetworkClass without defaults is rejected at creation time.
+  [User]
 - **FR-3:** All tenants receive the same default IPv4 CIDR ranges as
   configured on the NetworkClass. Tenants are isolated at the
   network level — the unified networking API provides VirtualNetworks
@@ -206,9 +207,10 @@ dual-stack networking are not supported.
   from the same VirtualNetwork; an explicit single ACL is preserved only when
   READY and scoped to that VirtualNetwork, and multiple ACL references are
   rejected. The resolved reference is stored on the Subnet.
-- [ ] Each VirtualNetwork's default NetworkACL permits all IPv4 ingress and
-  egress with an `ALLOW ALL` rule for `0.0.0.0/0` at priority `32766` in each direction;
-  return traffic passes by matching the reverse-direction allow-all rule
+- [ ] Each VirtualNetwork's default NetworkACL has an `ALLOW ALL` catch-all
+  for `0.0.0.0/0` at priority `32766` in both directions; earlier matching
+  rules take precedence, and reply traffic passes only when the reverse-
+  direction evaluation allows it
 - [ ] Default resources appear in list views with a label identifying
   them as defaults; the ACL default label is scoped to its VirtualNetwork
 - [ ] A VirtualNetwork's system-created default ACL cannot be deleted directly
@@ -257,9 +259,9 @@ dual-stack networking are not supported.
 ### 7.2 Default NetworkACL too permissive
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** Each VirtualNetwork's default policy permits all ingress
-  and egress.
-  Cloud Infrastructure Admin can add earlier-priority DENY rules in the
+- **Mitigation:** The default ACL's priority-32766 allow-all rules match
+  traffic not matched by earlier rules. Cloud Infrastructure Admin can add
+  earlier-priority DENY rules in the
   NetworkClass before tenant onboarding. Changing NetworkClass defaults does
   not update existing tenant ACLs; tightening an existing tenant's policy
   requires the coordinated replacement process in the
@@ -304,4 +306,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind orig
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

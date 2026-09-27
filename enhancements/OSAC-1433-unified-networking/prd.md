@@ -89,10 +89,11 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
   its default NetworkACL, a default Subnet, and a NATGateway from
   provider-configured defaults. Every other VirtualNetwork also receives its
   own default NetworkACL, but no additional Subnet is created automatically.
-  Each VirtualNetwork's default ACL permits all IPv4 ingress and egress by
-  default. The ACL is stateless: each direction is evaluated independently,
-  and return traffic passes by matching the allow-all rule in the reverse
-  direction.
+  Each VirtualNetwork's default ACL includes an `ALLOW ALL` catch-all rule for
+  `0.0.0.0/0` at priority `32766` in each direction. Earlier-priority rules
+  from the NetworkClass can override the catch-all. The ACL is stateless, so
+  each direction is evaluated independently; reply traffic passes only when
+  the reverse-direction evaluation allows it.
   The default Subnet is associated with the default NetworkACL, and tenant
   readiness waits until that association is ready. Workload creation can omit
   network attachment details to use these defaults. [User; OSAC-1433]
@@ -125,9 +126,10 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - [ ] Workloads of all three service types can use the same networking resources, and each workload has at most one tenant network attachment.
 - [ ] ExternalIPAttachment supports all three service types for inbound traffic, and NATGateway remains optional for outbound traffic.
 - [ ] Default tenant readiness is not reported until the default NetworkACL is ready and associated with the default Subnet.
-- [ ] Each VirtualNetwork's default NetworkACL allows all IPv4 traffic in
-  both directions; return traffic passes because it matches the
-  reverse-direction allow-all rule.
+- [ ] Each VirtualNetwork's default NetworkACL includes an `ALLOW ALL`
+  catch-all for `0.0.0.0/0` at priority `32766` in both directions; earlier
+  matching rules take precedence, and reply traffic passes only when the
+  reverse-direction evaluation allows it.
 - [ ] Default-based workload creation stores and returns the resolved Subnet attachment.
 - [ ] Unsupported IPv6, dual-stack, disconnected, and multi-hub configurations are rejected before provisioning.
 - [ ] Existing policies that cannot be represented exactly are migrated through tenant-directed workload grouping and explicit reverse-direction ACL rules.
@@ -151,4 +153,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind orig
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
