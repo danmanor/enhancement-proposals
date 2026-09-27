@@ -32,7 +32,7 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 ### 2.1 Goals
 
 - Tenants use the same VirtualNetwork, Subnet, NetworkACL, and external-access resources across VMaaS, CaaS, and BMaaS.
-- Tenants control ingress and egress traffic for all workloads on a Subnet through ordered, stateless NetworkACL rules.
+- Tenants control ingress and egress traffic for all workloads on a Subnet through stateless NetworkACL rules evaluated by match specificity.
 - Workloads in the three services can share a VirtualNetwork and Subnet while retaining at most one tenant network attachment per workload.
 - Providers select and operate networking implementations without exposing those implementation choices to tenants.
 - Tenants use provider-routable IPv4 addressing in connected deployments.
@@ -61,7 +61,7 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 ### 3.1 Functional Requirements
 
 - **FR-1:** Tenants can create isolated VirtualNetworks and Subnets. Resources in different VirtualNetworks cannot communicate, and resources in the same Subnet share a broadcast domain. [Jira: OSAC-1433]
-- **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, a unique numeric priority from 1 through 32766 within its direction, protocol, an optional TCP or UDP destination-port range, and a canonical IPv4 CIDR. Lower priorities are evaluated first; the first matching rule decides, and traffic that matches no rule is denied. [User]
+- **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, protocol, an optional TCP or UDP destination-port range, and a canonical IPv4 CIDR. In each direction, the effective order is derived from the match fields: longest CIDR prefixes first, then protocol (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port ranges from smallest to largest, with rules matching all ports after port-specific rules. Action and request order do not determine precedence. The first matching rule decides, identical match fields in one direction are rejected, and traffic that matches no rule is denied. [User]
 - **FR-3:** NetworkACLs are stateless. Ingress and egress are evaluated independently, and return traffic requires a matching rule in the reverse direction. [User]
 - **FR-4:** Every VirtualNetwork has one system-created default NetworkACL,
   and the VirtualNetwork is READY only after that default ACL is READY. A
@@ -90,8 +90,8 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
   provider-configured defaults. Every other VirtualNetwork also receives its
   own default NetworkACL, but no additional Subnet is created automatically.
   Each VirtualNetwork's default ACL includes an `ALLOW ALL` catch-all rule for
-  `0.0.0.0/0` at priority `32766` in each direction. Earlier-priority rules
-  from the NetworkClass can override the catch-all. The ACL is stateless, so
+  `0.0.0.0/0` in each direction. More-specific matching rules from the
+  NetworkClass take precedence over this catch-all. The ACL is stateless, so
   each direction is evaluated independently; reply traffic passes only when
   the reverse-direction evaluation allows it.
   The default Subnet is associated with the default NetworkACL, and tenant
@@ -110,8 +110,8 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 ## 4. Acceptance Criteria
 
 - [ ] Resources in different VirtualNetworks cannot communicate; Subnets in the same VirtualNetwork retain Layer 3 connectivity subject to their ingress and egress NetworkACL rules.
-- [ ] A tenant can create a NetworkACL with ingress and egress rules that include ALLOW or DENY, order, protocol, optional TCP/UDP destination ports, and an IPv4 CIDR.
-- [ ] Each direction has unique priorities from 1 through 32766; lower values are evaluated first, the first matching rule determines the result, and unmatched traffic is denied.
+- [ ] A tenant can create a NetworkACL with ingress and egress rules that include ALLOW or DENY, protocol, optional TCP/UDP destination ports, and an IPv4 CIDR.
+- [ ] Each direction derives rule precedence from CIDR prefix length, protocol, and destination-port range; action and request order do not affect precedence, identical match fields are rejected, the first matching rule determines the result, and unmatched traffic is denied.
 - [ ] Reply traffic is evaluated independently and passes only when the reverse direction has a matching rule.
 - [ ] Each VirtualNetwork has exactly one system-created default NetworkACL
   and is not reported READY until that ACL is READY.
@@ -127,9 +127,9 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - [ ] ExternalIPAttachment supports all three service types for inbound traffic, and NATGateway remains optional for outbound traffic.
 - [ ] Default tenant readiness is not reported until the default NetworkACL is ready and associated with the default Subnet.
 - [ ] Each VirtualNetwork's default NetworkACL includes an `ALLOW ALL`
-  catch-all for `0.0.0.0/0` at priority `32766` in both directions; earlier
-  matching rules take precedence, and reply traffic passes only when the
-  reverse-direction evaluation allows it.
+  catch-all for `0.0.0.0/0` in both directions; more-specific matching rules
+  take precedence, and reply traffic passes only when the reverse-direction
+  evaluation allows it.
 - [ ] Default-based workload creation stores and returns the resolved Subnet attachment.
 - [ ] Unsupported IPv6, dual-stack, disconnected, and multi-hub configurations are rejected before provisioning.
 - [ ] Existing policies that cannot be represented exactly are migrated through tenant-directed workload grouping and explicit reverse-direction ACL rules.

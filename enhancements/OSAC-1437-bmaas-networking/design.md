@@ -190,12 +190,12 @@ Same as VMaaS/CaaS — the networking API is uniform.
 2. **Create NetworkACL:**
    ```bash
    osac create network-acl --virtual-network my-net --name my-acl \
-     --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
-     --ingress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
-     --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
-     --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
-   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied. The complete rule set is fixed at ACL creation; changing policy requires recreating affected networking resources.
+   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic is denied. The complete rule set is fixed at ACL creation; changing policy requires recreating affected networking resources.
    Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
 
 3. **Create Subnet:**
@@ -642,7 +642,7 @@ This feature inherits the existing security model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent BaremetalInstance
 - No new authentication or authorization changes
 - The NetworkACL associated with the BM's Subnet controls traffic uniformly for every workload attached to that Subnet; it is not carried in the BM attachment
-- Ingress and egress rules are evaluated independently in ascending priority order; the first matching rule allows or denies traffic and unmatched traffic is denied
+- Ingress and egress rules are evaluated independently using the shared match-specificity order; the first matching rule allows or denies traffic and unmatched traffic is denied
 - The ACL is stateless, so return traffic requires an explicit reverse-direction rule
 - Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
@@ -775,7 +775,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with a second `--network-attachment`, verify the CLI and API return a maximum-one error
-- E2E: verify NetworkACL priority ordering, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
+- E2E: verify NetworkACL specificity-based matching, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
 - E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after `reconcileReboot` sets `NetworkHandoffComplete=True`, matches port MAC to the tenant-network IP, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 - E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network

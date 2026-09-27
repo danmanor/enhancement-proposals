@@ -128,7 +128,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### NetworkACL Policy
 
-- **FR-13:** Bare-metal server traffic follows the NetworkACL associated with its Subnet. Each Subnet has exactly one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently in ascending priority order; the first matching rule allows or denies traffic, and traffic with no matching rule is denied. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. The same policy applies to every workload on the Subnet. [User]
+- **FR-13:** Bare-metal server traffic follows the NetworkACL associated with its Subnet. Each Subnet has exactly one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule is denied. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. The same policy applies to every workload on the Subnet. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -149,7 +149,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] Creating a bare-metal server with more than one network attachment returns a maximum-one error
 - [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
 - [ ] External IP attachment with bare-metal server target routes inbound traffic to the server's primary attachment IP
-- [ ] Bare-metal traffic uses the first matching NetworkACL rule by priority, unmatched traffic is denied, and return traffic requires an explicit reverse-direction rule
+- [ ] Bare-metal traffic uses the first matching NetworkACL rule under the shared match-specificity order, unmatched traffic is denied, and return traffic requires an explicit reverse-direction rule
 
 ## 6. Assumptions
 

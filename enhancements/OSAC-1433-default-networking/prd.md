@@ -113,8 +113,8 @@ dual-stack networking are not supported.
   parameters (IPv4 CIDRs and stateless ingress and egress NetworkACL rules) on
   the NetworkClass. Those rules are used for the default ACL created in every
   VirtualNetwork. Each default ACL rule set includes an `ALLOW ALL` catch-all
-  rule for `0.0.0.0/0` at priority `32766` in each direction. Earlier-priority
-  NetworkClass rules can override the catch-all. Because the ACL is stateless,
+  rule for `0.0.0.0/0` in each direction. More-specific NetworkClass rules can
+  override the catch-all. Because the ACL is stateless,
   traffic in each direction is evaluated independently; reply traffic passes
   only when the reverse-direction evaluation allows it. Defaults are
   required — a NetworkClass without defaults is rejected at creation time.
@@ -208,8 +208,8 @@ dual-stack networking are not supported.
   READY and scoped to that VirtualNetwork, and multiple ACL references are
   rejected. The resolved reference is stored on the Subnet.
 - [ ] Each VirtualNetwork's default NetworkACL has an `ALLOW ALL` catch-all
-  for `0.0.0.0/0` at priority `32766` in both directions; earlier matching
-  rules take precedence, and reply traffic passes only when the reverse-
+  for `0.0.0.0/0` in both directions; more-specific matching rules take
+  precedence, and reply traffic passes only when the reverse-
   direction evaluation allows it
 - [ ] Default resources appear in list views with a label identifying
   them as defaults; the ACL default label is scoped to its VirtualNetwork
@@ -259,9 +259,9 @@ dual-stack networking are not supported.
 ### 7.2 Default NetworkACL too permissive
 
 - **Owner:** Cloud Infrastructure Admin
-- **Mitigation:** The default ACL's priority-32766 allow-all rules match
-  traffic not matched by earlier rules. Cloud Infrastructure Admin can add
-  earlier-priority DENY rules in the
+- **Mitigation:** The default ACL's allow-all rules for `0.0.0.0/0` match
+  traffic not matched by more-specific rules. Cloud Infrastructure Admin can
+  add more-specific DENY rules in the
   NetworkClass before tenant onboarding. Changing NetworkClass defaults does
   not update existing tenant ACLs; tightening an existing tenant's policy
   requires the coordinated replacement process in the

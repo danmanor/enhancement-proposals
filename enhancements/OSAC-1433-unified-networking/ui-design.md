@@ -78,14 +78,17 @@ Pure consumer of the existing private `ExternalIPPools` service
   **Default** badge. Columns: **Name**, **Associated Subnets**,
   **Ingress Rules**, **Egress Rules**, **Status** (`NetworkACLStatusLabel`).
 - **Create form:** **Name**, ingress rule table, and egress rule table. Each
-  rule row has **Priority** (1–32766), **Action** (ALLOW or DENY), **Protocol**
-  (ALL, TCP, UDP, ICMP), optional TCP/UDP **Destination Port Range**, and an
-  IPv4 **CIDR**. The UI rejects duplicate priorities within one direction and
-  validates port endpoints and canonical IPv4 CIDRs before submission. The
-  rule set is immutable after creation; order is displayed from lowest to
-  highest priority. Traffic with no matching rule is denied, and the form
-  explains that reply traffic needs a reverse-direction rule. ACL details show
-  the rules read-only.
+  rule row has **Action** (ALLOW or DENY), **Protocol** (ALL, TCP, UDP, ICMP),
+  optional TCP/UDP **Destination Port Range**, and an IPv4 **CIDR**. The UI
+  rejects duplicate match fields within one direction and validates port
+  endpoints and canonical IPv4 CIDRs before submission. Rule precedence is
+  derived from match specificity: longest CIDR prefix first, then protocol
+  (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port range from smallest
+  to largest; no-port rules follow port-specific rules. Action and input
+  order do not affect precedence. The rule set is immutable after creation,
+  and the UI displays rules in effective evaluation order. Traffic with no
+  matching rule is denied, and the form explains that reply traffic needs a
+  reverse-direction rule. ACL details show the rules read-only.
 - **Delete:** custom ACLs can be deleted only when no Subnet references them;
   the server returns `FAILED_PRECONDITION` if a reference remains. A default
   ACL has no direct Delete action and is removed with its VirtualNetwork.

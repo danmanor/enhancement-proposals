@@ -100,8 +100,8 @@ The design covers three capabilities: default networking (including NATGateway) 
    provider-default ingress and egress NetworkACL rules before tenant
    onboarding. Every VirtualNetwork receives one default ACL from these rules.
    Each default ACL's ingress and egress rule sets include an `ALLOW ALL`
-   catch-all for `0.0.0.0/0` at priority `32766`; more-specific deny rules in
-   the NetworkClass use earlier priorities and take precedence. The ACL
+   catch-all for `0.0.0.0/0`; more-specific matching rules in the NetworkClass
+   take precedence based on their CIDR, protocol, and port match fields. The ACL
    remains stateless, so each direction is evaluated independently; reply
    traffic passes only when the reverse-direction evaluation allows it.
    NetworkClass changes follow the unified create/read/delete contract and
@@ -339,19 +339,18 @@ message NetworkClassSpec {
 message NetworkDefaults {
   string virtual_network_cidr = 1;  // e.g., "10.0.0.0/16"
   string ipv4_subnet_cidr = 2;      // e.g., "10.0.1.0/24"
-  // Each rule set includes an ALLOW ALL catch-all at priority 32766;
-  // earlier-priority rules take precedence.
+  // Each rule set includes an ALLOW ALL catch-all for 0.0.0.0/0;
+  // more-specific matching rules take precedence.
   repeated NetworkACLRule ingress_rules = 3;
   repeated NetworkACLRule egress_rules = 4;
 }
 
 message NetworkACLRule {
   NetworkACLAction action = 1; // ALLOW or DENY
-  uint32 priority = 2;         // unique per direction, 1..32766
-  Protocol protocol = 3;       // ALL, TCP, UDP, or ICMP
-  optional int32 port_from = 4; // optional destination port range; TCP/UDP only
-  optional int32 port_to = 5;
-  string ipv4_cidr = 6;        // ingress source or egress destination
+  Protocol protocol = 2;       // ALL, TCP, UDP, or ICMP
+  optional int32 port_from = 3; // optional destination port range; TCP/UDP only
+  optional int32 port_to = 4;
+  string ipv4_cidr = 5;        // ingress source or egress destination
 }
 ```
 
@@ -431,15 +430,14 @@ type NetworkClassSpec struct {
 type NetworkDefaults struct {
     VirtualNetworkCIDR string           `json:"virtualNetworkCIDR,omitempty"`
     IPv4SubnetCIDR     string           `json:"ipv4SubnetCIDR,omitempty"`
-    // Each rule set includes an ALLOW ALL catch-all at priority 32766;
-    // earlier-priority rules take precedence.
+    // Each rule set includes an ALLOW ALL catch-all for 0.0.0.0/0;
+    // more-specific matching rules take precedence.
     IngressRules []NetworkACLRule `json:"ingressRules,omitempty"`
     EgressRules  []NetworkACLRule `json:"egressRules,omitempty"`
 }
 
 type NetworkACLRule struct {
     Action      string `json:"action"` // ALLOW or DENY
-    Priority    uint32 `json:"priority"` // unique per direction, 1..32766
     Protocol    string `json:"protocol"` // ALL, TCP, UDP, or ICMP; case-sensitive, lowercase values are rejected
     PortFrom    *int32 `json:"portFrom,omitempty"` // optional TCP/UDP destination range
     PortTo      *int32 `json:"portTo,omitempty"`
@@ -657,14 +655,14 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: Default NetworkACL too permissive
 
-**Impact:** Each VirtualNetwork's default ACL has an `ALLOW ALL` catch-all at
-priority `32766` for ingress and egress. Earlier-priority rules are evaluated
-first, so configured DENY rules can restrict matching traffic. Workloads may
-receive unsolicited inbound traffic or initiate outbound connections.
+**Impact:** Each VirtualNetwork's default ACL has an `ALLOW ALL` catch-all for
+`0.0.0.0/0` in ingress and egress. More-specific matching DENY rules take
+precedence over this broad catch-all, so configured rules can restrict traffic.
+Workloads may receive unsolicited inbound traffic or initiate outbound connections.
 Changing NetworkClass defaults does not update existing default ACLs.
 
-**Mitigation:** Cloud Infrastructure Admin can add earlier-priority DENY rules
-in NetworkClass before tenant onboarding. Tightening an existing tenant's
+**Mitigation:** Cloud Infrastructure Admin can add more-specific DENY rules in
+NetworkClass before tenant onboarding. Tightening an existing tenant's
 policy requires the coordinated replacement process in
 [Default Resource Lifecycle](#default-resource-lifecycle), including every
 Subnet referencing the ACL and its dependent workloads.
@@ -723,8 +721,8 @@ Resolved: Return error, no resource persisted.
 ### Unit Tests
 
 - fulfillment-service: NetworkClass defaults validation (valid CIDR and rule
-  fields, and include ALLOW ALL catch-all rules for both ingress and egress at
-  priority 32766, with earlier-priority rules evaluated first)
+  fields, and include ALLOW ALL catch-all rules for `0.0.0.0/0` for both
+  ingress and egress, with more-specific matches taking precedence)
 - fulfillment-service: resource-specific attachment resolution (resolve omitted or empty fields, fill partial attachments, preserve complete explicit attachments)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - fulfillment-service: capacity exhaustion error (return error, resource not persisted)
@@ -732,8 +730,8 @@ Resolved: Return error, no resource persisted.
   its automatic default NetworkACL, IPv4 Subnet with the resolved ACL
   association, NATGateway, and default labels)
 - fulfillment-service: DefaultNetworkingReady condition tracking (true when VN, NetworkACL, Subnet and association, and NATGateway are READY via feedback; false when any fails)
-- fulfillment-service: NetworkACL defaults validation (rule actions, unique priorities, protocol, optional ports, canonical IPv4 CIDRs)
-- fulfillment-service: default NetworkACL includes the configured priority-32766 allow-all catch-all in each direction; earlier-priority DENY rules take precedence
+- fulfillment-service: NetworkACL defaults validation (rule actions, duplicate match fields, protocol, optional ports, canonical IPv4 CIDRs)
+- fulfillment-service: default NetworkACL includes the configured allow-all catch-all in each direction; more-specific DENY rules take precedence independent of input order
 - osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests

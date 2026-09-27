@@ -126,7 +126,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### NetworkACL Policy
 
-- **FR-12:** Cluster traffic follows the NetworkACL associated with its Subnet, uniformly across all node sets. Each Subnet has exactly one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently in ascending priority order; the first matching rule allows or denies traffic, and traffic with no matching rule is denied. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. [User]
+- **FR-12:** Cluster traffic follows the NetworkACL associated with its Subnet, uniformly across all node sets. Each Subnet has exactly one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule is denied. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -143,7 +143,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
-- [ ] Cluster traffic uses the first matching NetworkACL rule by priority, unmatched traffic is denied, and return traffic requires an explicit reverse-direction rule
+- [ ] Cluster traffic uses the first matching NetworkACL rule under the shared match-specificity order, unmatched traffic is denied, and return traffic requires an explicit reverse-direction rule
 
 ## 6. Assumptions
 

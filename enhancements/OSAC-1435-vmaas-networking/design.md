@@ -98,14 +98,14 @@ ComputeInstance already participates in the networking API. Today's flow:
 2. **Tenant creates NetworkACL:**
    ```bash
    osac create network-acl --virtual-network my-net --name my-acl \
-     --ingress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
-     --ingress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
-     --egress-rule "action=ALLOW,priority=100,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
-     --egress-rule "action=ALLOW,priority=110,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=198.51.100.0/24" \
+     --ingress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
+     --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
    - NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with the reverse-direction rules needed for both reply paths. Replace the documentation CIDRs with trusted deployment ranges.
-   - The NetworkACL has independent ingress and egress rules. Rules contain an allow or deny action, priority, protocol, optional TCP/UDP destination port range, and IPv4 CIDR.
-   - Lower priority numbers are evaluated first; the first matching rule decides the result, and unmatched traffic is denied.
+   - The NetworkACL has independent ingress and egress rules. Rules contain an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR.
+   - Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic is denied.
    - The ACL is stateless. Every allowed connection needs explicit rules in both directions; the reverse rules above permit response packets to their destination ephemeral ports.
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
    - NetworkACL rule lists are fixed at creation. Changing policy requires deleting and recreating the affected networking resources; workload attachments are also immutable.
@@ -313,7 +313,7 @@ This feature inherits the existing tenant isolation model:
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
 - The NetworkACL associated with the VM's Subnet applies uniformly to every workload on that Subnet; it is not stored on the VM attachment
-- Ingress and egress are evaluated independently by priority, and the first matching rule allows or denies traffic; unmatched traffic is denied
+- Ingress and egress are evaluated independently using the shared match-specificity order; the first matching rule allows or denies traffic, and unmatched traffic is denied
 - The ACL is stateless, so return traffic requires an explicit reverse-direction rule
 - Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
@@ -431,7 +431,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
 - E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route and the Subnet's NetworkACL governs its traffic
-- E2E: verify priority ordering, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and independent source-egress/destination-ingress checks across Subnets
+- E2E: verify specificity-based matching, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and independent source-egress/destination-ingress checks across Subnets
 
 ### Tricky Test Cases
 

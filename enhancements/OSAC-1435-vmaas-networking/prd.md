@@ -93,7 +93,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### NetworkACL Policy
 
-- **FR-8:** A VM receives the traffic policy of its Subnet's associated NetworkACL; each Subnet has exactly one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Tenants configure this policy on the Subnet and it applies uniformly to all workloads attached to that Subnet. Ingress and egress rules are evaluated independently in ascending priority order, the first matching rule allows or denies traffic, and traffic with no matching rule is denied. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. [User]
+- **FR-8:** A VM receives the traffic policy of its Subnet's associated NetworkACL; each Subnet has exactly one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Tenants configure this policy on the Subnet and it applies uniformly to all workloads attached to that Subnet. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule is denied. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -111,7 +111,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
 - [ ] Creating a VM with an omitted or empty attachment list receives the tenant default Subnet, and its associated NetworkACL governs traffic
 - [ ] Creating a VM with a partial single attachment defaults only its missing subnet; its resolved Subnet's NetworkACL governs traffic
-- [ ] Ingress and egress use the first matching rule by priority, unmatched traffic is denied, and return traffic requires an explicit reverse-direction rule
+- [ ] Ingress and egress use the first matching rule under the shared match-specificity order, unmatched traffic is denied, and return traffic requires an explicit reverse-direction rule
 
 ## 6. Assumptions
 
