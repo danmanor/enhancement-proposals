@@ -121,7 +121,7 @@ explicitly associated NetworkACL rules.
 - The raw permit-all baseline is not treated as enforcement of the deployment
   default action; the mismatched backend is rejected before API traffic can use it.
 
-### FR-2: Fabric-manager-agnostic networking (future after NetworkACL support)
+### FR-2: Fabric-manager-agnostic networking (deferred until policy enforcement)
 
 These scenarios are future acceptance criteria. Their Ready outcomes are valid
 only after this backend enforces the deployment default action for every Subnet
@@ -276,7 +276,7 @@ traffic.
 - Direct traffic to the other private address receives no successful response.
 - Each namespace contains only its own VirtualNetwork routing state.
 
-### FR-4: Automatic IP assignment (future after NetworkACL support)
+### FR-4: Automatic IP assignment (deferred until policy enforcement)
 
 #### TC-FR4-01: Assign a DHCP address to a bare-metal attachment
 
@@ -419,7 +419,7 @@ traffic.
 - The daemon restarts with the preserved lease and the same MAC/Subnet receives
   the same valid address without a duplicate lease.
 
-### FR-5: Inbound external access (future after NetworkACL support)
+### FR-5: Inbound external access (deferred until policy enforcement)
 
 #### TC-FR5-01: Create DNAT after the target address is ready
 
@@ -459,7 +459,7 @@ traffic.
   the flow. An associated ACL must be active; when no ACL is associated, the
   deployment default action decides whether the flow is permitted.
 
-### FR-6: Outbound external connectivity (future after NetworkACL support)
+### FR-6: Outbound external connectivity (deferred until policy enforcement)
 
 #### TC-FR6-01: SNAT permitted egress through the NATGateway ExternalIP
 
@@ -520,7 +520,7 @@ traffic.
   the Subnet VLAN, gateway, or DHCP state is released.
 - The NATGateway remains usable for the first Subnet throughout the churn.
 
-### FR-7: External IP pools (future after NetworkACL support)
+### FR-7: External IP pools (deferred until policy enforcement)
 
 #### TC-FR7-01: Allocate an ExternalIP from the agentless state-file pool
 
@@ -632,7 +632,7 @@ traffic.
 - Concurrent writers serialize on the stable sidecar lock and do not duplicate
   an ExternalIP or release capacity twice.
 
-### FR-8: Networking across all services (future after NetworkACL support)
+### FR-8: Networking across all services (deferred until policy enforcement)
 
 #### TC-FR8-01: Perform BMF port bind and unbind through the generic contract
 
@@ -694,7 +694,7 @@ traffic.
   change.
 - Full service provisioning remains assigned to OSAC-1611 and OSAC-3665.
 
-### FR-9: Failure visibility (future after NetworkACL support)
+### FR-9: Failure visibility (deferred until policy enforcement)
 
 #### TC-FR9-01: Surface a switch-port or VLAN failure
 
@@ -771,7 +771,7 @@ traffic.
 - New routes are advertised only after the restored data path is verified, and
   resources return to Ready after reconciliation.
 
-### FR-10: Lifecycle cleanup (future after NetworkACL support)
+### FR-10: Lifecycle cleanup (deferred until policy enforcement)
 
 #### TC-FR10-01: Remove DNAT before releasing an ExternalIP
 
@@ -893,7 +893,7 @@ traffic.
   consumer reservation remains held until the service acknowledges cleanup.
 - Pool capacity increases only after the reservation reaches `RELEASED`.
 
-### NFR-1: IPv4-only capability (future after NetworkACL support)
+### NFR-1: IPv4-only capability (deferred until policy enforcement)
 
 #### TC-NFR1-01: Reject unsupported IPv6 and dual-stack requests
 
@@ -925,7 +925,8 @@ traffic.
 ##### Preconditions
 
 - `agentless_net` is Ready with IPv4 capability in a future supported
-  implementation, after mandatory NetworkACL enforcement.
+  implementation, after it enforces the deployment default action on every
+  Subnet and rules for any explicitly associated NetworkACL.
 - A Ready VirtualNetwork has a supernet containing the candidate Subnet CIDRs.
 
 ##### Steps
@@ -945,7 +946,7 @@ traffic.
 - The `/30` request is accepted with `10.20.2.5` as the gateway and the
   remaining usable address available to DHCP.
 
-### NFR-2: physical fabric manager parity (future after NetworkACL support)
+### NFR-2: physical fabric manager parity (future after effective Subnet policy enforcement)
 
 #### TC-NFR2-01: Compare core API behavior with the physical fabric manager backend
 
@@ -966,7 +967,7 @@ traffic.
 
 ##### Expected Results
 
-- After mandatory NetworkACL enforcement is implemented, resource shapes and
+- After effective Subnet policy enforcement is implemented, resource shapes and
   tenant-visible status fields match the existing API contract.
 - Same-Subnet, permitted cross-Subnet, and topology-isolation outcomes match
   for the in-scope backend behavior.
@@ -995,7 +996,7 @@ traffic.
 
 ##### Expected Results
 
-- After mandatory NetworkACL enforcement is implemented, both backends expose
+- After effective Subnet policy enforcement is implemented, both backends expose
   the same in-scope resource and status behavior.
 - Inbound traffic reaches the target only through its ExternalIP after the
   attachment is Ready.
@@ -1091,4 +1092,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind or
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -120,7 +120,8 @@ managed-switch infrastructure, limiting where the platform can run.
 - As a Cloud Infrastructure Admin, I want to select the networking backend
   through deployment configuration, so that backend choice is consistent and
   requires no tenant-facing API change. This backend is unavailable for supported
-  selection until it implements mandatory NetworkACL enforcement. [Clarify: D7]
+  selection until it enforces the deployment default action on every Subnet
+  and the rules of any explicitly associated NetworkACL. [Clarify: D7]
 - As a Cloud Infrastructure Admin, I want external IP ranges I define to be usable
   for tenant external access with the agentless VLAN backend, so that inbound and
   outbound external connectivity works through the supported deployment path.
@@ -278,10 +279,11 @@ managed-switch infrastructure, limiting where the platform can run.
   claim API-Ready Subnets, API-ready workload attachments, or NetworkACL
   enforcement by this backend.
 
-### Future Acceptance After NetworkACL Support
+### Future Acceptance After Effective Subnet Policy Enforcement
 
 The following criteria are not met by this milestone. They become eligible for
-acceptance only after this backend implements NetworkACL enforcement and can be
+acceptance only after this backend enforces the deployment default action on
+every Subnet, enforces rules for explicitly associated NetworkACLs, and can be
 selected as a supported fabric manager.
 
 - [ ] A bare-metal server or cluster node attached to a Ready Subnet receives an
