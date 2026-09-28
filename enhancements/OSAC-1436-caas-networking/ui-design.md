@@ -76,7 +76,7 @@ component in `libs/ui-components/` that both adapters consume:
 Extends `ClusterNetworkingStep` (`wizard/adapters/cluster/`) with
 `network_attachment` pickers above the existing `pod_cidr`/`service_cidr`
 fields. All new fields are optional — when omitted, the fulfillment-service
-applies the tenant's default Subnet and its associated NetworkACL policy
+applies the tenant's default Subnet; an optional ACL association refines the deployment default policy, which otherwise decides unmatched traffic
 ([Default Networking PRD](/enhancements/OSAC-1433-default-networking/prd.md)).
 
 The step is split into two visually distinct sections using
@@ -87,7 +87,7 @@ The step is split into two visually distinct sections using
 - **Use tenant default network** (`SwitchField`): toggle at the top of the
   section. Default: on. When enabled, VN/Subnet pickers are hidden — the
   fulfillment-service uses the tenant's default VirtualNetwork and Subnet;
-  the Subnet's NetworkACL supplies its policy. When disabled, the VN → Subnet
+  any ACL explicitly associated with the Subnet refines the deployment default policy; otherwise the deployment default action applies. When disabled, the VN → Subnet
   picker cascade is shown for custom network selection. This matches the bare metal wizard
   pattern and will also be added to the VM wizard.
 
@@ -102,13 +102,14 @@ adapter's Formik paths:
 
 - **Subnet** (`SelectField`): loads from `useSubnets()` filtered by
   `this.spec.virtual_network.name == "<selected-vn-name>"`. Disabled until a
-  VirtualNetwork is selected. Displays Name, IPv4 CIDR, and the associated
-  NetworkACL name and status as read-only context. Only a READY Subnet with a
-  READY associated NetworkACL can be selected. Optional when VN is also empty;
+  VirtualNetwork is selected. Displays Name and IPv4 CIDR, plus the associated NetworkACL name and
+  status when present; otherwise it shows the deployment default ACL action.
+  Any READY Subnet can be selected; if an ACL is associated, that ACL must
+  also be READY. Optional when VN is also empty;
   required when a VN is selected. Auto-selects when the filtered list returns
   one option.
 
-The selected Subnet determines the NetworkACL policy for the entire cluster.
+The selected Subnet determines the policy boundary for the entire cluster: an associated NetworkACL refines the deployment default action, while a Subnet without an ACL uses that action for unmatched traffic.
 The workload attachment contains only the Subnet reference; it has no ACL
 selector or policy field.
 
@@ -270,7 +271,7 @@ Extends the **External IP** list page (`ExternalIpsListPage`) and the
 
 | Scenario | UI behavior |
 |---|---|
-| Cluster create: selected Subnet or its associated NetworkACL is not Ready | Server's `FAILED_PRECONDITION` shown as form-level error on Networking step. |
+| Cluster create: selected Subnet is not READY or its explicitly associated NetworkACL is not READY | Server's `FAILED_PRECONDITION` shown as form-level error on Networking step. |
 | Cluster create: ExternalIPPool exhausted | Server's `RESOURCE_EXHAUSTED` shown as form-level error on Review step. |
 | Cluster create: no default Subnet configured | Server's `FAILED_PRECONDITION` shown as form-level error when network_attachment omitted. |
 | Cluster create: BareMetalInstanceType missing fabric port | Server's `INVALID_ARGUMENT` shown as form-level error on Review step. |
@@ -283,9 +284,7 @@ Extends the **External IP** list page (`ExternalIpsListPage`) and the
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
 The selected Virtual Network only filters the Subnet picker; the create
-request sends the selected Subnet reference. The server validates that the
-Subnet and its associated NetworkACL are READY, but cannot compare the Subnet
-with the UI-only Virtual Network selection.
+request sends the selected Subnet reference. The server validates that the Subnet is READY and, if it has an ACL association, that the ACL is READY. It also validates the Subnet's parent VirtualNetwork; it does not rely on the UI-only selection for that check.
 
 ## Implementation Details
 
@@ -427,7 +426,7 @@ Add to `createMockConnectTransport.ts`:
 | VN selection filters Subnet list | Options update on VN change |
 | Clearing VN resets Subnet value | Formik value cleared |
 | Single-option list auto-selects | Value auto-selected |
-| Selected Subnet has no READY ACL association | Subnet cannot be selected and the reason is shown |
+| Selected READY Subnet has no ACL association | Subnet can be selected; the deployment default ACL action is shown as its unmatched-traffic policy |
 | `allOptional={true}` with all pickers empty | No errors |
 | `allOptional={false}` with VN empty | Validation error |
 | Loading and error states | Pickers disabled during load; error on failure |
@@ -449,10 +448,10 @@ Add to `createMockConnectTransport.ts`:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

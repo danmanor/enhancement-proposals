@@ -20,18 +20,18 @@ superseded-by:
 
 # Default Networking — Simplified Resource Creation
 
-At tenant onboarding, default networking provisions an IPv4 VirtualNetwork,
-its system-created default NetworkACL, a Subnet associated with that ACL,
-and a NATGateway. Every other VirtualNetwork also receives one
-system-created default NetworkACL, but no Subnet is created automatically.
-A Subnet create request that omits an ACL resolves to the default ACL in that
-same VirtualNetwork; an explicit ACL is preserved after validation. Workload
-attachments can use the tenant's default Subnet, auto ExternalIP provisioning
-is available, and auto-created external-access resources are cleaned up on
-deletion. IPv6 and dual-stack networking are not supported. Networking
-resources use read, create, and delete operations; NetworkACL rules, Subnet
-associations, address configuration, and workload attachments are immutable
-after creation.
+At tenant onboarding, the system provisions a default IPv4 VirtualNetwork,
+Subnet, and NATGateway. The Subnet has no NetworkACL association unless one
+was explicitly selected at creation; there is no tenant or VirtualNetwork
+default ACL resource. The deployment's required default ACL action, configured
+on NetworkClass as `PERMIT` or `DENY`, decides traffic when no associated ACL
+rule matches or a Subnet has no ACL. Tenants may create a NetworkACL before a
+Subnet and associate that ACL with the Subnet. Workload attachments can use
+the tenant's default Subnet, auto ExternalIP provisioning is available, and
+auto-created external-access resources are cleaned up on deletion. IPv6 and
+dual-stack networking are not supported. Networking resources use read,
+create, and delete operations; NetworkACL rules, Subnet associations, address
+configuration, and workload attachments are immutable after creation.
 
 The current workload contract is at most one tenant network attachment for
 VMaaS, BMaaS, and CaaS. VMaaS and BMaaS keep their plural
@@ -48,13 +48,13 @@ This document expands the [Unified Networking EP](/enhancements/OSAC-1433-unifie
 with default networking automation and simplified resource creation. It
 inherits the [Unified Networking deployment support boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
 default networking supports connected deployments only. At tenant creation,
-the system provisions a default VirtualNetwork, its default NetworkACL, an
-IPv4 Subnet associated with that ACL, and a NATGateway based on NetworkClass
-configuration. Every other tenant VirtualNetwork also receives its own
-default NetworkACL; the tenant default Subnet is created only in the default
-VirtualNetwork. ComputeInstance, Cluster, and BaremetalInstance resources can
-omit their network attachment field and use the tenant default Subnet. Auto
-ExternalIP modes enable fully connected resources in one API call. See the
+the system provisions a default VirtualNetwork, an IPv4 Subnet with no ACL
+association, and a NATGateway based on NetworkClass configuration. The
+NetworkClass also requires one deployment-wide ACL default action, shared by
+all tenants and VirtualNetworks. No default NetworkACL resource is created.
+ComputeInstance, Cluster, and BaremetalInstance resources can omit their
+network attachment field and use the tenant default Subnet. Auto ExternalIP
+modes enable fully connected resources in one API call. See the
 [PRD](prd.md) for requirements.
 
 Default networking also inherits the [Unified Networking hub support
@@ -68,17 +68,21 @@ explicitly specifies them.
 
 ## Motivation
 
-A reachable resource in OSAC requires networking resources: VirtualNetwork, NetworkACL, Subnet, the resource itself, ExternalIP, and ExternalIPAttachment. Default networking eliminates this friction — a single create command produces a reachable instance by leveraging tenant defaults provisioned at onboarding.
+A reachable resource in OSAC requires networking resources: VirtualNetwork,
+Subnet, the resource itself, ExternalIP, and ExternalIPAttachment; a custom
+NetworkACL is optional. Default networking eliminates this friction — a
+single create command produces a reachable instance by using tenant defaults
+provisioned at onboarding and the deployment-wide fallback policy.
 
 ### Goals
 
 - Single-call resource creation with sensible networking defaults
-- Default networking resources (VN, IPv4 Subnet, NetworkACL, NATGateway) provisioned at tenant onboarding
+- Default networking resources (VN, IPv4 Subnet, NATGateway) provisioned at tenant onboarding; the deployment-wide NetworkACL default action is required on NetworkClass
 - Optional resource-specific network attachment field on all resource types, with at most one tenant attachment per workload
 - Auto ExternalIP mode for inbound connectivity
 - Auto-cleanup of auto-created resources on deletion
 - Tenant-scoped default resources (visible and managed through the unified
-  read/create/delete lifecycle; ACL rules and Subnet association are fixed at creation)
+  read/create/delete lifecycle; any explicit Subnet-to-NetworkACL association is fixed at creation)
 
 ### Non-Goals
 
@@ -96,14 +100,12 @@ The design covers three capabilities: default networking (including NATGateway) 
 #### Default Networking at Tenant Onboarding
 
 1. **Cloud Infrastructure Admin creates the NetworkClass with defaults:**
-   The NetworkClass is created with the deployment-wide IPv4 CIDRs and
-   provider-default ingress and egress NetworkACL rules before tenant
-   onboarding. Every VirtualNetwork receives one default ACL from these rules.
-   Each default ACL's ingress and egress rule sets include an `ALLOW ALL`
-   catch-all for `0.0.0.0/0`; more-specific matching rules in the NetworkClass
-   take precedence based on their CIDR, protocol, and port match fields. The ACL
-   remains stateless, so each direction is evaluated independently; reply
-   traffic passes only when the reverse-direction evaluation allows it.
+   The NetworkClass contains deployment-wide IPv4 CIDRs and one required
+   `spec.defaults.defaultAclAction`, either `PERMIT` or `DENY`. The action is a policy value,
+   not a NetworkACL resource or an ACL rule set. It decides each packet
+   direction when no matching rule in an explicitly associated NetworkACL
+   decides the result. ACL rules are tenant-created, scoped to one
+   VirtualNetwork, and may refine policy for Subnets that reference them.
    NetworkClass changes follow the unified create/read/delete contract and
    require replacement.
 
@@ -118,12 +120,12 @@ The design covers three capabilities: default networking (including NATGateway) 
    2. Pause tenant onboarding, default-based creates, and tenant network and
       workload changes across every affected tenant.
    3. Drain workloads and delete dependent networking resources in their
-      required deletion order, including NATGateways, Subnets, NetworkACLs,
-      and VirtualNetworks. Delete the old NetworkClass only after all
-      VirtualNetwork references are gone.
+      required deletion order, including NATGateways, Subnets, tenant-created
+      NetworkACLs, and VirtualNetworks. Delete the old NetworkClass only after
+      all VirtualNetwork references are gone.
    4. Create the replacement as the deployment's sole NetworkClass. Recreate
-      tenant VirtualNetworks, NetworkACLs, Subnets, NATGateways, and workload
-      attachments; recreate workloads that need the replacement network.
+      tenant VirtualNetworks, Subnets, NATGateways, and workload attachments;
+      recreate workloads that need the replacement network.
    5. Resume tenant and default-based creates only after the replacement
       defaults and affected tenant networking resources are READY.
 
@@ -134,25 +136,34 @@ The design covers three capabilities: default networking (including NATGateway) 
    ```bash
    osac create tenant --name acme-corp
    ```
-   - **fulfillment-service** creates Tenant record, then creates default networking resources through its own API (same path as tenant-created resources — persisted in PostgreSQL, reconciled to K8s CRs):
-     - Creates default VirtualNetwork with label `osac.openshift.io/default: "true"`, using CIDR from NetworkClass defaults
-     - The system creates the VirtualNetwork's default NetworkACL with label
-       `osac.openshift.io/default: "true"`, using NetworkClass ingress and
-       egress rules. It does the same for every tenant-created VirtualNetwork.
+   - **fulfillment-service** creates Tenant record, then creates default
+     networking resources through its own API (same path as tenant-created
+     resources — persisted in PostgreSQL, reconciled to K8s CRs):
+     - Creates default VirtualNetwork with label
+       `osac.openshift.io/default: "true"`, using CIDR from NetworkClass defaults
      - Creates default IPv4 Subnet with label
        `osac.openshift.io/default: "true"`, using `ipv4SubnetCIDR` from
-       NetworkClass defaults. The request omits `spec.network_acl`; Subnet
-       creation resolves and stores this VirtualNetwork's default ACL reference.
-     - Creates default NATGateway with an auto-allocated ExternalIP on the default VirtualNetwork, labeled `osac.openshift.io/default: "true"`
-   - Reads NetworkClass defaults configuration (single NetworkClass per deployment)
-   - Default resources go through the normal reconciliation path: fulfillment-service reconciler pushes CRs → osac-operator networking controllers dispatch to configured networking managers → resources transition to READY
-- fulfillment-service tracks default networking readiness on the Tenant: sets `DefaultNetworkingReady` condition once the default VN, its default NetworkACL, IPv4 Subnet and resolved association, and NATGateway are READY (via feedback)
-   - Tenant overall status becomes READY only when DefaultNetworkingReady condition is true
+       NetworkClass defaults. It has no `spec.network_acl` association.
+     - Creates default NATGateway with an auto-allocated ExternalIP on the
+       default VirtualNetwork, labeled `osac.openshift.io/default: "true"`
+   - Reads NetworkClass defaults configuration (single NetworkClass per
+     deployment)
+   - Default resources go through the normal reconciliation path:
+     fulfillment-service reconciler pushes CRs → osac-operator networking
+     controllers dispatch to configured networking managers → resources
+     transition to READY
+   - fulfillment-service tracks default networking readiness on the Tenant:
+     sets `DefaultNetworkingReady` once the default VN, IPv4 Subnet, and
+     NATGateway are READY (via feedback). It does not create or wait for an ACL.
+   - Tenant overall status becomes READY only when
+     `DefaultNetworkingReady` is true.
 
 3. **If default networking provisioning fails:**
    - Tenant remains in non-READY state
-   - Tenant status condition shows: `DefaultNetworkingReady: false, reason: SubnetProvisioningFailed, message: "Subnet 'default' failed to provision"`
-   - Cloud Provider Admin inspects failure, fixes root cause, and retries by deleting and re-creating the tenant
+   - Tenant status condition shows the failed default resource, for example:
+     `DefaultNetworkingReady: false, reason: SubnetProvisioningFailed, message: "Subnet 'default' failed to provision"`
+   - Cloud Provider Admin inspects failure, fixes root cause, and retries by
+     deleting and re-creating the tenant
 
 #### Shared Attachment Resolution
 
@@ -162,22 +173,23 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
 - An omitted attachment, an empty attachment list, or an empty CaaS attachment
   message requests the tenant defaults.
 - For VMaaS and CaaS, an omitted Subnet resolves to the tenant's default
-  Subnet. Its associated NetworkACL supplies traffic policy. If an attachment
-  names a Subnet, the server preserves that Subnet and validates that it and
-  its associated ACL are READY; it does not substitute the tenant default.
-  For BMaaS, the first `fabric` port from `BareMetalInstanceType.network_ports`
-  is defaulted as well.
+  Subnet. That Subnet has no ACL association unless one was specified when it
+  was created, so unmatched traffic uses the deployment default ACL action.
+  If an attachment names a Subnet, the server preserves it and validates that
+  it is READY; it does not substitute the tenant default. Any explicitly
+  associated ACL must also be READY. For BMaaS, the first `fabric` port from
+  `BareMetalInstanceType.network_ports` is defaulted as well.
 - A single supplied attachment is completed field-by-field. A missing Subnet
   receives the default Subnet; BMaaS also defaults a missing interface to the
   first `fabric` port. The attachment does not contain an ACL reference.
   Supplied values are never replaced.
-- Every Subnet has exactly one associated NetworkACL in its VirtualNetwork.
-  A Subnet created without an ACL uses that VirtualNetwork's default ACL; an
-  explicit single ACL is validated and stored. The Subnet's policy applies
-  uniformly to workloads attached to it.
+- A Subnet may have zero or one ACL association. When present, the ACL is in
+  the same VirtualNetwork and applies uniformly to workloads on that Subnet.
+  When omitted, the association remains unset and the deployment default
+  action decides unmatched traffic.
 - The fully resolved attachment is stored with the workload and is immutable
-  after creation. A missing or non-Ready Subnet or associated ACL causes
-  creation to fail.
+  after creation. A missing or non-READY Subnet, or a non-READY explicitly
+  associated ACL, causes creation to fail.
 
 #### Simplified Resource Creation with Defaults
 
@@ -190,7 +202,7 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
      - Detects `network_attachments` field is omitted or empty
      - Queries the tenant's default Subnet (labeled `osac.openshift.io/default: "true"`)
      - Populates the resource-specific network attachment field with the default Subnet
-     - For a supplied single attachment, defaults only a missing Subnet and, for BMaaS, a missing interface; the selected Subnet's associated NetworkACL supplies policy
+     - For a supplied single attachment, defaults only a missing Subnet and, for BMaaS, a missing interface; any ACL associated with the selected Subnet refines the deployment default policy; otherwise the deployment default action applies
      - Stores resolved attachments in spec
    - Creates ComputeInstance CR with resolved network_attachments
    - osac-operator reconciles normally (VM provisioned on default subnet)
@@ -274,54 +286,37 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
       - Deletes ExternalIP second (IP returned to pool)
       - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
     - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
-    - **Default networking resources (VN, Subnet, NetworkACL, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
+    - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
 11. **Tenant Admin inspects default resources:**
     ```bash
-    # List default resources
     osac get virtualnetworks --filter 'labels["osac.openshift.io/default"]="true"'
     osac get subnets --filter 'labels["osac.openshift.io/default"]="true"'
-    osac get network-acls --filter 'labels["osac.openshift.io/default"]="true"'
     osac get natgateways --filter 'labels["osac.openshift.io/default"]="true"'
-
-    # Changes require creating replacement networking resources after
-    # dependencies on the defaults have been removed.
+    osac get network-acls
     ```
-    - Default resources follow the unified read/create/delete contract.
-      NetworkACL rules, the Subnet's NetworkACL association, and
-      VirtualNetwork/Subnet address configuration are immutable after creation.
-      A default ACL cannot be deleted directly; it is removed with its
-      VirtualNetwork.
-    - Default resources cannot be deleted while any resource depends on them
-      (subnet deletion is blocked if VMs reference it).
-    - The default Subnet cannot be reassociated in place. Replacing its policy
-      follows the coordinated process in [Default Resource Lifecycle](#default-resource-lifecycle),
-      including every Subnet that references the shared ACL and its dependent
-      workloads.
-    - Replacing the default address/resource set (VirtualNetwork, Subnet,
-      and NATGateway) is a coordinated transition: pause
-      default-based creates for every affected existing tenant, drain or delete
-      workloads attached to the old defaults, and run reverse-reference checks
-      before deleting any old resource. The old VirtualNetwork must have no
-      Subnet, custom NetworkACL, or NATGateway references; its system-created
-      default ACL is removed as part of VirtualNetwork deletion.
-      The old NATGateway must have no remaining dependents; deleting it releases
-      its auto-allocated ExternalIP back to the pool through the normal
-      ExternalIP cleanup path. A replacement NATGateway receives a newly
-      allocated ExternalIP; the old address is not rebound. Create each
-      replacement with the same tenant scope and
-      `osac.openshift.io/default: "true"` label. Attachments are immutable, so
-      existing workloads are not rebound and the replacement applies to later
-      creates only.
+    - Default VirtualNetworks, Subnets, and NATGateways are visible through
+      the read APIs and cannot be deleted while dependent resources remain.
+    - NetworkACL rules and an explicitly selected Subnet association are
+      immutable after creation. To change a Subnet policy, create the desired
+      ACL first, then delete and recreate the Subnet and any dependent
+      workloads. If no ACL is selected, the deployment default action governs
+      unmatched traffic.
+    - The default address/resource set (VirtualNetwork, Subnet, and NATGateway)
+      is replaced as a coordinated transition: pause default-based creates,
+      drain or delete workloads attached to the old defaults, and run
+      reverse-reference checks before deleting resources. A replacement
+      NATGateway receives a newly allocated ExternalIP; the old address is
+      not rebound. Create replacement defaults with the same tenant scope and
+      `osac.openshift.io/default: "true"` label. Attachments are immutable,
+      so existing workloads are not rebound and the replacement applies to
+      later creates only.
     - Defaults cannot be unlabeled in place because networking metadata is
       immutable. Tenant-default workload selection must find exactly one
-      active, READY resource of the requested default type. Subnet ACL
-      defaulting must find exactly one active, READY default ACL within the
-      Subnet's VirtualNetwork; each tenant may have multiple default ACLs,
-      one per VirtualNetwork. Zero or multiple matches within the required
-      scope is a configuration error. Default-based creates remain paused
-      until the replacement VirtualNetwork, its default ACL, Subnet and
-      resolved association, and NATGateway are READY.
+      active, READY resource of the requested default type. Default-based
+      creates remain paused until the replacement VirtualNetwork, Subnet, and
+      NATGateway are READY. There is no default ACL selection or association
+      resolution.
 
 ### API Extensions
 
@@ -339,10 +334,13 @@ message NetworkClassSpec {
 message NetworkDefaults {
   string virtual_network_cidr = 1;  // e.g., "10.0.0.0/16"
   string ipv4_subnet_cidr = 2;      // e.g., "10.0.1.0/24"
-  // Each rule set includes an ALLOW ALL catch-all for 0.0.0.0/0;
-  // more-specific matching rules take precedence.
-  repeated NetworkACLRule ingress_rules = 3;
-  repeated NetworkACLRule egress_rules = 4;
+  NetworkACLDefaultAction default_acl_action = 3; // required: PERMIT or DENY
+}
+
+enum NetworkACLDefaultAction {
+  NETWORK_ACL_DEFAULT_ACTION_UNSPECIFIED = 0;
+  NETWORK_ACL_DEFAULT_ACTION_PERMIT = 1;
+  NETWORK_ACL_DEFAULT_ACTION_DENY = 2;
 }
 
 message NetworkACLRule {
@@ -378,11 +376,9 @@ message ClusterSpec {
 
 **Default label on auto-created resources:**
 
-The tenant default VirtualNetwork, its default Subnet, its default NetworkACL,
-and the default NATGateway receive label `osac.openshift.io/default: "true"`.
-Each other system-created default NetworkACL receives the same label. Default
-ACL uniqueness is scoped to its VirtualNetwork, so a tenant may see one default
-ACL per VirtualNetwork.
+The tenant default VirtualNetwork, its default Subnet, and its default
+NATGateway receive label `osac.openshift.io/default: "true"`. NetworkACL is
+not a default resource and no ACL receives a default label.
 ```yaml
 metadata:
   labels:
@@ -413,10 +409,9 @@ const (
 ```
 
 Condition values:
-- `DefaultNetworkingReady: true` when the tenant default VN, its default
-  NetworkACL, IPv4 Subnet and resolved NetworkACL association, and NATGateway
-  are all READY
-- `DefaultNetworkingReady: false, reason: <FailureReason>` when any default resource or its association failed to provision
+- `DefaultNetworkingReady: true` when the tenant default VN, IPv4 Subnet,
+  and NATGateway are READY. No NetworkACL resource or association is required.
+- `DefaultNetworkingReady: false, reason: <FailureReason>` when a default VirtualNetwork, Subnet, or NATGateway failed to provision
 
 **NetworkClass defaults field:**
 
@@ -430,10 +425,7 @@ type NetworkClassSpec struct {
 type NetworkDefaults struct {
     VirtualNetworkCIDR string           `json:"virtualNetworkCIDR,omitempty"`
     IPv4SubnetCIDR     string           `json:"ipv4SubnetCIDR,omitempty"`
-    // Each rule set includes an ALLOW ALL catch-all for 0.0.0.0/0;
-    // more-specific matching rules take precedence.
-    IngressRules []NetworkACLRule `json:"ingressRules,omitempty"`
-    EgressRules  []NetworkACLRule `json:"egressRules,omitempty"`
+    DefaultACLAction NetworkACLDefaultAction `json:"defaultAclAction"` // required: PERMIT or DENY
 }
 
 type NetworkACLRule struct {
@@ -470,16 +462,15 @@ type ClusterSpec struct {
 - `virtual_network_cidr` must be valid CIDR notation
 - `ipv4_subnet_cidr` must be valid IPv4 CIDR notation and within virtual_network_cidr range
 - `virtual_network_cidr` and `ipv4_subnet_cidr` must use canonical IPv4 CIDR notation with host bits zero
-- Ingress and egress rule lists are validated independently; priorities are unique within each direction and range from 1 through 32766
-- Each rule action is ALLOW or DENY, and each protocol is ALL, TCP, UDP, or ICMP
-- Port endpoints are both present or both absent, form an ordered range from 1 through 65535, and are only allowed with TCP or UDP
-- Each rule contains a canonical IPv4 CIDR; ingress matches the source and egress matches the destination
+- `default_acl_action` is required and must be `PERMIT` or `DENY`
+- Tenant-created NetworkACL rules are validated independently per direction: duplicate match fields are rejected, action is ALLOW or DENY, protocol is ALL/TCP/UDP/ICMP, optional port ranges are valid only for TCP/UDP, and CIDRs are canonical IPv4
+- NetworkACL rule order and action do not determine precedence; match specificity determines the first matching rule
 
 **Resource creation with optional network attachment fields:**
 - For VMaaS and BMaaS, an omitted or explicitly empty `network_attachments` list is resolved using the shared defaulting matrix. For CaaS, an omitted or explicitly empty `network_attachment` is resolved the same way.
-- If one attachment is supplied, a missing Subnet receives the tenant default Subnet; the selected Subnet supplies its associated NetworkACL policy; and BMaaS defaults a missing interface to the first `fabric` port from the selected BareMetalInstanceType. Supplied values are preserved.
+- If one attachment is supplied, a missing Subnet receives the tenant default Subnet; an optional NetworkACL associated with the selected Subnet refines the deployment default policy, while an unassociated Subnet uses that default action; BMaaS defaults a missing interface to the first `fabric` port from the selected BareMetalInstanceType. Supplied values are preserved.
 - A complete explicit attachment is preserved without applying defaults.
-- If a required default is not configured or is not Ready, resource creation fails.
+- If the default VirtualNetwork or Subnet is unavailable, default-based resource creation fails. NetworkACL association is optional; when supplied, the ACL must be READY and belong to the Subnet's VirtualNetwork.
 
 **Auto ExternalIP allocation (when auto_external_ip_attachment: true):**
 - Pool selection: pick a READY IPv4 ExternalIPPool with the most available capacity
@@ -493,38 +484,34 @@ type ClusterSpec struct {
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate NetworkClass defaults, create the tenant default VN/IPv4 Subnet/NATGateway at onboarding, ensure each VN has its system-created default ACL, resolve an omitted Subnet ACL to the same-VN default and resolve workload Subnet/interface defaults, auto-provision ExternalIP, track DefaultNetworkingReady, and return errors on capacity exhaustion |
+| fulfillment-service | Validate NetworkClass CIDR defaults and required deployment ACL default action; create tenant default VN/IPv4 Subnet/NATGateway at onboarding; keep an omitted Subnet ACL unset; resolve workload Subnet/interface defaults; auto-provision ExternalIP; track DefaultNetworkingReady; return errors on capacity exhaustion |
 | osac-operator resource controllers | Clean up auto-created ExternalIP and ExternalIPAttachment via finalizer |
 | osac-operator networking controllers | Reconcile default networking resources (same as manually created resources) |
 | osac-installer | Configure NetworkClass defaults in setup.sh and installation overlays |
 
 #### Default Resource Lifecycle
 
-- **Creation:** Each VirtualNetwork receives one system-created default
-  NetworkACL from the NetworkClass rules during VirtualNetwork provisioning.
-  The VirtualNetwork is READY only when its network and default ACL are READY.
-  At tenant onboarding, fulfillment-service creates the default VirtualNetwork,
-  waits for its default ACL to become READY, then creates the default IPv4
-  Subnet without `spec.network_acl`; the service resolves and stores the
-  same-VN default ACL reference. It also creates the default NATGateway.
-  This is the same ACL creation and Subnet defaulting behavior used for every
-  tenant-created VirtualNetwork and Subnet.
-- **Labeling:** All default resources labeled `osac.openshift.io/default: "true"`
-- **Visibility:** Default ACLs appear in list/detail views like any other ACL.
-  Each VirtualNetwork has exactly one default ACL; tenants with multiple
-  VirtualNetworks therefore see multiple default ACLs, one scoped to each VN.
-- **Mutability:** NetworkACL rules and the Subnet's ACL association are fixed at
-  creation. To use a different policy, pause network changes and workload
-  creation on each affected Subnet; delete dependent workloads and the
-  Subnets, then recreate the Subnets with a custom ACL. Default ACLs cannot be
-  deleted directly. Changing the default rules for future Subnets requires
-  replacing the VirtualNetwork, which also replaces its default ACL.
+- **Creation:** fulfillment-service creates the tenant default VirtualNetwork,
+  IPv4 Subnet, and NATGateway at onboarding. No default NetworkACL resource is
+  created for a tenant or VirtualNetwork. The default Subnet's ACL association
+  remains unset, so the deployment default ACL action applies wherever no
+  matching rule exists. A tenant that wants specific rules must create a
+  NetworkACL first and associate it when creating a Subnet.
+- **Labeling:** Default VirtualNetworks, Subnets, and NATGateways are labeled
+  `osac.openshift.io/default: "true"`.
+- **Visibility:** Default networking resources appear in list/detail views
+  like any other resource. NetworkACLs are visible only when created by a
+  tenant; no ACL receives a default label.
+- **Mutability:** A Subnet's optional ACL association and NetworkACL rules are
+  fixed at creation. To use another policy, pause network changes and workload
+  creation on the affected Subnet; delete dependent workloads and the Subnet,
+  then recreate it with the intended ACL association or leave it unset.
   VirtualNetwork/Subnet address configuration is also immutable.
-- **Deletion protection:** Custom ACLs cannot be deleted while Subnets
-  reference them. A default ACL is deleted only with its VirtualNetwork, after
-  its Subnets, custom ACLs, and NATGateway have been deleted. Other default
-  resources cannot be deleted while they have dependents.
-- **Tenant deletion:** Default resources are deleted when tenant is deleted (owner reference cleanup)
+- **Deletion protection:** NetworkACLs cannot be deleted while Subnets
+  reference them. Default networking resources cannot be deleted while they
+  have dependents.
+- **Tenant deletion:** Default resources are deleted when the tenant is
+  deleted (owner reference cleanup).
 
 #### Auto-Provisioned Resource Lifecycle
 
@@ -563,7 +550,7 @@ Note: the external IPs (from ExternalIPPool) and internal VIPs (from MetalLB IPA
 #### Tenant Isolation
 
 All default and auto-created resources inherit tenant annotation from parent:
-- `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/NetworkACL/NATGateway
+- `osac.openshift.io/tenant` annotation propagated from Tenant to default VN/Subnet/NATGateway
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance/Cluster/BaremetalInstance to auto-created ExternalIP/ExternalIPAttachment
 - OPA policies enforce tenant-scoped read/create/delete operations for
   networking resources; ACL rules and Subnet association are immutable after
@@ -578,15 +565,16 @@ All tenants receive the same default CIDR range as configured on the NetworkClas
 This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent resource
-- Default resources (VN, Subnet, NetworkACL, NATGateway) inherit tenant annotation from Tenant resource
+- Default VirtualNetwork, Subnet, and NATGateway inherit the tenant annotation from the Tenant resource. Tenant-created NetworkACLs also carry tenant scope but are not default resources.
 - No new authentication or authorization changes
-- NetworkClass default rules are configured by the Cloud Infrastructure Admin
-  and materialized whenever a VirtualNetwork receives its default ACL. Later
-  NetworkClass changes do not update existing default ACLs.
-- NetworkACL rules and Subnet associations are fixed at creation; policy
-  changes require the coordinated replacement process in
-  [Default Resource Lifecycle](#default-resource-lifecycle). See the
-  [default-policy risk](#risk-default-networkacl-too-permissive) for mitigation.
+- The deployment default ACL action is configured by the Cloud Infrastructure
+  Admin on NetworkClass and applies to every tenant. Changing it changes the
+  fallback action for unmatched traffic deployment-wide and requires replacing
+  the immutable NetworkClass.
+- NetworkACL rules and optional Subnet associations are fixed at creation;
+  policy changes require recreating affected Subnets and workloads. See the
+  [default-policy risk](#risk-deployment-default-acl-policy-is-too-permissive)
+  for mitigation.
 
 ### Failure Handling and Recovery
 
@@ -594,14 +582,8 @@ This feature inherits the existing security model:
 
 - **Default VirtualNetwork provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: VirtualNetworkProvisioningFailed, message: "..."`
 - **Default IPv4 Subnet provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: SubnetProvisioningFailed, message: "..."`
-- **Default NetworkACL provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: NetworkACLProvisioningFailed, message: "..."`
-- **Default Subnet-to-NetworkACL association fails:** Tenant remains non-READY with condition `DefaultNetworkingReady: false, reason: NetworkACLAssociationFailed, message: "..."`; the tenant's default Subnet is not used for workload creation until the association is READY
-- **A VirtualNetwork's default ACL is not READY:** A Subnet create request
-  that omits `spec.network_acl` fails with `FAILED_PRECONDITION` until that
-  VirtualNetwork has exactly one READY default ACL. An explicit READY custom
-  ACL in the same VirtualNetwork may be used instead.
 - **Default NATGateway provisioning fails:** Tenant enters non-READY state with condition `DefaultNetworkingReady: false, reason: NATGatewayProvisioningFailed, message: "..."`
-- **Recovery:** Cloud Provider Admin inspects failure (check networking controller logs, AAP job logs), fixes root cause, deletes tenant, re-creates tenant
+- **Recovery:** Cloud Provider Admin inspects the failed resource, fixes the root cause, and retries by deleting and recreating the tenant. ACL provisioning and association are not prerequisites for tenant readiness.
 
 #### Resource Creation Failures
 
@@ -622,8 +604,9 @@ No new tenancy boundary is introduced. Default resources and auto-created Extern
   networking resources; they expose no Update operation.
 - Tenant User can view default and auto-created resources and use the supported
   read, create, and delete operations, subject to dependency protection.
-- Cloud Infrastructure Admin configures NetworkClass defaults used during
-  tenant onboarding; changes do not revise existing tenant ACLs.
+- Cloud Infrastructure Admin configures NetworkClass CIDR defaults and the
+  deployment-wide ACL default action; replacing the NetworkClass changes the
+  fallback action deployment-wide.
 
 ### Observability and Monitoring
 
@@ -631,10 +614,9 @@ New structured log events:
 - fulfillment-service: `CreatingDefaultNetworking` (info), `DefaultNetworkingReady` (info), `DefaultNetworkingFailed` (error), `PopulatedNetworkAttachmentsDefaults` (info), `AutoProvisionedExternalIP` (info), `ExternalIPPoolExhausted` (error)
 
 New Kubernetes events on Tenant:
-- `DefaultNetworkingCreated`: default VN, its automatic default NetworkACL,
-  IPv4 Subnet, and NATGateway creation started
-- `DefaultNetworkingReady`: default VN, its default NetworkACL, Subnet and
-  resolved ACL association, and NATGateway are READY
+- `DefaultNetworkingCreated`: default VN, IPv4 Subnet, and NATGateway
+  creation started
+- `DefaultNetworkingReady`: default VN, IPv4 Subnet, and NATGateway are READY
 - `DefaultNetworkingFailed`: default resource provisioning failed (includes reason and failed resource name)
 
 New Kubernetes events on ComputeInstance/Cluster/BaremetalInstance:
@@ -653,19 +635,17 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Reviewed by:** Cloud Provider Admin
 
-#### Risk: Default NetworkACL too permissive
+#### Risk: Deployment default ACL policy is too permissive
 
-**Impact:** Each VirtualNetwork's default ACL has an `ALLOW ALL` catch-all for
-`0.0.0.0/0` in ingress and egress. More-specific matching DENY rules take
-precedence over this broad catch-all, so configured rules can restrict traffic.
-Workloads may receive unsolicited inbound traffic or initiate outbound connections.
-Changing NetworkClass defaults does not update existing default ACLs.
+**Impact:** A deployment-wide `PERMIT` fallback allows traffic that does not
+match any explicitly associated ACL rule. The effect applies to every tenant
+and VirtualNetwork.
 
-**Mitigation:** Cloud Infrastructure Admin can add more-specific DENY rules in
-NetworkClass before tenant onboarding. Tightening an existing tenant's
-policy requires the coordinated replacement process in
-[Default Resource Lifecycle](#default-resource-lifecycle), including every
-Subnet referencing the ACL and its dependent workloads.
+**Mitigation:** Configure the required default action as `DENY` when traffic
+should be denied unless a matching NetworkACL rule permits it. If `PERMIT` is
+selected, tenants can use more-specific DENY rules in ACLs associated with
+the relevant Subnets. Changing the deployment action changes all unmatched
+traffic and must be reviewed as a coordinated policy change.
 
 **Reviewed by:** Cloud Infrastructure Admin
 
@@ -679,7 +659,9 @@ Subnet referencing the ACL and its dependent workloads.
 
 #### ~~Risk: Deployment misconfiguration (NetworkClass defaults not configured)~~ — Eliminated
 
-Since defaults are mandatory (a NetworkClass without defaults is rejected at creation time), this scenario cannot occur. The osac-installer setup.sh includes NetworkClass default configuration in installation overlays, and the API validation ensures defaults are always present.
+Since the IPv4 defaults and deployment-wide ACL default action are required, a
+NetworkClass without them is rejected at creation time. The osac-installer
+setup.sh includes this configuration in installation overlays.
 
 ### Drawbacks
 
@@ -720,47 +702,61 @@ Resolved: Return error, no resource persisted.
 
 ### Unit Tests
 
-- fulfillment-service: NetworkClass defaults validation (valid CIDR and rule
-  fields, and include ALLOW ALL catch-all rules for `0.0.0.0/0` for both
-  ingress and egress, with more-specific matches taking precedence)
-- fulfillment-service: resource-specific attachment resolution (resolve omitted or empty fields, fill partial attachments, preserve complete explicit attachments)
-- fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
-- fulfillment-service: capacity exhaustion error (return error, resource not persisted)
-- fulfillment-service: default resource creation at tenant onboarding (VN,
-  its automatic default NetworkACL, IPv4 Subnet with the resolved ACL
-  association, NATGateway, and default labels)
-- fulfillment-service: DefaultNetworkingReady condition tracking (true when VN, NetworkACL, Subnet and association, and NATGateway are READY via feedback; false when any fails)
-- fulfillment-service: NetworkACL defaults validation (rule actions, duplicate match fields, protocol, optional ports, canonical IPv4 CIDRs)
-- fulfillment-service: default NetworkACL includes the configured allow-all catch-all in each direction; more-specific DENY rules take precedence independent of input order
-- osac-operator resource controllers: auto-created resource cleanup (delete ExternalIPAttachment → ExternalIP on parent deletion)
+- fulfillment-service: NetworkClass defaults validation (valid IPv4 CIDRs and
+  required default ACL action `PERMIT` or `DENY`)
+- fulfillment-service: resource-specific attachment resolution (resolve omitted
+  or empty fields, fill partial attachments, preserve complete explicit
+  attachments)
+- fulfillment-service: auto ExternalIP pool selection (pick READY pool with
+  most capacity, respect IP family)
+- fulfillment-service: capacity exhaustion error (return error, resource not
+  persisted)
+- fulfillment-service: tenant onboarding creates default VN, IPv4 Subnet
+  without an ACL association, and NATGateway with default labels
+- fulfillment-service: DefaultNetworkingReady condition tracks only default
+  VN, Subnet, and NATGateway readiness
+- fulfillment-service: NetworkACL validation (rule actions, duplicate match
+  fields, protocol, optional ports, canonical IPv4 CIDRs, same-VN references)
+- fulfillment-service: NetworkACL rule specificity determines first match;
+  if no rule matches, use the configured deployment default action
+- fulfillment-service: an ACL-less Subnet uses the deployment default action;
+  an explicitly associated ACL must be READY and same-VirtualNetwork
+- osac-operator resource controllers: auto-created resource cleanup (delete
+  ExternalIPAttachment → ExternalIP on parent deletion)
 
 ### Integration Tests
 
-- E2E: create Tenant, verify default VN, its automatic default NetworkACL,
-  IPv4 Subnet association, and NATGateway are READY and labeled
-  `osac.openshift.io/default: "true"`
-- E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains non-READY with condition
-- E2E: create ComputeInstance without network_attachments, verify defaults populated in spec
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
-- E2E: create Cluster with `--external-ip-attachment`, verify two ExternalIPs created BEFORE provisioning, cluster VIPs match
-- E2E: delete ComputeInstance with auto-created resources, verify ExternalIPAttachment and ExternalIP cleaned up
-- E2E: create ComputeInstance with a complete explicit attachment and verify its values are preserved
-- E2E: create ComputeInstance with a partial attachment and verify only missing fields are defaulted
-- E2E: verify workload attachment stores only the resolved Subnet, and the effective ACL is read from that Subnet
-- E2E: verify NetworkACL rules and Subnet associations have no Update operation and remain fixed after creation
-- E2E: create ComputeInstance with `--external-ip-attachment` when pool exhausted, verify error returned, resource not persisted
-- E2E: verify changing NetworkACL rules or Subnet association requires deleting and recreating the affected networking resources
-- E2E: create multiple VirtualNetworks and verify each receives exactly one
-  READY default NetworkACL, with no extra Subnet created automatically
-- E2E: create a Subnet without an ACL and verify it stores the READY default
-  ACL from its own VirtualNetwork
-- E2E: create a Subnet with one READY custom ACL from the same VirtualNetwork
-  and verify the explicit ACL is preserved
-- E2E: verify multiple ACL references, cross-VirtualNetwork references, and
-  omitted ACLs without a READY default ACL are rejected
-- E2E: verify a custom ACL cannot be deleted while referenced, a default ACL
-  cannot be deleted directly, and a Subnet cannot become READY without one
-  active ACL
+- E2E: create Tenant, verify default VN, unassociated IPv4 Subnet, and
+  NATGateway are READY and labeled `osac.openshift.io/default: "true"`
+- E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains
+  non-READY with condition
+- E2E: create ComputeInstance without network_attachments, verify defaults
+  populated in spec and unmatched traffic uses deployment default action
+- E2E: verify a Subnet created without `network_acl` remains unassociated and
+  can become READY under the deployment default policy
+- E2E: create a NetworkACL before a Subnet, associate it explicitly, and
+  verify its matching rules refine the deployment fallback action
+- E2E: reject multiple ACL references, cross-VirtualNetwork references, and
+  non-READY explicit ACL references
+- E2E: verify a custom ACL cannot be deleted while any Subnet references it
+- E2E: change deployment default action only through replacement of the
+  NetworkClass and verify the new action governs unmatched traffic
+- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto
+  ExternalIP + ExternalIPAttachment created, DNAT rule functional
+- E2E: create Cluster with `--external-ip-attachment`, verify two ExternalIPs
+  created BEFORE provisioning, cluster VIPs match
+- E2E: delete ComputeInstance with auto-created resources, verify ExternalIP-
+  Attachment and ExternalIP cleaned up
+- E2E: create ComputeInstance with a complete explicit attachment and verify
+  its values are preserved
+- E2E: create ComputeInstance with a partial attachment and verify only
+  missing fields are defaulted
+- E2E: verify workload attachment stores only the resolved Subnet, and the
+  effective policy comes from its optional ACL plus deployment fallback
+- E2E: verify NetworkACL rules and Subnet associations have no Update
+  operation and remain fixed after creation
+- E2E: create ComputeInstance with `--external-ip-attachment` when pool is
+  exhausted, verify error returned and resource not persisted
 
 ### Tricky Test Cases
 
@@ -777,10 +773,10 @@ Proposed maturity level: **Tech Preview** → **GA**
 
 Tech Preview criteria:
 - [ ] NetworkClass defaults field implemented in fulfillment-service and osac-operator
-- [ ] fulfillment-service ensures each VirtualNetwork has one system-created
-  default NetworkACL and resolves an omitted Subnet ACL to the same-VN default
+- [ ] fulfillment-service validates the required deployment-wide ACL default
+  action (`PERMIT` or `DENY`) and creates no default NetworkACL resources
 - [ ] fulfillment-service creates the tenant default VN/IPv4 Subnet/NATGateway
-  at onboarding, with the default Subnet storing its resolved ACL reference
+  at onboarding, leaving the Subnet's ACL association unset
 - [ ] Tenant DefaultNetworkingReady condition functional
 - [ ] Resource-specific network attachment field optional on all three resource types (ComputeInstance, Cluster, BaremetalInstance)
 - [ ] Auto ExternalIP attachment (auto_external_ip_attachment) functional for VM and BM
@@ -803,8 +799,9 @@ GA criteria:
 The NetworkACL and attachment contract change is a coordinated, breaking
 release; the prior release cannot represent NetworkACL resources or Subnet
 associations. Tenants must not be asked to create ACLs or associations before
-the ACL-aware API is deployed. The cutover follows the [unified networking
-upgrade strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy)
+the ACL-aware API is deployed. Before cutover, configure the required
+`PERMIT` or `DENY` deployment fallback action. The cutover follows the
+[unified networking upgrade strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy)
 and adds the default-networking steps below. Existing tenant policy is
 tenant-mapped; no automatic or lossless conversion is promised.
 
@@ -812,12 +809,12 @@ tenant-mapped; no automatic or lossless conversion is promised.
 
 - Inventory each affected tenant's VirtualNetworks, Subnets, default-resource
   labels, workload attachments, and existing workload traffic policies.
-- Prepare a tenant-approved mapping from existing policies to one intended
-  NetworkACL per Subnet, including explicit return-traffic rules where needed.
-  If workloads on one Subnet require different policies, plan separate Subnets
-  and workload recreation because attachments are immutable. Prepare rule
-  specifications and association plans, but do not create ACLs under the old
-  release.
+- Prepare a tenant-approved mapping from existing policies to optional
+  NetworkACL associations per Subnet, including explicit return-traffic rules
+  where needed. If workloads on one Subnet require different policies, plan
+  separate Subnets and workload recreation because attachments are immutable.
+  Prepare rule specifications and association plans, but do not create ACLs
+  under the old release.
 - Snapshot the current API/database, CR, NetworkClass, and workload attachment
   state and schedule a maintenance window. Keep the snapshot and reverse plan
   for rollback.
@@ -829,31 +826,31 @@ tenant-mapped; no automatic or lossless conversion is promised.
 2. Deploy the ACL-aware fulfillment-service, operator, networking controllers,
    schemas, and compatible clients as one coordinated release. Do not permit
    old clients to write with the previous attachment contract.
-3. Ensure the system has created one default NetworkACL for each existing
-   VirtualNetwork from the NetworkClass rules; wait until each is READY. This
-   backfill does not change any existing Subnet association. Through the new
-   API, create each tenant-approved custom NetworkACL in the same
-   VirtualNetwork as its Subnets and wait for it to become READY. Create
-   replacement Subnets with either an explicit custom ACL or no ACL to use the
-   same-VN default. Existing Subnets cannot be reassociated in place; recreate
-   dependent workloads as required by their deletion constraints. A Subnet is
-   READY only when its resolved associated policy is active.
+3. Configure and validate the required deployment fallback action. Do not
+   create or backfill default NetworkACL resources. Through the new API,
+   create tenant-approved NetworkACLs in the same VirtualNetworks as their
+   target Subnets and wait for them to become READY. Create replacement
+   Subnets with an explicit ACL when needed or leave the association unset to
+   use the deployment fallback action. Existing Subnets cannot be
+   reassociated in place; recreate dependent workloads as required by their
+   deletion constraints.
 4. Keep each affected Subnet and workload creation/default resolution gated
-   until that Subnet is READY. Recreate workloads only after their destination
-   Subnet's policy is active when tenant policy mapping requires a move.
-5. Validate the mapping, readiness, and representative connectivity. Reopen
-   network and workload writes only after every affected Subnet has an active
-   same-VirtualNetwork ACL association; incomplete tenant migrations remain
-   gated.
+   until the Subnet is READY. If it has an ACL association, wait for its rules
+   to be active; otherwise the deployment default action applies. Recreate
+   workloads only after their destination Subnet is READY when policy mapping
+   requires a move.
+5. Validate the fallback action, policy mapping, readiness, and representative
+   connectivity. Reopen network and workload writes only after every affected
+   Subnet is READY under its optional ACL and the deployment fallback policy;
+   incomplete tenant migrations remain gated.
 
 Existing tenants do not receive a tenant-default VN, Subnet, or NATGateway
-retroactively. Existing VirtualNetworks do receive their system-created
-default NetworkACL during cutover; existing Subnet associations are not
-changed. An existing tenant that wants simplified workload creation must use
-the new API to create or select its tenant-default Subnet. Omitting
-`spec.network_acl` on that Subnet resolves to the default ACL of the same VN.
-New tenant onboarding creates the default VN, its default ACL, and the default
-Subnet through the ACL-aware release.
+retroactively. No default NetworkACL is created or backfilled. Existing Subnet
+associations are not changed. An existing tenant that wants simplified
+workload creation must use the new API to create or select its tenant-default
+Subnet. If `spec.network_acl` is omitted, it remains unset and the deployment
+default action decides unmatched traffic. New tenant onboarding creates the
+default VN, unassociated Subnet, and default NATGateway.
 
 ### Downgrade
 
@@ -906,11 +903,11 @@ kubectl describe tenant acme-corp -n <namespace>
 # Check status.conditions for DefaultNetworkingReady
 ```
 
-**Cause:** Default VirtualNetwork, IPv4 Subnet, NetworkACL, or NATGateway provisioning failed
+**Cause:** Default VirtualNetwork, IPv4 Subnet, or NATGateway provisioning failed
 
 **Resolution:**
 1. Check default networking resource status: `kubectl get virtualnetwork -n <namespace> -l osac.openshift.io/default=true`
-2. If VirtualNetwork/IPv4 Subnet/NetworkACL/NATGateway is not READY, investigate provisioning failure (check networking controller logs, AAP job logs)
+2. If the default VirtualNetwork, IPv4 Subnet, or NATGateway is not READY, investigate provisioning failure (check networking controller logs and AAP job logs)
 3. Fix root cause (e.g., AAP connectivity issue, fabric manager error)
 4. Delete tenant: `osac delete tenant acme-corp`
 5. Re-create tenant: `osac create tenant --name acme-corp`
@@ -946,12 +943,12 @@ To disable auto ExternalIP attachment:
 Consequences:
 - Auto ExternalIP allocation fails with error (resource not created)
 - Manual ExternalIP workflows remain functional
-- Default networking at tenant onboarding is partially functional — VN, Subnets, and NetworkACL are created, but NATGateway creation also fails (requires ExternalIP from pool). Auto external access is disabled
+- Default networking at tenant onboarding is partially functional — the VN and Subnet are created, but NATGateway creation fails because it requires an ExternalIP from the pool. Auto external access is disabled
 
 ## Infrastructure Needed
 
 - osac-installer: NetworkClass default configuration in setup.sh and installation overlays
-- fulfillment-service: NetworkClass defaults validation, default VN/IPv4 Subnet/NetworkACL/NATGateway creation at tenant onboarding, resource-specific attachment resolution, auto ExternalIP provisioning, DefaultNetworkingReady condition tracking
+- fulfillment-service: NetworkClass CIDR and required deployment ACL action validation, default VN/IPv4 Subnet/NATGateway creation at tenant onboarding with no default ACL, resource-specific attachment resolution, auto ExternalIP provisioning, DefaultNetworkingReady condition tracking
 - Integration test environment: kind cluster with Tenant, NetworkClass, ExternalIPPool resources
 
 ---
@@ -959,10 +956,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

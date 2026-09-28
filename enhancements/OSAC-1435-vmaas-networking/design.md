@@ -103,9 +103,9 @@ ComputeInstance already participates in the networking API. Today's flow:
      --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
      --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
-   - NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with the reverse-direction rules needed for both reply paths. Replace the documentation CIDRs with trusted deployment ranges.
+   - NetworkACLs have no seeded rules. An ACL with empty ingress and egress lists contributes no matching decisions, so the required deployment default ACL action decides traffic. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with the reverse-direction rules needed for both reply paths. Replace the documentation CIDRs with trusted deployment ranges.
    - The NetworkACL has independent ingress and egress rules. Rules contain an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR.
-   - Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic is denied.
+   - Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic uses the required deployment default ACL action.
    - The ACL is stateless. Every allowed connection needs explicit rules in both directions; the reverse rules above permit response packets to their destination ephemeral ports.
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
    - NetworkACL rule lists are fixed at creation. Changing policy requires deleting and recreating the affected networking resources; workload attachments are also immutable.
@@ -115,7 +115,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
      --network-acl my-acl --name my-subnet
    ```
-   - `Subnet.spec.network_acl` references exactly one active NetworkACL in the same VirtualNetwork. The ACL may be reused by other Subnets in that VirtualNetwork; the association is immutable after Subnet creation.
+   - `Subnet.spec.network_acl` may be omitted or reference one READY NetworkACL in the same VirtualNetwork. An omitted reference remains unset and the deployment default ACL action applies where no rule matches. An ACL may be reused by other Subnets in that VirtualNetwork; any explicit association is immutable after Subnet creation.
    - osac-operator Subnet controller → dispatcher resolves NetworkClass → triggers TWO AAP jobs (multi-job tracking per OSAC-1459):
      - `osac.templates.{{ fabric_manager }}.create_subnet` — creates VLAN / fabric segment
      - `osac.templates.{{ k8s_manager }}.create_subnet` — creates CUDN overlay on each hosting cluster, bridges to the fabric segment
@@ -138,7 +138,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet (see Default Networking PRD)
      - If one attachment is supplied, defaults only a missing Subnet; supplied values are preserved
      - Validates: at most one attachment; the Subnet is Ready, including completion of its NetworkACL association
-     - The Subnet's associated NetworkACL supplies policy for this VM and every other workload attached to the Subnet. ACL rules and the Subnet association are immutable after creation; changing them requires recreating the affected networking resources.
+     - Any NetworkACL associated with the Subnet refines the deployment default policy for this VM and every other workload attached to the Subnet; if no ACL is associated, the deployment default action applies. ACL rules and the Subnet association are immutable after creation; changing them requires recreating the affected networking resources.
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `network_attachments`
 
@@ -189,7 +189,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 9. **Delete ComputeInstance:**
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
-   - **Default networking resources (VN, Subnet, NetworkACL, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
+   - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
    - No `move_network_attachment` call — the VM lives on the CUDN overlay, not a fabric switch port, so it is never parked or port-moved (the port-move primitive and parking apply only to fabric-attached BM servers and CaaS agents)
@@ -312,8 +312,8 @@ This feature inherits the existing tenant isolation model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent ComputeInstance
 - No new authentication or authorization changes
-- The NetworkACL associated with the VM's Subnet applies uniformly to every workload on that Subnet; it is not stored on the VM attachment
-- Ingress and egress are evaluated independently using the shared match-specificity order; the first matching rule allows or denies traffic, and unmatched traffic is denied
+- Any NetworkACL associated with the VM's Subnet refines the deployment default policy for every workload on that Subnet; if no ACL is associated, the deployment default action applies. The ACL is not stored on the VM attachment
+- Ingress and egress are evaluated independently using the shared match-specificity order; the first matching rule allows or denies traffic, and unmatched traffic uses the deployment default ACL action
 - The ACL is stateless, so return traffic requires an explicit reverse-direction rule
 - Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
@@ -419,7 +419,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 - fulfillment-service: max-one validation (accept no attachment or one attachment)
 - fulfillment-service: max-one `network_attachments` validation
-- fulfillment-service: omitted and partial attachment defaulting (the tenant default Subnet is used only when no Subnet is supplied; the Subnet's associated NetworkACL is used for all workloads there)
+- fulfillment-service: omitted and partial attachment defaulting (the tenant default Subnet is used only when no Subnet is supplied; any associated NetworkACL refines the deployment default policy for all workloads there; otherwise the deployment default action applies)
 - fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (implicit single attachment)
@@ -430,8 +430,8 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
-- E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route and the Subnet's NetworkACL governs its traffic
-- E2E: verify specificity-based matching, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and independent source-egress/destination-ingress checks across Subnets
+- E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route and any ACL associated with the Subnet refines the deployment default policy; otherwise the deployment default action governs unmatched traffic
+- E2E: verify specificity-based matching, first-match allow/deny, deployment default ACL action, explicit reverse-direction rules, same-Subnet bypass, and independent source-egress/destination-ingress checks across Subnets
 
 ### Tricky Test Cases
 
@@ -561,10 +561,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

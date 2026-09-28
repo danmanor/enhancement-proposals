@@ -68,45 +68,48 @@ Pure consumer of the existing private `ExternalIPPools` service
 - **Detail page** (`VirtualNetworkDetailPage`) at `/networking/virtual-networks/:id`,
   with tabs for **Subnets**, **Network ACLs**, **Details**.
 - **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has
-  Subnets, custom NetworkACLs, or NATGateways. Its system-created default ACL
-  is removed as part of deleting the VirtualNetwork.
+  Subnets, NetworkACLs, or NATGateways.
 
 #### NetworkACL Management
 
-- **List:** the VirtualNetwork detail page's **Network ACLs** tab lists the ACLs
-  scoped to that VirtualNetwork. Mark the system-created default ACL with a
-  **Default** badge. Columns: **Name**, **Associated Subnets**,
-  **Ingress Rules**, **Egress Rules**, **Status** (`NetworkACLStatusLabel`).
+- **List:** the VirtualNetwork detail page's **Network ACLs** tab lists the
+  ACLs scoped to that VirtualNetwork. Columns: **Name**, **Associated Subnets**,
+  **Ingress Rules**, **Egress Rules**, and **Status** (`NetworkACLStatusLabel`).
+  There is no system-created or tenant default ACL resource.
 - **Create form:** **Name**, ingress rule table, and egress rule table. Each
   rule row has **Action** (ALLOW or DENY), **Protocol** (ALL, TCP, UDP, ICMP),
   optional TCP/UDP **Destination Port Range**, and an IPv4 **CIDR**. The UI
   rejects duplicate match fields within one direction and validates port
   endpoints and canonical IPv4 CIDRs before submission. Rule precedence is
   derived from match specificity: longest CIDR prefix first, then protocol
-  (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port range from smallest
-  to largest; no-port rules follow port-specific rules. Action and input
-  order do not affect precedence. The rule set is immutable after creation,
-  and the UI displays rules in effective evaluation order. Traffic with no
-  matching rule is denied, and the form explains that reply traffic needs a
-  reverse-direction rule. ACL details show the rules read-only.
-- **Delete:** custom ACLs can be deleted only when no Subnet references them;
-  the server returns `FAILED_PRECONDITION` if a reference remains. A default
-  ACL has no direct Delete action and is removed with its VirtualNetwork.
+  (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port range from smallest to
+  largest; no-port rules follow port-specific rules. Action and input order do
+  not affect precedence. The rule set is immutable after creation, and the UI
+  displays rules in effective evaluation order. If no rule matches, the
+  required deployment default ACL policy decides the result; the form explains
+  that reply traffic needs a reverse-direction rule. ACL details show rules
+  read-only.
+- **Delete:** an ACL can be deleted only when no Subnet references it; the
+  server returns `FAILED_PRECONDITION` while a reference remains.
 
 #### Subnet NetworkACL Association
 
-- **Subnet create form:** provides an ACL selector scoped to the selected
-  VirtualNetwork, defaulted to that VN's READY default ACL. A tenant may select
-  one READY custom ACL instead. The API also accepts a request with no ACL
-  field and resolves it to the same-VN default ACL; it rejects multiple ACL
-  references, cross-VN references, or a non-READY ACL.
-- **Subnet list/detail:** show the associated ACL name and status.
-- **Association lifecycle:** the ACL is selected during Subnet creation and
-  cannot be changed later. Subnet details show the associated ACL name and
-  status read-only.
-- **Policy boundary:** same-Subnet traffic is not filtered by the ACL. Cross-Subnet
-  traffic must pass source egress and destination ingress rules. Workload forms
-  display the selected Subnet's ACL but do not provide an ACL picker.
+- **Subnet create form:** provides an optional ACL selector scoped to the
+  selected VirtualNetwork. Leaving it empty creates an unassociated Subnet;
+  the deployment default ACL policy applies when there is no matching rule.
+  A selected ACL must already be READY and belong to that VirtualNetwork.
+  Multiple and cross-VirtualNetwork ACL references are rejected.
+- **Subnet list/detail:** show the associated ACL name and status when present;
+  otherwise show that the deployment default ACL policy governs unmatched
+  traffic.
+- **Association lifecycle:** the optional association is selected during
+  Subnet creation and cannot be changed later. Subnet details show the
+  association read-only. Create the ACL before the Subnet when using one.
+- **Policy boundary:** same-Subnet traffic is not filtered by the ACL.
+  Cross-Subnet traffic must pass source egress and destination ingress rules;
+  the deployment default action decides whenever the relevant ACL has no
+  matching rule or no ACL is associated. Workload forms show the selected
+  Subnet's ACL, if any, but do not provide an ACL picker.
 
 #### NAT Gateway Field in Virtual Network
 
@@ -156,11 +159,10 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | Pool create: non-IPv4 address family | Server's `INVALID_ARGUMENT` shown as a form-level error. |
 | Pool create: empty, malformed, multiple, or overlapping CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
-| NetworkACL create has duplicate priorities or an invalid rule | Validation error is shown beside the rule row; no create is submitted. |
-| Subnet creation omits an ACL but its VirtualNetwork has no single READY default ACL | Server's `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
+| NetworkACL create has duplicate match fields or an invalid rule | Validation error is shown beside the rule row; no create is submitted. |
+| Subnet creation omits an ACL | Subnet creation proceeds without an ACL association; unmatched traffic uses the deployment default ACL policy. |
 | Subnet creation references an ACL in another VirtualNetwork or a non-READY ACL | Server's `INVALID_ARGUMENT` or `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
-| Custom NetworkACL delete while associated with a Subnet | Server's `FAILED_PRECONDITION` is shown; the ACL remains listed. |
-| Direct delete of a VirtualNetwork's default ACL | Delete action is not offered; server rejects the request with `FAILED_PRECONDITION`. |
+| NetworkACL delete while associated with a Subnet | Delete action reports the server's `FAILED_PRECONDITION`; the ACL remains listed. |
 | Any List/Get failure | Existing `QueryErrorState` handling. |
 
 ## Implementation details
@@ -192,10 +194,10 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

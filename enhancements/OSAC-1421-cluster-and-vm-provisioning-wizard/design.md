@@ -100,7 +100,7 @@ Non-editable fields without a catalog `default` render blank and read-only (disa
 
 **VM General specifics:** `spec.ssh_key` is optional — prefill catalog `default` on catalog selection when defined; merge catalog `ssh_key` `field_definition` for label, `editable`, and `validation_schema`. Omit from client payload only when blank (tenant cleared or no catalog default). When non-blank, send the parsed plain string (prefilled default or user edit).
 
-**VM Networking specifics:** Load the VN list first; on selection, filter subnets with `this.spec.virtual_network.name == "<vn-name>"`. Assemble one `network_attachments` element using a typed subnet reference: `{ "subnet": { "name": "<subnet-name>" } }`. The API rejects a second entry. The Review step shows the selected Subnet and its associated NetworkACL reference as read-only context from the Subnet data; it does not fetch ACL rules or offer an ACL picker. The virtual network and its associated NetworkACL are determined through the subnet; neither reference is repeated in the workload attachment.
+**VM Networking specifics:** Load the VN list first; on selection, filter subnets with `this.spec.virtual_network.name == "<vn-name>"`. Assemble one `network_attachments` element using a typed subnet reference: `{ "subnet": { "name": "<subnet-name>" } }`. The API rejects a second entry. The Review step shows the selected Subnet and, when present, its associated NetworkACL reference as read-only context from the Subnet data. If no ACL is associated, it shows that the deployment default ACL action governs unmatched traffic. It does not fetch ACL rules or offer an ACL picker. The virtual network and optional NetworkACL association are determined through the Subnet; neither reference is repeated in the workload attachment.
 Catalog Item fields do not provide a default, lock, or validation overlay for this step.
 
 **Cluster Configuration specifics:** `spec.node_sets` is **tenant-composed** — the wizard does **not** load, display, or apply `ClusterTemplate.spec.node_sets`. On Configuration, render an editable table with **Add node set** / **Remove** actions. Each row: **Host type** (`SelectField` from `HostTypes.List` — [PRD §2.1.6](prd.md#216-cluster-host-type-picker-api)) and **Nodes** (`size` number input, > 0). `ClusterNodeSet` requires only `host_type` and `size` — no separate name column. Validation: at least one row required; host type and positive `size` required per row; **duplicate host types blocked** (each host type id at most once). `buildClusterCreatePayload` uses **host type id as the map key** and sets `host_type` on the value to the same id. Review shows host type label and node count per row. Filter or disable host types already selected on other rows in remaining dropdowns. `ClusterConfigurationStep` loads the host type list on mount; no `useClusterTemplate` call.
@@ -292,7 +292,7 @@ apps/app-frontend/src/pages/
 | Happy path cluster | Tenant adds one or more node set rows; selects host type from dropdown and node count; Review lists host type and size per row |
 | Optional basics / config fields left blank | Review shows empty/omitted state; client payload omits those keys (assert via mocked create handler) |
 | Catalog ssh_key default on select | General SSH field prefilled with parsed catalog default; create payload includes plain-string `ssh_key` unless tenant clears the field |
-| Single-option picker lists | Instance type / VN / subnet auto-selected; the Subnet's associated NetworkACL is read-only context on Review |
+| Single-option picker lists | Instance type / VN / subnet auto-selected; the Subnet's optional ACL is read-only context on Review, or the deployment default action is shown when none is associated |
 
 #### Submit and API errors
 
@@ -307,7 +307,7 @@ apps/app-frontend/src/pages/
 #### Adapter-specific component tests
 
 - **VM Configuration:** OS family radio toggles `spec.is_windows`; obsolete instance types excluded from picker options.
-- **VM Networking:** Subnet lists filter after VN selection; changing VN clears dependent picks unless auto-select applies. The selected Subnet determines the NetworkACL; the wizard has no ACL picker.
+- **VM Networking:** Subnet lists filter after VN selection; changing VN clears dependent picks unless auto-select applies. The selected Subnet determines the optional NetworkACL association; the wizard has no ACL picker and shows the deployment default action when no ACL is associated.
 - **Cluster Configuration:** Tenant can add/remove node set rows; host type dropdown from `HostTypes.List`; `host_type` and `size` > 0 validated per row; at least one row required; duplicate host types blocked; payload map key = host type id.
 - **Cluster Networking:** Optional CIDR fields — empty allowed; invalid format blocked on Next only when non-empty.
 
@@ -326,8 +326,9 @@ End-to-end VM and cluster provision via `/vms/create` and `/clusters/create`; cl
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Phases: manual-edit, revise, manual-edit, revise, manual-edit, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->

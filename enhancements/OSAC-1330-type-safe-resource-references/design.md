@@ -99,8 +99,10 @@ The design introduces three coordinated changes:
    references, and `<Type>LocalReference` (name only) for same-tenant/project
    references. All affected spec-level reference fields are replaced with the
    appropriate message type. Workload attachments carry only a subnet reference;
-   NetworkACL references belong to the Subnet resource; each Subnet requires
-   exactly one such local reference to an ACL in its VirtualNetwork. Field numbers may be
+   NetworkACL references belong to the Subnet resource; a Subnet may have zero
+   or one such local reference to an ACL in its VirtualNetwork. When omitted,
+   the reference remains unset and the deployment default ACL action applies
+   wherever no rule matches. Field numbers may be
    reused for replaced fields because backward compatibility is not required,
    but field 2 remains reserved in each workload attachment message after the
    policy field is removed. The BareMetal attachment's interface remains field
@@ -300,17 +302,17 @@ add new gRPC services, CRDs, webhooks, or finalizers.
 
 The Subnet example uses an existing READY NetworkACL whose `virtual_network`
 references `prod-net`. If `network_acl` is supplied, it must name a READY ACL
-in that same VirtualNetwork. If omitted, Subnet creation resolves it to
-`prod-net`'s system-created default ACL and stores the resolved reference.
+in that same VirtualNetwork. If omitted, the association remains unset and the deployment default ACL
+action decides unmatched traffic.
 
 **Modified proto files (public API):**
 
 | File | Change |
 |------|--------|
 | `compute_instance_type.proto` | Add `ComputeInstanceTemplateReference`, `ComputeInstanceCatalogItemReference`, and `SubnetLocalReference`. Replace string fields in `ComputeInstanceSpec` and `ComputeNetworkAttachment`; attachments contain only a subnet reference and reserve field 2. Import `InstanceTypeLocalReference` from `instance_type_type.proto`. |
-| `baremetal_instance_common_type.proto` | Reuse `SubnetLocalReference` in `BareMetalNetworkAttachment`; the subnet determines the applicable NetworkACL, field 2 is reserved, and `interface` remains field 3. |
-| `cluster_common_type.proto` | Reuse `SubnetLocalReference` in `ClusterNetworkAttachment`; the subnet determines the applicable NetworkACL and field 2 is reserved. |
-| `subnet_type.proto` | Add `VirtualNetworkLocalReference` and `NetworkACLLocalReference`. Replace `SubnetSpec.virtual_network` and type singular `SubnetSpec.network_acl` as a local reference. The field may be omitted on create and resolves to the VirtualNetwork's default ACL; the stored association is required and immutable after Subnet creation. |
+| `baremetal_instance_common_type.proto` | Reuse `SubnetLocalReference` in `BareMetalNetworkAttachment`; an optional Subnet NetworkACL refines the deployment default ACL policy, field 2 is reserved, and `interface` remains field 3. |
+| `cluster_common_type.proto` | Reuse `SubnetLocalReference` in `ClusterNetworkAttachment`; an optional Subnet NetworkACL refines the deployment default ACL policy and field 2 is reserved. |
+| `subnet_type.proto` | Add `VirtualNetworkLocalReference` and `NetworkACLLocalReference`. Replace `SubnetSpec.virtual_network` and type singular `SubnetSpec.network_acl` as a local reference. The field is optional; omission leaves it unset, while an explicit association is immutable after Subnet creation. |
 | `virtual_network_type.proto` | Add `NetworkClassReference`. Replace `VirtualNetworkSpec.network_class`. |
 | `network_acl_type.proto` | Add `VirtualNetworkLocalReference`. Replace `NetworkACLSpec.virtual_network`; ingress and egress rule lists are immutable after NetworkACL creation. |
 | `external_ip_attachment_type.proto` | Add `ExternalIPLocalReference`, `ComputeInstanceLocalReference`, `ClusterLocalReference`, `BareMetalInstanceLocalReference`. Replace string fields in `ExternalIPAttachmentSpec` oneof. |
@@ -351,7 +353,7 @@ structure.
 | UI code location | Current wire format | New wire format | Notes |
 |---|---|---|---|
 | `networking.ts` `CreateVirtualNetworkInput.networkClass` | `spec: { network_class: networkClass }` (string) | `spec: { network_class: { name: networkClass } }` | Local var already holds the name |
-| `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName }, network_acl: { name: aclName } }` | `network_acl` is optional on create; when supplied it must be READY and scoped to the referenced VirtualNetwork; when omitted the service resolves the same-VirtualNetwork default ACL |
+| `networking.ts` `CreateSubnetInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName }, network_acl: { name: aclName } }` | `network_acl` is optional on create; when supplied it must be READY and scoped to the referenced VirtualNetwork; when omitted the association remains unset and the deployment default ACL action applies to unmatched traffic |
 | `networking.ts` `CreateNetworkACLInput.virtualNetworkId` | `spec: { virtual_network: virtualNetworkId }` (string) | `spec: { virtual_network: { name: vnetName } }` | Same pattern as Subnet |
 | `networking.ts` `virtualNetworkFilterForSubnetList` | `this.spec.virtual_network == "${id}"` | `this.spec.virtual_network.name == "${name}"` | CEL filter path change |
 | `ip-management.ts` `useCreatePublicIP` body | `spec: { pool: string }` | `spec: { pool: { name: poolName } }` | |
@@ -475,7 +477,7 @@ resource can be in a different tenant or project from the referencing resource:
 |-------|---------------|-----------|
 | `SubnetSpec.virtual_network` | `VirtualNetworkLocalReference` | Subnet is always in the same tenant/project as its parent VirtualNetwork |
 | `NetworkACLSpec.virtual_network` | `VirtualNetworkLocalReference` | Same reasoning as Subnet |
-| `SubnetSpec.network_acl` | `NetworkACLLocalReference` | Optional on create, then a required singular stored association; omission resolves to the default ACL in the same VirtualNetwork; immutable after Subnet creation |
+| `SubnetSpec.network_acl` | `NetworkACLLocalReference` | Optional on create and in storage; omission leaves it unset; an explicit same-VirtualNetwork association is immutable after Subnet creation |
 | `ComputeNetworkAttachment.subnet` | `SubnetLocalReference` | ComputeInstance and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
 | `BareMetalNetworkAttachment.subnet` | `SubnetLocalReference` | BareMetalInstance and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
 | `ClusterNetworkAttachment.subnet` | `SubnetLocalReference` | Cluster and Subnet are in the same tenant/project; NetworkACL is resolved through the Subnet |
@@ -796,11 +798,12 @@ Example path changes:
 | `check_cluster_catalog_item_ref()` (Z0002) | clusters | Drop `id =` alternative | Already scoped |
 | `check_ci_catalog_item_ref()` (Z0002) | compute_instances | Drop `id =` alternative | Already scoped |
 
-For the required Subnet-to-NetworkACL edge, retain both forward and reverse
-reference protection. The Z0002 path must serialize Subnet creation against a
-concurrent NetworkACL delete, and the Z0003 path (or an equivalent active
-reference constraint) must reject deleting an ACL while an active Subnet uses
-it. Interceptor existence validation alone does not provide these guarantees.
+For the optional Subnet-to-NetworkACL edge, retain both forward and reverse
+reference protection whenever an association is supplied. The Z0002 path must
+serialize Subnet creation against a concurrent NetworkACL delete, and the Z0003
+path (or an equivalent active reference constraint) must reject deleting an
+ACL while an active Subnet uses it. Interceptor existence validation alone
+does not provide these guarantees.
 
 #### CEL Filter Expression Changes
 
@@ -1253,10 +1256,10 @@ osac-ux) and use existing CI infrastructure.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

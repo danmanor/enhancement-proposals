@@ -5,12 +5,12 @@
 **Last updated:** 2026-09-26
 
 - **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
-- **Total test cases:** 17
+- **Total test cases:** 20
 - **Requirements covered:** 9 of 9 (R1-R9)
 - **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
 - **Additional operational tests:** 2 deletion lifecycle tests + 1 skip-k8s-manager annotation test + 1 admission-fencing concurrency test
 
-**Mandatory Subnet policy precondition:** Every persisted Subnet has exactly one READY NetworkACL scoped to the same VirtualNetwork, and the policy must be actively enforced before the Subnet can become READY. A create request may omit `network_acl`; the service resolves it to the VirtualNetwork's default ACL. Explicit references must be READY and same-VirtualNetwork. An omitted ACL without exactly one READY default, an unready explicit ACL, or a cross-VirtualNetwork reference is rejected; no case treats an ACL-less or unenforced Subnet as READY.
+**Subnet policy precondition:** The deployment has a required default ACL action (`PERMIT` or `DENY`). A Subnet may have no ACL association or one READY ACL from its VirtualNetwork. When `network_acl` is omitted, the association remains unset and the deployment default action decides unmatched traffic; the Subnet does not wait for ACL readiness. When an ACL is explicitly associated, that ACL's rules must be active before the Subnet becomes READY. No default ACL resource is expected.
 
 ## Test Cases
 
@@ -73,7 +73,7 @@
 - The fabric job completes before the k8s job starts; they do not run concurrently.
 - The k8s job receives VNI values extracted from ConfigMap `data.extra_vars`.
 - `NetworkACL.status.phase == "Ready"` reflects the ACL's active rules, and the Subnet's `NetworkACLAssociationReady=True` condition reflects explicit manager confirmation that those rules are enforced on this Subnet.
-- Fabric job completion and VNI ConfigMap data are not treated as proof of ACL enforcement; the Subnet does not report READY before its association condition is true.
+- Fabric job completion and VNI ConfigMap data are not treated as proof of ACL enforcement; because this case has an explicit association, the Subnet does not report READY before its association condition is true.
 - Subnet.status.conditions shows a K8sManagerWaitingForFabric event between jobs.
 
 #### TC-R2-02: VNI extraction failure when fabric job missing data
@@ -101,6 +101,32 @@
 - Subnet provisioning stops (k8s job never created)
 - Event message includes fabric job name for debugging
 - User can inspect fabric AAP job logs to diagnose
+
+#### TC-R2-03: Subnet without ACL uses deployment default policy
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-3 | high | automated |
+
+##### Preconditions
+
+- The deployment NetworkClass has `spec.defaults.defaultAclAction: DENY`.
+- A VirtualNetwork uses that NetworkClass and has no Subnet.
+- No default NetworkACL resource exists.
+
+##### Steps
+
+1. Create a Subnet without `spec.network_acl`.
+2. Verify the persisted Subnet has no ACL association.
+3. Verify the Subnet controller provisions fabric and, for the first eligible Subnet, the CUDN without waiting for a NetworkACL resource or `NetworkACLAssociationReady` condition.
+4. Wait for fabric, CUDN, and namespace readiness; verify the Subnet becomes READY.
+5. Send traffic that matches no tenant ACL rule and verify the deployment default action denies it.
+
+##### Expected Results
+
+- The Subnet remains unassociated and becomes READY after its network-segment and CUDN prerequisites complete.
+- No NetworkACL object or association-ready condition is required.
+- Unmatched traffic follows the deployment-wide `DENY` default action.
 
 ### R3: Automatic overlay network provisioning on hosting clusters
 
@@ -148,7 +174,7 @@
 
 - The VirtualNetwork has exactly one Subnet and uses the cudn_evpn k8s manager.
 - The Subnet explicitly references a READY NetworkACL scoped to the same VirtualNetwork; policy enforcement completes before the Subnet becomes READY.
-- The associated NetworkACL has `ALLOW ALL` catch-all rules for `0.0.0.0/0` and more-specific `DENY ALL` rules in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. The subnet-specific deny rules match the VM-to-bare-metal flow and its reply.
+- The deployment default ACL action is `PERMIT`. The associated NetworkACL has a more-specific `DENY ALL` rule in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. These subnet-specific rules match the VM-to-bare-metal flow and its reply.
 - The CUDN is provisioned for the single Subnet.
 - A VirtualMachine runs in the CUDN namespace with IP 200.200.1.3.
 - A bare-metal endpoint is attached to the configured fabric in the same Subnet with IP 200.200.1.10.
@@ -157,7 +183,7 @@
 ##### Steps
 
 1. Verify the VM is running: `oc get vmi -n <namespace>`.
-2. Inspect the associated ACL and confirm its ingress and egress `DENY ALL` rules for `200.200.1.0/24` are evaluated before the broader `ALLOW ALL` catch-all because their CIDR prefixes are longer, and match both the request and reply addresses.
+2. Inspect the associated ACL and confirm its ingress and egress `DENY ALL` rules for `200.200.1.0/24` match the request and reply addresses; this more-specific ACL action applies independently of the deployment `PERMIT` fallback.
 3. Connect to the VM console: `virtctl console <vm-name>`.
 4. Ping the bare-metal endpoint: `ping 200.200.1.10`.
 5. Verify FRR shows a Type-2 route for the VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`.
@@ -528,10 +554,10 @@ None identified. All requirements map to test cases, all interface changes exerc
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

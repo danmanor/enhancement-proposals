@@ -13,8 +13,10 @@
 > deployments are not supported. This document defines the requirements for
 > delivering that model on environments that use traditional managed switches
 > (without fabric manager). It adds a backend, not new API. This milestone does
-> not implement the mandatory NetworkACL readiness contract, so the backend
-> cannot serve the shared API or be selected as a supported fabric manager yet.
+> not implement the effective Subnet policy readiness contract: every Subnet
+> uses the deployment default ACL action, and any explicitly associated
+> NetworkACL must also be enforced. The backend cannot serve the shared API or
+> be selected as a supported fabric manager yet.
 
 This PRD also inherits the [Unified Networking hub support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#networking-hub-support-boundary):
@@ -41,12 +43,13 @@ managed-switch infrastructure, limiting where the platform can run.
 
 ### 2.1 Goals
 
-- After mandatory NetworkACL enforcement is implemented, a Cloud Infrastructure
+- After effective Subnet policy enforcement is implemented, a Cloud Infrastructure
   Admin can deploy OSAC with API-driven tenant networking on environments that
   use traditional managed switches by selecting the agentless VLAN backend.
   This milestone does not make that backend selectable. [Clarify: D6; User direction]
-- After the backend satisfies the shared NetworkACL readiness contract, tenants
-  use the same networking API and get equivalent behavior. Until then, the
+- After the backend enforces the deployment default action and any optional
+  Subnet NetworkACL association, tenants use the same networking API and get
+  equivalent behavior. Until then, the
   backend cannot serve as a supported fabric manager. [Clarify: D6, D8; User direction]
 - After the backend is eligible for supported selection, bare-metal servers,
   clusters, and compute instances can use its attachment operations through the
@@ -65,12 +68,14 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - This feature does not define the OSAC networking API or resource model. The
   unified networking work (OSAC-1433) defines the NetworkACL resource, stateless
-  ingress and egress rules, and the Subnet association. This backend consumes
-  that shared contract. [Clarify: D3, D5]
-- The backend does not create tenant networking resources, including default
-  networking or a default NetworkACL; tenant onboarding owns those resources.
-  This backend configures networking only for machines, clusters, and VMs
-  attached to a network resource. [User direction]
+  ingress and egress rules, the optional Subnet association, and the required
+  deployment-wide default ACL action. This backend consumes that shared
+  contract. [Clarify: D3, D5]
+- The backend does not create tenant networking resources. Generic tenant
+  onboarding creates the default VirtualNetwork, Subnet, and NATGateway;
+  NetworkACLs are optional tenant-created resources that may be associated with
+  Subnets. This backend configures networking only for machines, clusters, and
+  VMs attached to a network resource. [User direction]
 - Does not deprecate or remove the existing inline (non-API) CaaS networking path;
   that transition is handled separately by the CaaS agentless-VLAN follow-up.
   [Clarify: D4]
@@ -83,17 +88,20 @@ managed-switch infrastructure, limiting where the platform can run.
   delivered here. [Clarify: D1, D2]
 - The VM-to-fabric bridging required for VMaaS is provided separately and is not
   part of this backend. [Clarify: D8]
-- No UI is delivered in this milestone; backend selection and networking
-  operations are available through configuration and the CLI. [Clarify: D7]
-- NetworkACL data-plane provisioning and rule enforcement are out of scope for
-  this backend milestone. OSAC-1433 defines the NetworkACL resource, stateless
-  ingress and egress rules, a required Subnet association, and mandatory active
-  policy before a Subnet can be Ready in every supported profile. This backend
-  does not satisfy that contract and cannot serve the shared API or be selected
-  as a supported fabric manager until it implements NetworkACL enforcement.
-  Selection validation must reject it; a mismatched configuration must leave the
-  Subnet and dependent resources not Ready. Same-Subnet L2 traffic remains
-  outside subnet ACL filtering.
+- No UI is delivered in this milestone. Isolated backend tests may use
+  configuration and the CLI, but supported NetworkClass selection and
+  API-driven networking operations remain unavailable until effective Subnet
+  policy enforcement is implemented. [Clarify: D7]
+- NetworkACL data-plane provisioning and effective policy enforcement are out
+  of scope for this backend milestone. OSAC-1433 defines an optional Subnet
+  association and a required deployment-wide default ACL action. Every
+  supported profile must enforce that default action for each Subnet and, when
+  a Subnet explicitly references a NetworkACL, enforce its rules before the
+  Subnet can be Ready. This backend does not satisfy that contract and cannot
+  serve the shared API or be selected as a supported fabric manager until it
+  implements the full policy enforcement. Selection validation must reject it;
+  a mismatched configuration must leave the Subnet and dependent resources not
+  Ready. Same-Subnet L2 traffic remains outside subnet ACL filtering.
   [User direction]
 - Broad multi-vendor switch support and switch-configuration concurrency beyond the
   initially supported platform(s) are follow-up work; the supported-switch set for
@@ -125,9 +133,9 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - As a Tenant Admin, I want to create and manage networking resources — virtual
   networks, subnets, external IPs, and NAT gateways — through the shared API,
-  while each supported Subnet becomes Ready only after its associated NetworkACL
-  is actively enforced. The agentless backend remains unsupported until it meets
-  that contract.
+  while each supported Subnet becomes Ready only after the deployment default
+  action and any explicitly associated NetworkACL are actively enforced. The
+  agentless backend remains unsupported until it meets that contract.
   [Clarify: D6, D8]
 - As a Tenant Admin, I want to create a virtual network with multiple subnets
   where machines in the same subnet share a broadcast domain and machines in
@@ -150,8 +158,9 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **FR-1:** The agentless VLAN backend is not advertised or selectable as a
   supported fabric manager in this milestone because every supported profile
-  requires active NetworkACL enforcement. Selection validation must reject it
-  until the backend implements that contract. The eventual selection remains
+  requires enforcement of the deployment default action and any optional
+  Subnet NetworkACL association. Selection validation must reject it until the
+  backend implements that contract. The eventual selection remains
   provider configuration and requires no networking-API changes.
   [Clarify: D3, D7]
 
@@ -159,47 +168,55 @@ managed-switch infrastructure, limiting where the platform can run.
 
 - **FR-2:** The shared VirtualNetwork, Subnet, ExternalIP, ExternalIPAttachment,
   NATGateway, and NetworkACL APIs remain unchanged. This backend milestone does
-  not satisfy their shared networking readiness contract and cannot serve them
-  through supported selection. If a mismatched selection reaches reconciliation,
-  the Subnet and dependent resources remain not Ready. [Clarify: D1, D5, D8; User direction]
+  not satisfy their shared networking readiness contract: every Subnet must
+  enforce the deployment default ACL action, and an explicitly associated ACL
+  must also be active before the Subnet becomes Ready. The backend cannot serve
+  these APIs through supported selection. If a mismatched selection reaches
+  reconciliation, the Subnet and dependent resources remain not Ready.
+  [Clarify: D1, D5, D8; User direction]
 
 #### Multiple Subnets per Virtual Network
 
 - **FR-3:** Topology-level tests may exercise the backend's multiple-VLAN and
   VirtualNetwork-routing primitives with raw fixtures. They do not create
   API-Ready Subnets or workloads and do not establish support for the shared
-  networking contract. Once NetworkACL enforcement is implemented, Subnets can
-  provide broadcast segmentation and routed connectivity subject to their
-  associated ACL rules; different VirtualNetworks remain isolated (see NFR-3).
+  networking contract. Once effective policy enforcement is implemented,
+  Subnets can provide broadcast segmentation and routed connectivity subject to
+  their optional associated ACL rules and the deployment default action;
+  different VirtualNetworks remain isolated (see NFR-3).
   [Clarify: D12; User direction]
 
 #### Automatic IP Assignment
 
-- **FR-4:** After this backend implements ACL enforcement and can report the
-  associated NetworkACL active, a bare-metal server or cluster node can receive
-  an IP address on its Subnet and report it in status. This behavior is not
+- **FR-4:** After this backend enforces the effective Subnet policy and reports
+  the Subnet Ready, a bare-metal server or cluster node can receive an IP
+  address on its Subnet and report it in status. Effective policy includes the
+  deployment default action and the rules of an associated NetworkACL, when one
+  is selected. This behavior is not
   available through this milestone's unsupported backend. VM addressing is
   provided by the OVN overlay and is out of scope. [Clarify: D9, D13; PR review: CodeRabbit]
 
 #### Inbound External Access
 
-- **FR-5:** After this backend implements mandatory ACL enforcement and becomes
-  selectable, an ExternalIP can expose a machine through the external path only
-  when the target Subnet and its NetworkACL are Ready. This milestone cannot
+- **FR-5:** After this backend implements effective Subnet policy enforcement
+  and becomes selectable, an ExternalIP can expose a machine through the
+  external path only when the target Subnet is Ready under the deployment
+  default action and any explicitly associated NetworkACL. This milestone cannot
   report that readiness or permit workload use.
   [Jira: OSAC-3664; User direction]
 
 #### Outbound External Connectivity
 
-- **FR-6:** After this backend implements mandatory ACL enforcement and becomes
-  selectable, a NATGateway can provide outbound connectivity only after each
-  source Subnet and its NetworkACL are Ready. This milestone cannot report that
+- **FR-6:** After this backend implements effective Subnet policy enforcement
+  and becomes selectable, a NATGateway can provide outbound connectivity only
+  after each source Subnet is Ready under the deployment default action and any
+  explicitly associated NetworkACL. This milestone cannot report that
   readiness or permit workload use.
   [Jira: OSAC-3664; Clarify: D14; User direction]
 
 #### External IP Pools
 
-- **FR-7:** After this backend implements mandatory NetworkACL enforcement and
+- **FR-7:** After this backend implements effective Subnet policy enforcement and
   becomes selectable as a supported fabric manager, a Cloud Infrastructure
   Admin can define external IP ranges (ExternalIPPool) from which tenant
   ExternalIPs can be allocated for external access. This milestone does not
@@ -209,7 +226,8 @@ managed-switch infrastructure, limiting where the platform can run.
 #### Networking Across All Services
 
 - **FR-8:** This backend cannot serve workload network attachments through the
-  supported API until it implements mandatory NetworkACL enforcement. After that
+  supported API until it enforces the deployment default action and any
+  explicitly associated NetworkACL rules. After that
   support is added, service-specific end-to-end provisioning and validation are
   delivered by the follow-up features (see Non-Goals). [Clarify: D1, D8; PR review: CodeRabbit]
 
@@ -233,8 +251,9 @@ managed-switch infrastructure, limiting where the platform can run.
 - **NFR-1:** The agentless VLAN backend provides networking for the IPv4 address
   family. IPv6 and dual-stack are not supported. [Clarify: D11]
 - **NFR-2:** A supported fabric manager must satisfy the complete shared
-  networking contract, including mandatory NetworkACL enforcement. This milestone
-  does not satisfy it and cannot claim tenant-observable API parity or supported
+  networking contract, including the deployment default ACL action and rules
+  from any explicitly associated NetworkACL. This milestone does not satisfy it
+  and cannot claim tenant-observable API parity or supported
   manager eligibility until enforcement is implemented. [Clarify: D8; User direction]
 - **NFR-3:** Different VirtualNetworks have no direct connectivity on the internal
   fabric — a machine in one VirtualNetwork cannot reach another VirtualNetwork's
@@ -249,8 +268,9 @@ managed-switch infrastructure, limiting where the platform can run.
 ### Current Milestone
 
 - [ ] The agentless implementation is not advertised or selectable as a supported
-  fabric manager until it implements NetworkACL enforcement for the mandatory
-  Subnet readiness contract.
+  fabric manager until it enforces the deployment default ACL action on every
+  Subnet and any NetworkACL rules explicitly associated with that Subnet before
+  reporting it Ready.
 - [ ] If a stale or otherwise mismatched configuration reaches reconciliation,
   the Subnet and dependent resources remain not Ready and cannot be used by
   workloads. No permit-all fallback reports success.
@@ -265,13 +285,17 @@ acceptance only after this backend implements NetworkACL enforcement and can be
 selected as a supported fabric manager.
 
 - [ ] A bare-metal server or cluster node attached to a Ready Subnet receives an
-  IP on that Subnet, visible in its status.
+  IP on that Subnet, visible in its status; the Subnet is Ready only after its
+  effective policy is enforced.
 - [ ] Inbound ExternalIP data-plane checks reach a target only after its Subnet
-  NetworkACL is Ready and its rules are enforced.
+  effective policy is enforced: the deployment default action always applies,
+  and any explicitly associated NetworkACL rules are active.
 - [ ] Outbound NATGateway data-plane checks use its ExternalIP only after the
-  source Subnet NetworkACL is Ready and its rules are enforced.
+  source Subnet effective policy is enforced, including any explicitly
+  associated NetworkACL rules.
 - [ ] ExternalIPAttachment and NATGateway resources become Ready only when their
-  dependent Subnet NetworkACL is Ready and enforced.
+  dependent Subnets are Ready under the deployment default action and any
+  explicitly associated NetworkACL rules are enforced.
 - [ ] Permitted cross-Subnet traffic follows the associated ingress and egress
   rules, and directly routed traffic between overlapping VirtualNetworks remains
   unreachable.
@@ -281,7 +305,8 @@ selected as a supported fabric manager.
   through the target's ExternalIP when the policy permits the flow, while the
   target's private Subnet address remains unreachable.
 - [ ] Bare-metal, cluster, and compute-instance attachments use the backend only
-  after the Subnet and its NetworkACL are Ready; their end-to-end validation is
+  after the Subnet is Ready under the deployment default action and any
+  explicitly associated NetworkACL rules are enforced; their end-to-end validation is
   covered by the follow-up features (OSAC-1611, OSAC-3665).
 - [ ] Backend failures surface diagnostics on affected resources after the
   backend is eligible to manage those resources.

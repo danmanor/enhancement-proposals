@@ -31,7 +31,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 - A tenant can provision a bare-metal server with one explicit network attachment, optionally specifying which physical interface connects to its subnet
 - A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP for inbound access automatically
-- Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet, whose associated NetworkACL governs its traffic
+- Network attachments are optional — when omitted, the system attaches the server to the tenant's default subnet, whose optional NetworkACL refines the deployment default ACL policy
 - BareMetalInstanceTypes expose available physical network ports through the API (name, role, type, speed) for bare-metal servers
 - Bare-metal provisioning uses the provisioning network for inventory and OS provisioning, then moves the selected fabric port to the tenant network and reboots the host so it receives its tenant-network IP
 - External IP attachments support bare-metal servers as a target type
@@ -80,7 +80,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Network Attachment Specification
 
-- **FR-1:** Tenants can specify zero or one entry in the repeated `network_attachments` field when creating a bare-metal server. The attachment may omit its subnet or physical interface; missing fields are defaulted without replacing supplied values. The complete resolved list and every entry field are immutable after creation. The repeated field is retained for API compatibility; more than one entry is rejected. Traffic policy comes from the NetworkACL associated with the resolved Subnet, not from the attachment. [User]
+- **FR-1:** Tenants can specify zero or one entry in the repeated `network_attachments` field when creating a bare-metal server. The attachment may omit its subnet or physical interface; missing fields are defaulted without replacing supplied values. The complete resolved list and every entry field are immutable after creation. The repeated field is retained for API compatibility; more than one entry is rejected. Traffic policy comes from the optional NetworkACL associated with the resolved Subnet plus the deployment default ACL action, not from the attachment. [User]
 
 #### BareMetalInstanceType Network Port Discovery
 
@@ -96,7 +96,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Optional Network Attachments with Defaults
 
-- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default subnet and uses the first `fabric` port from the BareMetalInstanceType (see Default Networking PRD). When a single attachment is supplied, only missing subnet or interface fields are defaulted; supplied values are preserved. The NetworkACL associated with the resolved Subnet governs the server's traffic. If the BareMetalInstanceType has no valid fabric port, creating a server without an explicit interface fails with a clear error. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
+- **FR-5:** Network attachments are optional when creating a bare-metal server. When omitted or empty, the system attaches the server to the tenant's default subnet and uses the first `fabric` port from the BareMetalInstanceType (see Default Networking PRD). When a single attachment is supplied, only missing subnet or interface fields are defaulted; supplied values are preserved. Any NetworkACL associated with the resolved Subnet refines the deployment default policy; unmatched traffic uses the deployment default action. If the BareMetalInstanceType has no valid fabric port, creating a server without an explicit interface fails with a clear error. The resolved attachment is stored with the server so the server is self-describing after creation. [User]
 
 #### Auto External IP
 
@@ -128,7 +128,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### NetworkACL Policy
 
-- **FR-13:** Bare-metal server traffic follows the NetworkACL associated with its Subnet. Each Subnet has exactly one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule is denied. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. The same policy applies to every workload on the Subnet. [User]
+- **FR-13:** Bare-metal server traffic uses the deployment default ACL policy, refined by any NetworkACL associated with its Subnet. Each Subnet has zero or one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule uses the required deployment default ACL action, which also applies when no ACL is associated. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. The same policy applies to every workload on the Subnet. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -138,7 +138,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ## 5. Acceptance Criteria
 
-- [ ] A Tenant User can create a bare-metal server with one explicit network attachment and an optional physical interface from the BareMetalInstanceType; the server follows the NetworkACL associated with that Subnet
+- [ ] A Tenant User can create a bare-metal server with one explicit network attachment and an optional physical interface from the BareMetalInstanceType; the server follows that Subnet's optional ACL rules and the deployment default policy
 - [ ] A Tenant User can create a bare-metal server with `--external-ip-attachment` and no explicit network attachments — the server is created on the default subnet with an auto-provisioned external IP for inbound access
 - [ ] A bare-metal server with one attachment is provisioned with that attachment providing the default gateway
 - [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
@@ -149,11 +149,11 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] Creating a bare-metal server with more than one network attachment returns a maximum-one error
 - [ ] Bare-metal server primary attachment IP is visible in status after network connectivity is configured
 - [ ] External IP attachment with bare-metal server target routes inbound traffic to the server's primary attachment IP
-- [ ] Bare-metal traffic uses the first matching NetworkACL rule under the shared match-specificity order, unmatched traffic is denied, and return traffic requires an explicit reverse-direction rule
+- [ ] Bare-metal traffic uses the first matching NetworkACL rule under the shared match-specificity order, unmatched traffic uses the deployment default ACL action, and return traffic requires an explicit reverse-direction rule
 
 ## 6. Assumptions
 
-- The tenant has a default VirtualNetwork and Subnet pre-created at onboarding, with a default NetworkACL associated with that Subnet (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
+- The tenant has a default VirtualNetwork and Subnet pre-created at onboarding, with no ACL association on the default Subnet; unmatched traffic uses the required deployment-wide default ACL action (see Default Networking PRD). If defaults are not configured, creating a server without explicit network attachments fails with a clear error.
 - The NetworkClass has a fabric manager configured (the system can resolve which network automation to use).
 - The BareMetalInstanceType for the bare-metal template has a populated `network_ports` list with at least one `fabric` port. If no valid fabric port exists, creating a server without an explicit interface fails with a clear error.
 - Out-of-band provisioning interfaces (PXE boot, BMC) are reserved for system use and are NOT tenant-attachable (should not appear in network attachments).
@@ -161,7 +161,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ## 7. Dependencies
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (VirtualNetwork, Subnet, NetworkACL, ExternalIP, ExternalIPAttachment, NATGateway) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
-- **Default Networking PRD** — default Subnet selection and associated NetworkACL behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
+- **Default Networking PRD** — default Subnet selection, optional ACL association, and deployment fallback action defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
 - **Networking manager dispatch** — the system must be able to route networking operations to the correct fabric manager (in progress)
 - **NAT gateway support** — outbound NAT must be available as a networking resource
 - **External access for BM targets** — the external IP attachment system must support bare-metal servers as targets
@@ -209,7 +209,10 @@ Resolved: First in the list. Ports are ordered in the BareMetalInstanceType; whe
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

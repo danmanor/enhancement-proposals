@@ -55,7 +55,7 @@ Fields are hardcoded per resource type, not discovered from `field_definitions`.
 | Configuration   | `spec.user_data`          | User data (cloud-init / Ignition)        | Text (multiline)                       | Optional |
 | Configuration   | `spec.boot_disk.size_gib` | Boot disk size (GiB)                     | Number                                 | ?        |
 | Configuration   | `spec.run_strategy`       | Run strategy                             | Select (`Always`, `Halted`)            | Required |
-| Networking      | `spec.network_attachments` | Virtual network and subnet (the subnet’s NetworkACL applies) | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
+| Networking      | `spec.network_attachments` | Virtual network and subnet (an optional Subnet NetworkACL refines the deployment default ACL policy) | Pickers ([§2.1.4](#214-vm-networking-picker-apis)) | Required |
 
 **Notes:**
 
@@ -242,7 +242,7 @@ flowchart LR
 - Five-step flow: Catalog Item → General → Configuration → Networking → Review; submit from Review.
 - Review shows the same values as on wizard step fields (blank, default-driven, or user-entered).
 - Catalog overlay and default rules per [§2.1.2](#212-catalog-overlay-and-defaults) on non-network Configuration **non-picker** fields and General **basics** fields; picker-backed paths ignore `field_definitions` in v1; catalog `default` prefills matching wizard fields on catalog selection; non-editable fields without `default` appear blank and read-only; non-editable fields with `default` appear read-only with value and are included in the client payload. Networking inputs remain resource-owned.
-- VM: single `network_attachments` entry containing only the selected subnet, with policy inherited from the subnet’s NetworkACL association; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
+- VM: single `network_attachments` entry containing only the selected subnet, with policy from the optional subnet ACL association plus the deployment default action; instance type picker sets `spec.instance_type` (not `cores`/`memory_gib`); OS family radio sets `spec.is_windows` (default **Linux**); optional `user_data` omitted when empty; create warnings for deprecated instance types are shown to the user.
 - Cluster: `node_sets` is tenant-composed on Configuration — add/remove rows; each row has `host_type` from `HostTypes.List` and `size` > 0 only (`ClusterNodeSet`); **unique host type per row**; map key = host type id; wizard does not load or apply `ClusterTemplate.spec.node_sets`; **catalog item defaults for `spec.node_sets` do not apply in v1** (empty table on catalog selection).
 - All **?** requiredness decisions resolved before release ([§5](#5-open-decisions)).
 - On Next click, validate all fields on the current step (including untouched fields); surface hidden inline errors; show an alert if invalid; do not advance until the step is valid.
@@ -292,8 +292,9 @@ Not in [§2.1.1](#211-static-wizard-fields) today. **Unknown** whether v1 needs 
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Phases: manual-edit, revise, manual-edit, revise, manual-edit, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->
