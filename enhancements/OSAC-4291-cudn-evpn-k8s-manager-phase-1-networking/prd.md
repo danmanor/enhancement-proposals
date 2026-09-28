@@ -90,7 +90,7 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- Each Subnet stores exactly one association to a NetworkACL scoped to its VirtualNetwork. A create request may omit the ACL and use that VirtualNetwork's system-created default ACL, or explicitly select a READY custom ACL. The configured fabric manager owns NetworkACL provisioning and enforcement, and the Subnet becomes READY only after its associated policy is active. This CUDN/K8s integration consumes the Subnet's network-segment data and does not create an ACL per Subnet or implement ACL behavior in the K8s manager.
+- A Subnet may have zero or one NetworkACL association scoped to its VirtualNetwork. An omitted reference remains unset; unmatched traffic uses the required deployment-wide default ACL action. An explicit ACL must be READY before it is associated. The configured fabric manager owns NetworkACL provisioning and enforcement, and a Subnet becomes READY only after its explicitly associated policy is active. This CUDN/K8s integration consumes the Subnet's network-segment data and does not create an ACL per Subnet or implement ACL behavior in the K8s manager.
 
 - A VirtualNetwork with a single Subnet may host VMs. Once VMs exist, adding a second Subnet is rejected. If a second Subnet is added while no VMs exist, the VirtualNetwork becomes fabric-only and VM placement is rejected in all its Subnets.
 
@@ -99,7 +99,7 @@ The following are out of scope for Phase 1:
 ## Acceptance Criteria
 
 - [ ] A NetworkClass with `fabric_manager: "primary"` and `k8s_manager: "cudn_evpn"` can be created and transitions to READY state
-- [ ] Each Subnet stores exactly one association to a READY ACL scoped to the same VirtualNetwork, and becomes READY only after that ACL policy is active; an omitted create-time ACL resolves to the VirtualNetwork default
+- [ ] A Subnet may be unassociated or reference one READY ACL in its VirtualNetwork. Omission leaves the reference unset and unmatched traffic uses the deployment default ACL action; a Subnet with an explicit association becomes READY only after that policy is active
 - [ ] Creating a VirtualNetwork, a READY same-VirtualNetwork NetworkACL, and a single Subnet explicitly associated with that ACL provisions both fabric manager VNet and overlay network on OCP
 - [ ] VMs deployed on the subnet receive IP addresses that do not conflict with fabric manager DHCP allocations
 - [ ] VMs are discoverable and directly reachable from bare-metal servers on the same Subnet at L2
@@ -118,7 +118,7 @@ The following are out of scope for Phase 1:
 
 - **OSAC-1440 (Dispatcher Core):** Provides dispatcher infrastructure for routing networking operations to fabric and k8s managers based on NetworkClass configuration.
 
-- **Fabric manager:** Must support VirtualNetwork and Subnet provisioning with network segment identifiers, and must satisfy the shared NetworkACL provisioning and readiness contract. Physical infrastructure configuration is manual.
+- **Fabric manager:** Must support VirtualNetwork and Subnet provisioning with network segment identifiers, enforce the deployment default ACL action, and satisfy the shared optional NetworkACL association and readiness contract. Physical infrastructure configuration is manual.
 
 - **OVN-Kubernetes:** Must support overlay network provisioning with fabric bridging. Constraint: does not currently route between separate overlay networks on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
 
@@ -139,7 +139,10 @@ The following are out of scope for Phase 1:
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 06d340f90 (81 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

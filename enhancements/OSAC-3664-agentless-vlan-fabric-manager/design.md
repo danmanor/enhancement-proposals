@@ -28,10 +28,12 @@ superseded-by:
 This design documents agentless VLAN provisioning primitives for
 managed-switch infrastructure. This milestone does not register the backend as
 a supported fabric manager or make it selectable: every supported networking
-profile requires an actively enforced NetworkACL before its Subnet can be Ready,
-and this milestone does not implement that enforcement. The backend's topology
-primitives can be exercised by raw, backend-level tests, but they cannot serve
-API-ready Subnets or workload attachments.
+profile requires enforcement of the deployment-wide default ACL action on each
+Subnet and enforcement of any NetworkACL explicitly associated with that
+Subnet before it can be Ready. This milestone does not implement that policy
+enforcement. The backend's topology primitives can be exercised by raw,
+backend-level tests, but they cannot serve API-ready Subnets or workload
+attachments.
 See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -47,11 +49,13 @@ The current agentless path allocates VLANs and creates a router namespace per
 cluster workflow. The unified networking model requires a namespace per
 VirtualNetwork, multiple VLAN-backed Subnets inside that namespace, and no
 private routing between different VirtualNetworks. OSAC-1433 defines NetworkACL
-resources, their required Subnet associations, and mandatory policy readiness
-for every supported profile. This milestone does not implement ACL rule
-enforcement, so this backend cannot serve the shared networking contract or be
-selected as a supported fabric manager. An ACL-bound Subnet and its dependents
-must not be reported Ready while this backend ignores its rules.
+resources, optional Subnet associations, and a required deployment-wide default
+ACL action. Every supported profile must enforce the default action on each
+Subnet and any explicitly associated ACL rules before reporting readiness. This
+milestone does not implement that effective policy enforcement, so this backend
+cannot serve the shared networking contract or be selected as a supported
+fabric manager. A Subnet and its dependents must not be reported Ready while
+this backend ignores the configured policy.
 [Locked: D12] [User] [Research: VLANs and Linux network isolation]
 
 Bare-metal nodes must obtain IPv4 addresses through fabric-side DHCP, and the
@@ -97,10 +101,11 @@ creating DNAT. [PRD: FR-4] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.ym
   Networking API resource. [PRD: §2.2]
 - Implementing NetworkACL data-plane provisioning or rule enforcement in this
   backend milestone. OSAC-1433 defines the NetworkACL resource, its rules, and
-  the required Subnet association and readiness contract for every supported
-  profile. This backend cannot serve the shared networking API or be selected as
-  a supported fabric manager until it implements that contract. The readiness
-  path must leave mismatched Subnets and dependent resources not Ready.
+  its optional Subnet association plus the required deployment default ACL
+  action. This backend cannot serve the shared networking API or be selected as
+  a supported fabric manager until it enforces the default action on every
+  Subnet and the rules of any explicitly associated ACL. The readiness path must
+  leave mismatched Subnets and dependent resources not Ready.
 
 ## Proposal
 
@@ -172,11 +177,13 @@ state.
    capabilities 'ipv4', description, and fabric role.
 3. The installer may render a candidate ConfigMap for isolated backend tests,
    but the operator must keep `agentless_net` ineligible for supported
-   NetworkClass selection while it lacks NetworkACL enforcement. Networking CRs
+   NetworkClass selection while it lacks enforcement of the deployment default
+   ACL action and any explicitly associated NetworkACL rules. Networking CRs
    forced through a mismatched configuration remain not Ready. [Codebase: osac-operator/charts/operator/templates/network-managers.yaml]
 4. No post-install hook selects `fabric_manager=agentless_net` as a supported
    profile in this milestone. The backend becomes selectable only after it
-   implements and reports enforcement of each Subnet's required NetworkACL.
+   implements and reports enforcement of the deployment default action on every
+   Subnet and the rules of each explicitly associated NetworkACL.
 5. The provider supplies the existing agentless inventory and credentials
    configuration. The inventory describes the Cumulus switches, network nodes,
    interfaces, provider-facing external interface, BGP peer/session, and
@@ -193,16 +200,17 @@ failure condition; it does not silently fall back to physical fabric manager.
 #### Networking resource lifecycle
 
 The following API lifecycle describes the future supported flow after the
-agentless backend implements NetworkACL enforcement; it is not executable in
-this milestone. At present, the backend cannot serve tenant Networking API
+agentless backend implements effective policy enforcement; it is not executable
+in this milestone. At present, the backend cannot serve tenant Networking API
 resources. The Tenant Admin creates and deletes tenant Networking API resources:
-VirtualNetwork, Subnet, NetworkACL, ExternalIP, ExternalIPAttachment, and
-NATGateway. A usable tenant network requires a Ready Subnet with its NetworkACL
-association and enforcement ready before a machine can attach. This milestone
-does not provision or enforce NetworkACL rules, so it cannot be selected as a
-supported fabric manager. If a mismatched configuration reaches reconciliation,
-the Subnet and dependent resources remain not Ready; the backend must not fall
-back to its permit-all forwarding baseline. Tenant Users consume these resources
+VirtualNetwork, Subnet, optional NetworkACL, ExternalIP, ExternalIPAttachment,
+and NATGateway. A usable tenant network requires a Ready Subnet with the
+deployment default action enforced and, if the Subnet explicitly references an
+ACL, its rules active before a machine can attach. This milestone does not
+enforce that policy, so it cannot be selected as a supported fabric manager. If
+a mismatched configuration reaches reconciliation, the Subnet and dependent
+resources remain not Ready; the backend must not treat its raw permit-all
+forwarding baseline as the configured policy. Tenant Users consume these resources
 through their workload workflows only after enforcement support is added. [User]
 
 1. The Tenant Admin creates a VirtualNetwork and one or more Subnets through
@@ -215,10 +223,12 @@ through their workload workflows only after enforcement support is added. [User]
    and dispatches resources with fabric side effects through the generic AAP
    playbook. The implementation strategy selects
    `osac.templates.agentless_net`.
-4. AgentlessNet reconciles the desired fabric state idempotently: one namespace
-   and permit-all forwarding baseline per VirtualNetwork, and one
-   VLAN/interface/gateway/DHCP binding per Subnet. Subnet reconciliation never
-   binds a host access port.
+4. In raw topology tests, AgentlessNet reconciles one namespace and a permit-all
+   forwarding baseline per VirtualNetwork, and one VLAN/interface/gateway/DHCP
+   binding per Subnet. A future supported API path must enforce the deployment
+   default ACL action and any explicitly associated NetworkACL rules before
+   routed packets pass the baseline. Subnet reconciliation never binds a host
+   access port.
 5. ExternalIPPool and ExternalIP remain controller-managed allocation
    resources. ExternalIPAttachment and NATGateway dispatch their owned
    translation and ExternalIP-route operations only after controller
@@ -368,9 +378,9 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    address, and then announces the exact ExternalIP `/32` through BGP with the
    namespace-side transit address as the next hop. The route is announced only
    after the namespace, forwarding path, and DNAT rule are present. The
-   VirtualNetwork permit-all baseline is reconciled by the VirtualNetwork
-   lifecycle; the attachment operation does not create or update policy
-   resources.
+   raw-topology VirtualNetwork permit-all baseline is reconciled by the
+   VirtualNetwork lifecycle; it is not the deployment policy. The attachment
+   operation does not create or update policy resources.
 6. The attachment remains Pending or Progressing until both the parent
    ExternalIP address and the target address are current, the whole-address
    DNAT rule is present, and the BGP `/32` is observed as installed. It reaches
@@ -382,8 +392,10 @@ service-specific input contracts are not expanded here. [Locked: D1, D2]
    `targetEndpoint` selects the current API-server or
    ingress VIP, and the same all-protocol address translation is used rather
    than a port-specific rule. Once the supported external path exists, routed
-   inbound traffic is permitted by the default forwarding baseline; no
-   provider-managed default-deny capability is required. [PRD: FR-5] [User]
+   inbound traffic must satisfy the deployment default ACL action and any
+   explicitly associated NetworkACL rules. DNAT and route installation do not
+   themselves authorize traffic; the raw permit-all forwarding baseline is not
+   a substitute for policy enforcement. [PRD: FR-5] [User]
 
 ExternalIP is an allocated address resource independent of any VirtualNetwork.
 ExternalIPAttachment is the separate binding that gives that address an
@@ -421,14 +433,18 @@ not alter the NATGateway configuration. [Locked: D14]
    Subnet controller to delete its VLAN, gateway, and DHCP state. If the
    VirtualNetwork has no Subnets, the NATGateway keeps its consumer reservation
    and route but has an empty source rule set and reports no egress sources.
-5. The independently reconciled `filter/FORWARD` permit-all baseline allows
-   supported routed packets to reach the SNAT path. The NATGateway role does
-   not evaluate or modify policy resources. The external endpoint observes the
-   allocated ExternalIP as the source address, and established return traffic
-   follows conntrack back through the namespace to the original source.
-   NATGateway is Ready only after the NetworkACL association is Ready and actively
-   enforced for every source Subnet, and the explicit SNAT rules and BGP route are
-   observed as installed. [PRD: FR-6] [Locked: D14]
+5. In raw topology tests, the independently reconciled `filter/FORWARD`
+   permit-all baseline allows routed packets to reach the SNAT path. This
+   baseline is not the NetworkClass default ACL action and does not satisfy
+   API policy enforcement. A supported profile must apply the deployment
+   default action and any explicitly associated NetworkACL rules to every
+   source Subnet before forwarding traffic. The NATGateway role does not own
+   that policy evaluation. The external endpoint observes the allocated
+   ExternalIP as the source address, and established return traffic follows
+   conntrack back through the namespace to the original source. NATGateway
+   readiness depends on the explicit SNAT rules and BGP route being observed as
+   installed; each source Subnet must independently be Ready under its
+   effective policy. [PRD: FR-6] [Locked: D14]
 
 NATGateway is outbound only. It does not create an inbound DNAT mapping.
 
@@ -438,11 +454,13 @@ The external packet paths are:
   `<external-ip>/32` and sends the packet to the authoritative net node. The
   net-node route forwards it through the host side of the VirtualNetwork's
   transit veth to the namespace-side next hop. Namespace `PREROUTING` applies
-  the attachment's whole-address DNAT to the target private address; the
-  `FORWARD` baseline permits it and the Subnet interface delivers it to the
-  target. The target's reply returns through its Subnet gateway, conntrack
-  reverses the translation to the ExternalIP, and the namespace sends it over
-  the transit link and external uplink.
+  the attachment's whole-address DNAT to the target private address. A
+  supported API path first requires the effective Subnet policy to permit the
+  packet; the raw `FORWARD` baseline alone does not authorize it. After policy
+  permits it, the Subnet interface delivers it to the target. The target's
+  reply returns through its Subnet gateway, conntrack reverses the translation
+  to the ExternalIP, and the namespace sends it over the transit link and
+  external uplink.
 - Outbound: the target sends to its Subnet gateway; the namespace routes the
   packet through the transit veth, and `POSTROUTING` changes its source to the
   NATGateway ExternalIP with explicit SNAT. The host forwards it without a
@@ -559,7 +577,7 @@ The implementation changes the following existing surfaces:
 
 | ID | Existing surface | Change | Requirements |
 |---|---|---|---|
-| IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Permit isolated backend test registration; reject supported selection until mandatory NetworkACL enforcement is implemented | FR-1, NFR-1 |
+| IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Permit isolated backend test registration; reject supported selection until deployment default action and optional NetworkACL enforcement are implemented | FR-1, NFR-1 |
 | IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Route existing fabric resources through the agentless dispatcher and realize VLAN, namespace, forwarding baseline, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
 | IC-3 | Fabric network-attachment and DHCP feedback path | Attach and detach BM/CaaS/VM targets through a backend-neutral stable binding contract, restore the provider provisioning network on offboarding, and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
 | IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Persist an ExternalIP-UID reservation in fulfillment-service, allocate provider-side addresses through the locked AAP state file, transport and validate the provider result, install whole-address DNAT, and announce/withdraw the consumer-owned ExternalIP `/32` route | FR-5, FR-7, FR-10, NFR-2, NFR-3 |
@@ -628,10 +646,12 @@ does not mark the provisioning version successful.
 #### NetworkAPI resource CRs and implementation points
 
 The following examples describe the future API-backed resource shape after the
-agentless backend implements mandatory NetworkACL enforcement. They are not
-provisionable or selectable in this milestone. Every supported Subnet must include
-an associated NetworkACL and may be Ready only after its rules are actively
-enforced. `status` is controller-owned and is shown only to explain the important observed fields;
+agentless backend implements effective policy enforcement. They are not
+provisionable or selectable in this milestone. Every supported Subnet must use
+the deployment default ACL action, and a Subnet with an explicit NetworkACL
+association may be Ready only after its rules are actively enforced. An
+unassociated Subnet is valid and uses the deployment default action.
+`status` is controller-owned and is shown only to explain the important observed fields;
 users submit the `spec` and do not write `status`. All networking CRs are
 materialized in the single configured hub/networking namespace,
 `$OSAC_NETWORKING_NAMESPACE`; the tenant annotations identify the logical
@@ -672,11 +692,15 @@ NetworkClass whose fabric manager is `agentless_net`. `status.phase` and
 provider-specific `status.backendNetworkId` identifies the realized network
 without exposing a Linux namespace name.
 
-AgentlessNet maps the VirtualNetwork UID to one deterministic Linux routing
-namespace, creates its uplink/external boundary, and initializes an owned
-permit-all forwarding baseline on that namespace's `filter/FORWARD` path. The
-baseline permits supported routed tenant flow and established/related return
-traffic. Local DHCP traffic terminates in the namespace and is not routed
+In raw topology tests, AgentlessNet maps the VirtualNetwork UID to one
+deterministic Linux routing namespace, creates its uplink/external boundary,
+and initializes an owned permit-all forwarding baseline on that namespace's
+`filter/FORWARD` path. The baseline permits routed test traffic and
+established/related return traffic. It is not the configured NetworkClass
+default action and cannot authorize API traffic. A supported profile must
+enforce the deployment default action and any explicitly associated
+NetworkACL rules before routed tenant traffic passes this baseline. Local DHCP
+traffic terminates in the namespace and is not routed
 through this baseline. AgentlessNet records the mapping in the locked state
 file; it does not create tenant child resources or install private routes to
 another VirtualNetwork. [User]
@@ -868,8 +892,9 @@ or stale, it keeps the attachment pending and does not dispatch the AAP job.
 Once the target address is current, AgentlessNet creates an owned DNAT rule
 from `ExternalIP.status.address` to that target, without a protocol or port
 match, and announces the consumer-owned ExternalIP `/32` through BGP using the
-VirtualNetwork transit next hop. The VirtualNetwork permit-all baseline is
-maintained by the VirtualNetwork lifecycle, not by the attachment role.
+VirtualNetwork transit next hop. The raw-topology VirtualNetwork permit-all
+baseline is maintained by the VirtualNetwork lifecycle, not by the attachment
+role; it is not the effective policy for supported API traffic.
 
 ##### NATGateway
 
@@ -949,9 +974,10 @@ produce a status failure rather than selecting another manager. [Codebase: osac-
 #### NetworkClass capability boundary
 
 The agentless implementation supports IPv4 and not IPv6 or dual-stack, but its
-registration is not eligible for supported NetworkClass selection until it also
-enforces the mandatory NetworkACL policy. Address-family capability checks do
-not override this support boundary. [Locked: D10, D11; User direction]
+registration is not eligible for supported NetworkClass selection until it
+enforces the deployment default action and rules from any optional Subnet ACL
+associations. Address-family capability checks do not override this support
+boundary. [Locked: D10, D11; User direction]
 
 #### VirtualNetwork and Subnet realization
 
@@ -1182,7 +1208,7 @@ in the unified state file. [Codebase: osac-aap/collections/ansible_collections/a
 
 | API action | State transition | AgentlessNet data-plane operation |
 |---|---|---|
-| VirtualNetwork create/update/delete | Add or reconcile one `virtual_networks` entry, including its transit `/30`, veth identities, and external-reachability mode; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Allocate or reuse the transit link; create or repair the namespace, uplink, default route, and permit-all baseline; remove the link during ordered cleanup |
+| VirtualNetwork create/delete | Add one `virtual_networks` entry, including its transit `/30`, veth identities, and external-reachability mode; remove it only when the VirtualNetwork object is deleted and its child entries are gone | Allocate or reuse the transit link; create the namespace, uplink, default route, and raw-topology permit-all baseline; remove the link during ordered cleanup |
 | Subnet create/delete | Add one `subnets` entry with VLAN interface, gateway, DHCP range, exclusions, and state generation; remove it and release the VLAN only when the Subnet object is deleted and dependent bindings are gone | Create or repair the switch VLAN, namespace interface, gateway, dnsmasq range, and lease mapping; reload the per-VN daemon; reconcile any active NATGateway `source_cidrs`; no host access-port binding during Subnet provisioning |
 | ExternalIPPool create/delete | Add or reconcile one `external_ip_pools` entry; remove it only when the ExternalIPPool object is deleted | Register or remove provider-side pool CIDRs under the state-file lock; fulfillment-service remains authoritative for capacity counters |
 | ExternalIP create/delete | Create or reuse one fulfillment-service reservation keyed by ExternalIP UUID; add or reuse one complete `external_ips` provider entry keyed by the same UUID; accept provider and consumer cleanup events; release capacity only in the service's idempotent `RELEASED` transaction | Select and persist a complete IPv4 allocation atomically under the state-file lock, patch the provider-result annotations, and remove provider state before the service acknowledges capacity release |
@@ -1264,10 +1290,12 @@ FR-9] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.yml]
 The backend's low-level implementation establishes a permit-all forwarding
 baseline in the namespace's `filter/FORWARD` path for topology-only tests. That
 baseline is not an OSAC policy and cannot serve API workloads. Every supported
-profile requires active NetworkACL enforcement, so this backend cannot be
-selected as a supported fabric manager. If a mismatched configuration reaches
-reconciliation, Subnets and dependent resources remain not Ready and the
-baseline cannot be used as a fallback.
+profile requires enforcement of the deployment default ACL action and, when a
+Subnet explicitly references a NetworkACL, its rules. This backend cannot be
+selected as a supported fabric manager until it implements that effective
+policy. If a mismatched configuration reaches reconciliation, Subnets and
+dependent resources remain not Ready and the baseline cannot be used as a
+fallback.
 
 Traffic between hosts in the same Subnet is switched at Layer 2 on the access
 VLAN and does not traverse the namespace's `filter/FORWARD` chain. That traffic
@@ -1463,12 +1491,13 @@ across VNs or installing a shared route between overlapping VNs violates NFR-3.
 [PRD: NFR-3] [Locked: D12, D15]
 
 The forwarding baseline is available only to raw topology-level tests and is
-never a substitute for NetworkACL policy. Same-Subnet traffic is outside subnet
-ACL filtering and remains permitted at Layer 2. NetworkACLs are associated with
-Subnets, not workload attachments. This milestone cannot claim ACL-bound Subnet
-or dependent-resource readiness while it ignores configured rules; it cannot
-serve or be selected as a supported fabric manager until it implements that
-contract.
+never a substitute for the deployment default ACL action or optional
+NetworkACL rules. Same-Subnet traffic is outside Subnet ACL filtering and
+remains permitted at Layer 2. A Subnet's optional NetworkACL association is
+stored on the Subnet, not on workload attachments. This milestone cannot claim
+Subnet or dependent-resource readiness while it ignores the deployment policy
+or any explicitly configured ACL rules; it cannot serve or be selected as a
+supported fabric manager until it implements that contract.
 
 ### Failure Handling and Recovery
 
@@ -1844,9 +1873,10 @@ checks use raw topology fixtures.
 
 Positive integration cases that create OSAC API resources or assert resource
 readiness are future acceptance criteria, runnable only after this backend
-implements mandatory NetworkACL enforcement. Every Ready Subnet must have its required
-NetworkACL association actively enforced. In the current milestone, only selection
-rejection and raw backend topology fixtures are applicable.
+enforces the deployment default action on every Subnet and actively enforces
+any explicitly associated NetworkACL rules. An ACL association is optional. In
+the current milestone, only selection rejection and raw backend topology
+fixtures are applicable.
 
 - In a future backend version with mandatory NetworkACL enforcement, render
   manager configuration and NetworkClass selection with Helm values. In this
@@ -1888,16 +1918,18 @@ rejection and raw backend topology fixtures are applicable.
 ### E2E Tests
 
 All E2E cases below that create OSAC API resources, attach workloads, or assert
-readiness are future acceptance criteria. They may run only after mandatory
-NetworkACL enforcement is implemented, and every Ready Subnet must have its
-associated ACL actively enforced. No API-ready workload E2E is supported in
-this milestone.
+readiness are future acceptance criteria. They may run only after the backend
+enforces the deployment default action and any explicitly associated
+NetworkACL rules before reporting a Subnet Ready. A Subnet without an ACL
+association is valid and uses the deployment default action. No API-ready
+workload E2E is supported in this milestone.
 
-- After mandatory NetworkACL enforcement is implemented, configure the
+- After effective policy enforcement is implemented, configure the
   Cumulus-backed agentless manager and create a VirtualNetwork and multiple
-  Subnets through the existing API; every Subnet must have its associated ACL
-  actively enforced before it or any dependent workload is Ready. This API E2E
-  case is deferred in the current milestone.
+  Subnets through the existing API. Each Subnet uses the deployment default
+  action; Subnets with explicit ACL associations also wait for those rules to
+  become active before they or dependent workloads are Ready. This API E2E case
+  is deferred in the current milestone.
 - Verify same-Subnet L2, permitted same-VN cross-Subnet traffic, and
   private-address isolation between overlapping VirtualNetworks.
 - Provision a BMaaS reference attachment, obtain a DHCP address, and observe it in
@@ -2068,10 +2100,10 @@ existing mono-repo and tests/e2e patterns.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

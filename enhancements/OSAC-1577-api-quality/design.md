@@ -255,7 +255,7 @@ Tables requiring `active_` companions (based on existing Pattern A triggers):
 |-------|--------|
 | `active_subnets` | Referenced by each ComputeInstance network attachment |
 | `active_virtual_networks` | Referenced by subnets, network_acls, nat_gateways |
-| `active_network_acls` | Referenced by each Subnet's `network_acl` association |
+| `active_network_acls` | Referenced by Subnets that have a `network_acl` association |
 | `active_instance_types` | Referenced by compute_instances |
 | `active_cluster_catalog_items` | Referenced by clusters |
 | `active_compute_instance_catalog_items` | Referenced by compute_instances |
@@ -354,16 +354,18 @@ updated in place:
 
 The FK from `subnet_id` to `active_subnets(id)` enforces that the referenced subnet is active. Migration backfill inserts refs only for currently active compute instances (`deletion_timestamp = 'epoch'`).
 
-Subnet network policy is also a resource reference: each Subnet has exactly
-one active NetworkACL association. Materialize that association in
-`subnet_network_acl_refs` with `network_acl_id` referencing
-`active_network_acls(id)`. Subnet creation writes this row from the resolved NetworkACL association
-persisted on the Subnet. Soft-delete removes it; undelete restores it from
-that persisted association, and the foreign key rejects restoration if the
-NetworkACL is inactive. Updates to unrelated Subnet fields do not change the
-row because the association is immutable. Hard-delete cascades through
-`subnet_id`. The reference prevents deleting an ACL while any active Subnet
-remains associated with it.
+Subnet network policy is an optional resource reference: a Subnet may have
+zero or one active NetworkACL association. For each explicit association,
+materialize one row in `subnet_network_acl_refs` with `network_acl_id`
+referencing `active_network_acls(id)`; an unassociated Subnet has no row. The
+table's primary key on `subnet_id` enforces at most one association. Subnet
+creation writes a row only when its persisted `spec.network_acl` is set.
+Soft-delete removes that row; undelete restores it only when the persisted
+association is set, and the foreign key rejects restoration if the NetworkACL
+is inactive. Updates to unrelated Subnet fields do not change the row because
+the association is immutable. Hard-delete cascades through `subnet_id`. The
+reference prevents deleting an ACL while any active Subnet remains associated
+with it.
 
 ##### Migration Strategy
 
@@ -377,19 +379,19 @@ A single migration (next available number after 79), executed in one transaction
 6. Create or migrate materialized ref tables for each parent-child relationship;
    `compute_instance_subnet_refs` uses the composite primary key
    (`compute_instance_id, attachment_index`) rather than one row per instance
-7. Preflight every active Subnet's persisted `spec.network_acl.id` and verify it
-   resolves to an active row in `active_network_acls`. Run this check after
-   source tables are locked and active tables are populated, within the same
-   transaction. If any active Subnet has a missing, unresolved, or inactive ACL
-   association, raise an error that identifies its tenant and Subnet and abort
-   the transaction before ACL-reference backfill. Legacy Subnets require an
-   explicit tenant-directed conversion before migration; do not infer or assign
-   an ACL automatically.
+7. For each active Subnet with an explicit `spec.network_acl` association,
+   preflight its persisted `spec.network_acl.id` and verify it resolves to an
+   active row in `active_network_acls`. Run this check after source tables are
+   locked and active tables are populated, within the same transaction. If an
+   explicit association is unresolved or inactive, raise an error that
+   identifies its tenant and Subnet and abort before ACL-reference backfill.
+   An unset association is valid and requires no ACL-reference row. Do not
+   infer or assign an ACL to legacy Subnets automatically.
 8. Backfill ref tables from existing JSONB data for active resources
    (`WHERE deletion_timestamp = 'epoch'`): insert each ComputeInstance
    attachment with its stable array index into
    `compute_instance_subnet_refs`, and insert each active Subnet's persisted
-   NetworkACL association into `subnet_network_acl_refs`
+   NetworkACL association into `subnet_network_acl_refs` only when one is set
 9. Attach ref materialization triggers to `compute_instances` and `subnets`
 10. Drop the old per-resource Pattern A triggers (e.g., `DROP TRIGGER check_subnets_not_in_use ON subnets`)
 11. Drop the old per-resource Pattern A trigger functions (e.g., `DROP FUNCTION check_subnets_not_in_use()`) from migrations 52, 55, 56, 59, 73, 76
@@ -578,7 +580,7 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 - Verify that soft-deleting a parent with active children raises `ErrInUse`
 - Verify that soft-deleting a parent with no active children succeeds
 - Verify that hard-deleting a row removes it from `active_<table>`
-- Verify that a Subnet's NetworkACL reference is removed on soft-delete, restored on undelete, and blocks NetworkACL soft-delete while the Subnet is active
+- Verify that an explicitly associated Subnet's NetworkACL reference is removed on soft-delete, restored on undelete, and blocks NetworkACL soft-delete while the Subnet is active; an ACL-less Subnet has no reference row
 
 **OSAC-1540:**
 - Verify that consolidated `translateError` returns correct error types for all SQLSTATE codes across create, update, and delete operations
@@ -595,7 +597,7 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 - Create a parent, soft-delete it, attempt to create a child referencing it — verify rejection with ErrReference
 - Create a parent, create a child, delete the child, then soft-delete the parent — verify success
 - Create a Subnet with a NetworkACL association, soft-delete and undelete the Subnet, then verify the ACL reference is restored and prevents ACL deletion
-- Run the migration preflight with an active Subnet missing an ACL or referencing an inactive ACL; verify the transaction aborts with tenant and Subnet details before inserting ACL-reference rows. After explicit tenant-directed conversion to an active ACL, verify the backfill succeeds.
+- Run the migration preflight with an active Subnet whose ACL association is unset and verify migration succeeds without an ACL-reference row. With an explicit association that is unresolved or inactive, verify the transaction aborts with tenant and Subnet details before inserting ACL-reference rows. After repairing the explicit association to an active ACL, verify the backfill succeeds.
 - Concurrent test: two requests simultaneously — one soft-deleting a parent, one creating a child — verify that exactly one succeeds
 
 ### E2E Tests
@@ -643,10 +645,10 @@ None. All changes use existing build and test infrastructure. protoc-gen-cleanap
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

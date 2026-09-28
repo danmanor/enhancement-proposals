@@ -4,22 +4,25 @@
 
 **Last updated:** 2026-09-24
 
-**Mandatory support boundary:** Every supported profile requires each Subnet's
-associated NetworkACL to be actively enforced before the Subnet can be Ready.
-The agentless backend does not implement enforcement, so this milestone cannot
-serve the shared networking API or be selected as a supported fabric manager.
-Reject selection; if a mismatch reaches reconciliation, the Subnet and its
-dependents remain not Ready. No API-ready workload/data-plane case is executable
-against this backend in this milestone. Any future positive case that asserts a
-Subnet or dependent resource is Ready must provision its associated NetworkACL
-and verify active enforcement before readiness.
+**Mandatory support boundary:** Every supported profile must enforce the
+deployment-wide default ACL action on each Subnet before it can be Ready. If a
+Subnet has an explicit NetworkACL association, that ACL's rules must also be
+actively enforced before readiness. The agentless backend does not implement
+that policy enforcement, so this milestone cannot serve the shared networking
+API or be selected as a supported fabric manager. Reject selection; if a
+mismatch reaches reconciliation, the Subnet and its dependents remain not
+Ready. No API-ready workload/data-plane case is executable against this
+backend in this milestone. Future positive cases must configure the deployment
+default action and verify its enforcement; if a test Subnet has an explicit ACL,
+verify that policy is active before readiness.
 
 **Current positive data-plane cases:** TC-FR3-01 through TC-FR3-03 and
 TC-NFR3-01 through TC-NFR3-02 are raw topology tests only. Their fixtures create
 VLAN/namespace/route state directly; they must not create API Subnets, attach API
 workloads, assert Ready status, or claim NetworkACL enforcement. Other positive
 API/resource cases in this test plan are future acceptance criteria and are
-deferred until this backend implements NetworkACL enforcement.
+deferred until this backend enforces the deployment default action and any
+explicitly associated NetworkACL rules.
 
 
 - **Feature:** OSAC-3664 — Fabric Manager — Agentless VLAN
@@ -29,7 +32,7 @@ deferred until this backend implements NetworkACL enforcement.
   the design document's Test Plan section is only a short strategy summary.
 - **Total test cases (including future-gated cases):** 35
 - **Currently executable cases:** 8 (selection/rejection and raw topology only)
-- **Deferred until NetworkACL enforcement:** 27
+- **Deferred until effective policy enforcement:** 27
 - **Requirements covered:** 13 of 13
 - **Interface changes covered:** 6 of 6
 
@@ -37,7 +40,7 @@ deferred until this backend implements NetworkACL enforcement.
 
 ### FR-1: Backend selection
 
-#### TC-FR1-01: Keep agentless_net ineligible without NetworkACL enforcement
+#### TC-FR1-01: Keep agentless_net ineligible without effective policy enforcement
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -69,8 +72,11 @@ deferred until this backend implements NetworkACL enforcement.
 
 ##### Preconditions
 
-- Every supported networking profile requires NetworkACL enforcement.
-- agentless_net does not implement or advertise that enforcement.
+- Every supported networking profile requires the deployment default action to
+  be enforced on each Subnet and requires any explicitly associated NetworkACL
+  rules to be enforced.
+- agentless_net does not implement or advertise that effective policy
+  enforcement.
 
 ##### Steps
 
@@ -82,7 +88,7 @@ deferred until this backend implements NetworkACL enforcement.
 ##### Expected Results
 
 - Both selection attempts are rejected because agentless_net cannot satisfy the
-  mandatory NetworkACL readiness contract.
+  effective Subnet policy readiness contract.
 - A stale selection does not dispatch a data-plane job; the Subnet and dependent
   resources remain not Ready.
 - Tenant API requests do not gain backend-specific fields.
@@ -96,7 +102,9 @@ deferred until this backend implements NetworkACL enforcement.
 ##### Preconditions
 
 - agentless_net is registered but does not advertise NetworkACL enforcement.
-- A Subnet has a required NetworkACL association whose rules are not enforced.
+- NetworkClass configures the deployment default action as `DENY`.
+- A Subnet has no ACL association, but the raw permit-all forwarding baseline
+  would pass unmatched traffic without enforcing that action.
 
 ##### Steps
 
@@ -110,13 +118,16 @@ deferred until this backend implements NetworkACL enforcement.
 - The stale selection is rejected before a supported backend dispatch.
 - The Subnet and dependent attachment remain not Ready; the workload is not
   permitted to use the Subnet.
-- No ACL-unaware permit-all fallback is applied or treated as successful.
+- The raw permit-all baseline is not treated as enforcement of the deployment
+  default action; the mismatched backend is rejected before API traffic can use it.
 
 ### FR-2: Fabric-manager-agnostic networking (future after NetworkACL support)
 
 These scenarios are future acceptance criteria. Their Ready outcomes are valid
-only after this backend implements mandatory NetworkACL enforcement and every
-Subnet used by a positive case has an associated, actively enforced policy.
+only after this backend enforces the deployment default action for every Subnet
+and the rules of any explicitly associated NetworkACL. A positive case may use
+an ACL-less Subnet when its configured deployment action permits the tested
+traffic.
 
 #### TC-FR2-01: Create the existing networking resource set
 
@@ -126,8 +137,9 @@ Subnet used by a positive case has an associated, actively enforced policy.
 
 ##### Preconditions
 
-- Run this case only after `agentless_net` implements mandatory NetworkACL
-  enforcement and is eligible for selection in NetworkClass.
+- Run this case only after `agentless_net` enforces the deployment default
+  action and any explicitly associated NetworkACL rules and is eligible for
+  selection in NetworkClass.
 - The test tenant has the required authorization and tenant metadata.
 - A Cloud Infrastructure Admin fixture can create the provider-scoped
   ExternalIPPool; the tenant fixture cannot create or update that pool.
@@ -176,7 +188,8 @@ Subnet used by a positive case has an associated, actively enforced policy.
 
 - Two allocated ExternalIPs have distinct addresses in status.
 - A target resource has a primary private address.
-- The target Subnet and its NetworkACL are Ready, with the policy enforced.
+- The target Subnet is Ready under the deployment default action and any
+  explicitly associated NetworkACL policy.
 
 ##### Steps
 
@@ -418,7 +431,8 @@ Subnet used by a positive case has an associated, actively enforced policy.
 
 - An ExternalIP is Allocated with status.address populated.
 - The target has no primary private address at first, then receives one.
-- The target Subnet and its NetworkACL are Ready, with the policy enforced.
+- The target Subnet has a READY, explicitly associated NetworkACL whose policy
+  is enforced.
 - The supported external path is available, and the target Subnet NetworkACL
   explicitly permits the inbound test flow.
 - The provider-owned BGP peer is established and can report learned `/32`
@@ -441,8 +455,9 @@ Subnet used by a positive case has an associated, actively enforced policy.
   the upstream BGP peer learns the route.
 - The attachment remains non-ready if ExternalIP allocation succeeds but the
   DNAT operation fails.
-- Inbound data-plane checks require the associated Subnet NetworkACL to be Ready
-  and enforced. If the ACL is absent or unready, the attachment remains not Ready.
+- Inbound data-plane checks pass only when the effective Subnet policy permits
+  the flow. An associated ACL must be active; when no ACL is associated, the
+  deployment default action decides whether the flow is permitted.
 
 ### FR-6: Outbound external connectivity (future after NetworkACL support)
 
@@ -1070,10 +1085,10 @@ All interface changes are exercised by test cases.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -41,11 +41,11 @@ When users create or update OSAC resources that reference other resources — a 
 
 ### Tenant Admin
 
-- As a Tenant Admin, I want to create subnets and NetworkACLs that reference their parent virtual network by name, and associate each Subnet with exactly one NetworkACL by name, so that I can set up networking using readable, meaningful names. [User]
+- As a Tenant Admin, I want to create subnets and NetworkACLs that reference their parent virtual network by name, and optionally associate each Subnet with one NetworkACL by name, so that I can set up networking using readable, meaningful names. [User]
 
 ### Tenant User
 
-- As a Tenant User, I want to create a compute instance that references a subnet by name in its network attachment so that the subnet’s associated NetworkACL governs its traffic without adding a policy reference to the workload attachment. [User]
+- As a Tenant User, I want to create a compute instance that references a subnet by name in its network attachment so that an optional Subnet NetworkACL refines the deployment default ACL policy without adding a policy reference to the workload attachment. [User]
 - As a Tenant User, I want to create a compute instance that references a catalog item or template by name so that I can order resources from the catalog using human-readable names.
 - As a Tenant User, I want to create an external IP attachment that references the external IP and target resource (compute instance, cluster, or bare metal instance) by name so that I can manage IP bindings without identifier lookup.
 - As a Tenant User, I want to receive a clear, immediate error when I reference a resource that doesn't exist or that I don't have access to so that I can fix my request without debugging downstream failures.
@@ -65,7 +65,10 @@ When users create or update OSAC resources that reference other resources — a 
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

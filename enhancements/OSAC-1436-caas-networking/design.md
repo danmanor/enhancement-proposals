@@ -101,14 +101,14 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
      --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
      --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
-   NetworkACLs have no seeded rules; an ACL with empty ingress and egress lists denies all traffic at the Subnet boundary. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic is denied. The complete rule set is fixed at ACL creation. Changing policy requires recreating the affected networking resources. Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
+   NetworkACLs have no seeded rules. An ACL with empty ingress and egress lists contributes no matching decisions, so the required deployment default ACL action decides traffic. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic uses the required deployment default ACL action. The complete rule set is fixed at ACL creation. Changing policy requires recreating the affected networking resources. Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
 
 3. **Create Subnet:**
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
      --network-acl my-acl --name my-subnet
    ```
-   `Subnet.spec.network_acl` references exactly one active NetworkACL in the same VirtualNetwork and is immutable after Subnet creation. The ACL may be reused by other Subnets in that VirtualNetwork. Dispatcher → TWO jobs: fabric_manager creates VLAN/fabric segment + k8s_manager creates CUDN overlay (if deployment hosts VMs)
+   `Subnet.spec.network_acl` may be omitted or reference one READY NetworkACL in the same VirtualNetwork. An omitted reference remains unset and the deployment default ACL action applies where no rule matches. Any explicit association is immutable after Subnet creation, and an ACL may be reused by other Subnets in that VirtualNetwork. Dispatcher → TWO jobs: fabric_manager creates VLAN/fabric segment + k8s_manager creates CUDN overlay (if deployment hosts VMs)
 
 #### Phase 2: Tenant Creates Cluster
 
@@ -129,8 +129,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
     - If `network_attachment` is omitted or empty: populates it with the tenant's default Subnet (see Default Networking PRD).
     - If one attachment is supplied, defaults only a missing Subnet; supplied values are preserved. CaaS does not accept a tenant interface field; fulfillment resolves the first `fabric` port from each node set's BareMetalInstanceType and stores it as immutable `fabric_interface` on the node set for the worker handoff.
     - Validates network_attachment (the singular Cluster field):
-      - Subnet exists and is Ready, including completion of its NetworkACL association
-      - The Subnet's associated NetworkACL is Ready; the Subnet association ensures both resources belong to the same VirtualNetwork
+      - Subnet exists and is READY
+      - If `spec.network_acl` is set, the referenced ACL is READY and belongs to the same VirtualNetwork; an omitted association remains unset and uses the deployment default ACL action for unmatched traffic
     - For each node_set: resolves `baremetal_instance_type` → BareMetalInstanceType → picks first port with `role=fabric` from `network_ports[]` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) in the same DB transaction as the Cluster. Both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachments are **not** created at this point — their dependencies (ExternalIP Allocated + Cluster Ready) are not yet met. The fulfillment-service internal reconciler creates them later once both prerequisites are satisfied (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
@@ -197,7 +197,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 12. **Delete Cluster:**
     - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
     - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
-    - **Default networking resources (VN, Subnet, NetworkACL, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
+    - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
       - Deletes MetalLB LoadBalancer Services
@@ -364,7 +364,7 @@ Migration adds to clusters table:
 
 #### Server Validation
 
-- network_attachment: resolved Subnet exists and is Ready, including its NetworkACL association; only a missing Subnet is defaulted without replacing supplied values
+- network_attachment: resolved Subnet exists and is READY; if it has an ACL association, that policy must be active. Only a missing Subnet is defaulted without replacing supplied values.
 - Each node set's `baremetal_instance_type` must have at least one `network_ports` entry with `role=fabric` for fabric_interface resolution
 - Immutability: network_attachment is immutable after creation
 - target_endpoint validation on ExternalIPAttachment: required when target is cluster, must be `API` or `INGRESS`
@@ -389,8 +389,8 @@ Migration adds to clusters table:
 
 | Component | Responsibility |
 |-----------|---------------|
-| fulfillment-service | Validate `network_attachment` (singular), resolve fabric_interface per node set from BareMetalInstanceType, require a Ready Subnet and associated NetworkACL, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
-| osac-operator networking controllers | Reconcile NetworkACL resources and Subnet associations; mark a Subnet Ready only after its ACL association is Ready |
+| fulfillment-service | Validate `network_attachment` (singular), resolve fabric_interface per node set from BareMetalInstanceType, require a READY Subnet and validate any associated NetworkACL, create ClusterOrder CR, sync VIPs from feedback, auto-provision ExternalIP |
+| osac-operator networking controllers | Reconcile NetworkACL resources and Subnet associations; require an active ACL association before marking a Subnet Ready only when the Subnet explicitly references an ACL; ACL-less Subnets use the deployment default action |
 | osac-operator BareMetalWorkerReconciler | Create on-demand BareMetalInstances via BMaaS private gRPC API with a one-entry `network_attachments` list (subnet from ClusterOrder `networkAttachment` + immutable `fabric_interface` from the node set, resolved once by fulfillment-service); correlate Agents to BMIs via MAC; delete BMIs on scale-down/cluster deletion. BMaaS owns the fabric port move and IP discovery as part of BMI provisioning (OSAC-2135) |
 | osac-operator ClusterOrder controller | Create namespace/SA/RoleBindings, trigger AAP workflow, aggregate worker status |
 | osac-operator ClusterOrder feedback controller | Watch ClusterOrder status, Signal fulfillment-service when VIPs appear |
@@ -412,8 +412,8 @@ This feature inherits the existing security model:
 - Tenant isolation via `osac.openshift.io/tenant` annotation enforced by OPA policies
 - Auto-provisioned resources (ExternalIP, ExternalIPAttachment) inherit tenant annotation from parent Cluster
 - No new authentication or authorization changes
-- The NetworkACL associated with the cluster Subnet controls traffic uniformly for all cluster nodes; it is not part of the Cluster or BMI attachment
-- Ingress and egress rules are stateless and evaluated independently using the shared match-specificity order; first match decides allow or deny, and unmatched traffic is denied
+- Any NetworkACL associated with the cluster Subnet refines the deployment default policy uniformly for all cluster nodes; if no ACL is associated, the deployment default action applies. The ACL is not part of the Cluster or BMI attachment
+- Ingress and egress rules are stateless and evaluated independently using the shared match-specificity order; first match decides allow or deny, and unmatched traffic uses the deployment default ACL action
 - Return traffic requires an explicit reverse-direction rule
 - Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
@@ -550,7 +550,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 ### Unit Tests
 
 - fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
-- fulfillment-service: omitted and partial attachment defaulting (only a missing Subnet is defaulted; the Subnet's associated NetworkACL applies uniformly to all workloads attached there)
+- fulfillment-service: omitted and partial attachment defaulting (only a missing Subnet is defaulted; an associated NetworkACL refines the deployment default policy uniformly for all workloads attached there; otherwise the deployment default action applies)
 - fulfillment-service: fabric_interface resolution per node set (BareMetalInstanceType must have fabric-role port)
 - fulfillment-service: interface resolution from BareMetalInstanceType (pick first fabric-role port from network_ports[] and store it on the node set)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
@@ -564,8 +564,8 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - E2E: create Cluster with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
 - E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
-- E2E: create Cluster with omitted network_attachment, verify the default Subnet is populated and its associated NetworkACL governs cluster traffic
-- E2E: verify NetworkACL specificity-based matching, first-match allow/deny, implicit deny, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
+- E2E: create Cluster with omitted network_attachment, verify the default Subnet is populated without an ACL association and unmatched traffic follows the deployment default action
+- E2E: verify NetworkACL specificity-based matching, first-match allow/deny, deployment default ACL action, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
 - E2E: VIP feedback loop — verify template writes VIPs to ClusterOrder status, fulfillment-service syncs to Cluster, ExternalIPAttachment controller creates DNAT
 
 ### Tricky Test Cases
@@ -637,7 +637,7 @@ fulfillment-service, osac-operator, and osac-aap are deployed together in the sa
 ### Client Skew
 
 osac-cli (n-1) with fulfillment-service (n):
-- Old CLI does not send `--network-attachment` flag → server populates the default Subnet; its associated NetworkACL supplies the traffic policy
+- Old CLI does not send `--network-attachment` flag → server populates the default Subnet; the deployment default ACL action applies unless a matching rule in an explicitly associated ACL decides the traffic
 - New CLI uses new `--network-attachment` flag → server accepts a Subnet-only attachment
 
 osac-cli (n) with fulfillment-service (n-1):
@@ -738,8 +738,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Phases: revise, revise
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
