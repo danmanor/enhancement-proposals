@@ -31,7 +31,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 - A tenant can create a VM with zero or one network attachment; the sole attachment is the primary/default route
 - A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
-- A tenant can create a VM without specifying networking details — the system uses the tenant's default subnet and deployment default ACL policy, refined by any ACL explicitly associated with the subnet
+- A tenant can create a VM without specifying networking details — the system uses the tenant's default Subnet, which has no ACL association, under the deployment default ACL policy
 - The platform prevents VM creation in deployments that do not support virtualization
 
 ### 2.2 Non-Goals
@@ -46,7 +46,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - As a Tenant User, I want to create a VM with one network attachment, so that it receives connectivity on the selected subnet
 - As a Tenant User, I want the sole network attachment to provide the VM's default gateway and DNS configuration without requiring a second API field
 - As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
-- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default subnet and the deployment default ACL policy, refined by any ACL explicitly associated with that subnet, and I can get started quickly
+- As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default Subnet under the deployment default ACL policy and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
 
 ### Tenant Admin Stories
@@ -73,11 +73,11 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Optional Network Configuration with Defaults
 
-- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's default subnet (see Default Networking PRD). When a single attachment is supplied with a missing subnet, only the subnet is defaulted; supplied values are preserved. If the resolved subnet has an associated NetworkACL, its rules refine the deployment default ACL policy; otherwise that deployment policy applies directly. The resolved subnet is stored with the VM so it is self-describing after creation. [User]
+- **FR-3:** Network configuration is optional when creating a VM. When the attachment list is omitted or empty, the system uses the tenant's default Subnet, which has no ACL association (see Default Networking PRD). When a single attachment is supplied with a missing Subnet, only the Subnet is defaulted; supplied values are preserved. If an explicitly selected Subnet has an associated NetworkACL, its rules refine the deployment default ACL policy; otherwise that deployment policy applies directly. The resolved Subnet is stored with the VM so it is self-describing after creation. [User]
 
 #### Auto External IP
 
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, NetworkACLs, NATGateway) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
 
 #### IP Address Discovery
 
@@ -93,7 +93,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### NetworkACL Policy
 
-- **FR-8:** A VM receives the deployment default ACL policy, refined by any NetworkACL associated with its Subnet; each Subnet has zero or one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Tenants configure this policy on the Subnet and it applies uniformly to all workloads attached to that Subnet. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule uses the required deployment default ACL action, which also applies when no ACL is associated. The policy is stateless, so return traffic requires an explicit rule in the reverse direction. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. [User]
+- **FR-8:** A VM receives the deployment default ACL policy, refined by any NetworkACL associated with its Subnet; each Subnet has zero or one active association, and an ACL may be reused by Subnets in the same VirtualNetwork. Tenants configure this policy on the Subnet and it applies uniformly to all workloads attached to that Subnet. Ingress and egress rules are evaluated independently using the shared match-specificity order; action and request order do not determine precedence. The first matching rule allows or denies traffic, and traffic with no matching rule uses the required deployment default ACL action, which also applies when no ACL is associated. The policy is stateless, so return traffic is evaluated independently in the reverse direction. With a `DENY` fallback, permitting a reply requires a matching reverse-direction `ALLOW` rule to win precedence; with `PERMIT`, an unmatched reply passes unless a matching reverse-direction `DENY` rule applies. Traffic between workloads on the same Subnet is not filtered by the Subnet NetworkACL; traffic between Subnets must satisfy the source Subnet's egress policy and the destination Subnet's ingress policy. [User]
 
 ### 4.2 Non-Functional Requirements
 
@@ -109,9 +109,9 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
-- [ ] Creating a VM with an omitted or empty attachment list receives the tenant default Subnet, and the deployment default policy applies unless a matching rule in an explicitly associated NetworkACL decides the traffic
+- [ ] Creating a VM with an omitted or empty attachment list receives the tenant default Subnet, which has no ACL association, so the deployment default action decides unmatched traffic
 - [ ] Creating a VM with a partial single attachment defaults only its missing subnet; its resolved Subnet's optional NetworkACL refines the deployment default policy
-- [ ] Ingress and egress use the first matching rule under the shared match-specificity order, unmatched traffic uses the deployment default ACL action, and return traffic requires an explicit reverse-direction rule
+- [ ] Ingress and egress use the first matching rule under the shared match-specificity order and unmatched traffic uses the deployment default ACL action; under `DENY`, permitting return traffic requires a matching reverse-direction `ALLOW` rule to win precedence, while under `PERMIT`, unmatched replies pass unless a reverse-direction `DENY` rule applies
 
 ## 6. Assumptions
 
@@ -155,10 +155,10 @@ Resolved: Return error, no resource persisted.
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

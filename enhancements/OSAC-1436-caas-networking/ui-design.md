@@ -76,7 +76,7 @@ component in `libs/ui-components/` that both adapters consume:
 Extends `ClusterNetworkingStep` (`wizard/adapters/cluster/`) with
 `network_attachment` pickers above the existing `pod_cidr`/`service_cidr`
 fields. All new fields are optional — when omitted, the fulfillment-service
-applies the tenant's default Subnet; an optional ACL association refines the deployment default policy, which otherwise decides unmatched traffic
+applies the tenant's default Subnet, which has no ACL association and uses the deployment default policy; an explicitly selected Subnet may have an optional ACL association that refines that policy
 ([Default Networking PRD](/enhancements/OSAC-1433-default-networking/prd.md)).
 
 The step is split into two visually distinct sections using

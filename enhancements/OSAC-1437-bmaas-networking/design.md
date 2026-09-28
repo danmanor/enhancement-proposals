@@ -233,7 +233,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
 
 5. **fulfillment-service:**
    - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet and the first port with role `fabric` from `BareMetalInstanceType.network_ports` (see [Default Networking PRD](/enhancements/OSAC-1433-default-networking)).
-   - If one attachment is supplied, defaults only a missing Subnet or interface; a missing Subnet receives the tenant default Subnet, and a missing interface receives the first `fabric` port from `BareMetalInstanceType.network_ports`; supplied values are preserved. Any NetworkACL associated with the resolved Subnet refines the deployment default policy; if none is associated, the deployment default action applies.
+   - If one attachment is supplied, defaults only a missing Subnet or interface; a missing Subnet receives the tenant default Subnet, which has no ACL association, and a missing interface receives the first `fabric` port from `BareMetalInstanceType.network_ports`; supplied values are preserved. For an explicitly selected Subnet, any associated NetworkACL refines the deployment default policy; if none is associated, the deployment default action applies.
    - Validates:
      - At most one network attachment is specified
      - Each subnet exists, is Ready
@@ -643,7 +643,7 @@ This feature inherits the existing security model:
 - No new authentication or authorization changes
 - Any NetworkACL associated with the BM's Subnet refines the deployment default policy uniformly for every workload attached to that Subnet; if no ACL is associated, the deployment default action applies. The ACL is not carried in the BM attachment
 - Ingress and egress rules are evaluated independently using the shared match-specificity order; the first matching rule allows or denies traffic and unmatched traffic uses the deployment default ACL action
-- The ACL is stateless, so return traffic requires an explicit reverse-direction rule
+- Return traffic is evaluated independently in the reverse direction. With a `DENY` deployment fallback, a matching reverse-direction `ALLOW` rule must win precedence to permit a reply; with `PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY` rule applies.
 - Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
 ### Failure Handling and Recovery
@@ -775,7 +775,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with a second `--network-attachment`, verify the CLI and API return a maximum-one error
-- E2E: verify NetworkACL specificity-based matching, first-match allow/deny, deployment default ACL action, explicit reverse-direction rules, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
+- E2E: verify NetworkACL specificity-based matching, first-match allow/deny, both deployment fallback actions, unmatched replies under `PERMIT`, reverse-direction `ALLOW` rules under `DENY`, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
 - E2E: verify IP discovery (`query_dhcp_lease` role queries fabric manager DHCP lease API after `reconcileReboot` sets `NetworkHandoffComplete=True`, matches port MAC to the tenant-network IP, operator writes to CR status, feedback controller syncs to fulfillment-service, ExternalIPAttachment controller reads primary IP)
 - E2E: verify the port move and reboot flow — create BMI provisions on the provisioning network, then moves the fabric port provisioning network → tenant network + reboots; delete BMI returns it tenant → provisioning network (confirm in fabric manager; a freed server can re-inspect with internet)
 - E2E: verify isolation-until-ready — before the move, a tenant vantage cannot reach the server; after move + reboot, it can, and the server is no longer on the provisioning network
@@ -980,10 +980,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

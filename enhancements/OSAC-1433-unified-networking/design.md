@@ -423,9 +423,12 @@ not an ordering field, so a more-specific `ALLOW` can precede a broader
 `DENY`, and a more-specific `DENY` can precede a broader `ALLOW`. Rules with
 identical match fields in one direction are rejected to prevent conflicting
 actions from having equal precedence. The first matching rule in the computed
-order decides the packet. Because the ACL is stateless, reply packets need
-their own matching rule in the reverse direction. Both actions are supported so
-tenants can permit specific traffic under a deployment `DENY` default or deny
+order decides the packet. The ACL is stateless: ingress and egress are evaluated
+independently, including reply traffic in the reverse direction. To permit a
+reply with a deployment `DENY` fallback, a matching reverse-direction `ALLOW`
+rule must win precedence. With a `PERMIT` fallback, an unmatched reply passes
+unless a matching reverse-direction `DENY` rule applies. Both actions are
+supported so tenants can permit specific traffic under a deployment `DENY` default or deny
 specific traffic under a deployment `PERMIT` default. [Locked: D2]
 
 For ingress rules, `ipv4_cidr` matches the packet source address; for egress
@@ -452,8 +455,8 @@ message NetworkACLSpec {
 message NetworkACLRule {
   NetworkACLAction action = 1;       // ALLOW or DENY
   Protocol protocol = 2;             // ALL, TCP, UDP, or ICMP
-  optional int32 port_from = 3;      // optional; TCP/UDP only
-  optional int32 port_to = 4;        // optional; TCP/UDP only
+  optional int32 port_from = 3;      // optional; TCP/UDP only, 1..65535
+  optional int32 port_to = 4;        // optional; TCP/UDP only, 1..65535
   string ipv4_cidr = 5;              // ingress source or egress destination
 }
 
@@ -486,20 +489,26 @@ configured on the NetworkClass and is required independently of tenant ACL
 resources.
 
 Validation rejects duplicate match fields within a direction, unknown actions
-or protocols, incomplete or reversed port ranges, port ranges with non-TCP/UDP
-protocols, malformed or non-canonical IPv4 CIDRs, and references across
-VirtualNetworks. For TCP/UDP, either both port endpoints are supplied or
-neither is; an omitted range matches all destination ports for that protocol.
+or protocols, incomplete or reversed port ranges, port endpoints outside
+1–65535, port ranges with non-TCP/UDP protocols, malformed or non-canonical
+IPv4 CIDRs, and references across VirtualNetworks. For TCP/UDP, either both
+port endpoints are supplied or neither is; an omitted range matches all
+destination ports for that protocol.
 Rule input order and action do not determine precedence. When no associated
 ACL rule matches—or no ACL is associated—the deployment default action is
 the final catch-all. Because ACLs are stateless, each direction, including
 return traffic, is evaluated independently.
 
+Boundary tests accept port endpoints 1 and 65535 and reject values below 1 or
+above 65535, as well as incomplete, reversed, and non-TCP/UDP port ranges.
+
 Creating a custom NetworkACL does not seed default rules. An ACL with empty
 ingress and egress rule lists contributes no matching decisions, so the
 deployment default action applies in both directions until a rule matches.
-Users must provide every required flow, including reverse-direction rules for
-replies, when those decisions differ from the deployment default. A Subnet
+Users must provide every required flow whose outcome differs from the deployment
+default. With a `DENY` fallback, permitting a reply requires a matching
+reverse-direction `ALLOW` rule to win precedence; with `PERMIT`, an unmatched
+reply passes unless a matching reverse-direction `DENY` rule applies. A Subnet
 with an associated ACL is READY only after its network segment and associated
 ACL policy are active. A Subnet without an associated ACL does not wait for a
 NetworkACL; its traffic follows the deployment default action.
@@ -593,8 +602,10 @@ The example allows HTTPS from the illustrative client range and to the
 illustrative external endpoint range. The higher destination-port rules allow
 the corresponding replies in each reverse direction. These documentation
 CIDRs must be replaced with the deployment's actual trusted client and
-endpoint ranges. Rules are stateless: omitting either reverse rule blocks that
-flow's replies.
+endpoint ranges. These examples include explicit reverse-direction rules. They
+are needed to permit the replies when the deployment fallback is `DENY`; with
+`PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY`
+rule applies.
 
 **Create Subnet using the deployment default policy:**
 
@@ -1302,8 +1313,9 @@ ACL: workloads on one Subnet may have different policies, and established
 connections previously allowed return traffic without a reverse rule.
 After the ACL-aware release is deployed, tenants group workloads by intended
 policy, create a NetworkACL for each policy group, associate the appropriate
-ACL with each Subnet, and add explicit reverse-direction rules where return
-traffic is needed. If workloads on one
+ACL with each Subnet, and add explicit reverse-direction rules when needed to
+permit return traffic under the selected deployment fallback and matching
+rules. If workloads on one
 Subnet require different policies, the tenant moves them to separate Subnets;
 changing a workload's Subnet requires recreating the workload because its
 attachment is immutable. This migration is tenant-assisted and does not
@@ -1640,8 +1652,9 @@ NetworkClass.
   Subnet policy. A Subnet may have no ACL or one associated ACL; compatible
   rules may share an ACL among Subnets in the same VirtualNetwork. Where
   policies on a Subnet conflict, plan separate Subnets and workload
-  recreation. Include explicit reverse-direction rules for required return
-  traffic. Agree on the deployment fallback action for flows not matched by an
+  recreation. Include explicit reverse-direction rules when needed to permit
+  required return traffic under the selected fallback and matching rules.
+  Agree on the deployment fallback action for flows not matched by an
   ACL rule.
 - Prepare the NetworkACL rule definitions and Subnet-to-ACL mapping as a
   migration plan only; do not submit ACL resources through the prior release.
@@ -1662,10 +1675,14 @@ NetworkClass.
    create or backfill default NetworkACL resources. For each Subnet that needs
    subnet-specific rules, create the tenant-selected NetworkACL and wait for it
    to become READY before creating a replacement Subnet that explicitly
-   references it. Subnets without an ACL association use the deployment
-   fallback action for unmatched traffic. Existing Subnets
-   cannot be reassociated in place; recreate affected Subnets and workloads as
-   required by their deletion dependencies.
+   references it. The migration plan must define each replacement Subnet CIDR.
+   Reuse the existing CIDR only after deleting its dependent workloads and old
+   Subnet; if the old and replacement Subnets must coexist in the same
+   VirtualNetwork, assign distinct, non-overlapping CIDRs and plan the workload
+   migration between them. Subnets
+   without an ACL association use the deployment fallback action for unmatched
+   traffic. Existing Subnets cannot be reassociated in place; recreate affected
+   Subnets and workloads in the dependency order required by the selected CIDR.
 4. Keep each affected Subnet and workload creation using it gated until its
    network segment is READY and, where an ACL is associated, the ACL policy is
    active on that Subnet. A Subnet without an ACL does not wait for an ACL.
@@ -1736,10 +1753,10 @@ No additional infrastructure beyond existing OSAC components and managers.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

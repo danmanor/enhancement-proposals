@@ -49,7 +49,7 @@ This design builds on and interacts with several networking designs:
 - **OSAC-1435 VMaaS Networking** — VMs provisioned via `ComputeNetworkAttachment` consume the cudn_evpn namespaces created by this design. VMaaS placement logic must resolve the namespace name (same as Subnet name) when placing VMs in EVPN-bridged Subnets. VMaaS must validate that the target Subnet has a CUDN and that its VirtualNetwork has exactly one Subnet before allowing VM placement.
 - **OSAC-1436 CaaS Networking** — CaaS clusters may run on EVPN-bridged subnets. Port-move primitive compatibility with EVPN transport (VXLAN encap vs VLAN trunking) is TBD (out of scope for Phase 1).
 - **OSAC-1437 BMaaS Networking** — Bare-metal servers provisioned via `BareMetalNetworkAttachment` are L2 peers of EVPN-bridged VMs when attached to the same Subnet. Any cross-Subnet L3 test uses fabric and bare-metal endpoints in a separate multi-Subnet VirtualNetwork with no VMs.
-- **OSAC-1433 Default Networking** — Auto-provisioning of VirtualNetwork, Subnet, NetworkACL, and NATGateway at tenant onboarding uses a default NetworkClass. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., k8s-only or none).
+- **OSAC-1433 Default Networking** — Auto-provisioning of the default VirtualNetwork, Subnet, and NATGateway at tenant onboarding uses a default NetworkClass. No default NetworkACL resource is created; the deployment default ACL action applies to the unassociated default Subnet. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., k8s-only or none).
 - **OSAC-2135 CaaS BM Worker Provisioning** — System-tenant bare-metal instances reference tenant Subnets. If those Subnets use `cudn_evpn`, the BMI provisioning flow interacts with the EVPN namespace/CUDN. Interaction is TBD (out of scope for Phase 1).
 - **OSAC-1382 Multi-Fabric East-West** — Phase 1 east-west isolation domains will need to work across EVPN-bridged and non-EVPN subnets. Inter-domain routing with EVPN transport is TBD (out of scope for Phase 1).
 
@@ -161,6 +161,11 @@ these ACL signals are not required; the deployment default ACL action decides
 unmatched traffic. Fabric job success and VNI data in the output ConfigMap
 prove segment/VNI provisioning only; neither is evidence that an explicitly
 associated ACL policy is active.
+
+For VM placement, `cudnNamespaceReady` returns true only when the target
+Subnet's CUDN is ready and its target Namespace exists with
+`status.phase == "Active"` and no `metadata.deletionTimestamp`. An absent,
+pending, or terminating Namespace is not ready and blocks placement.
 
 **Important:**
 - VirtualNetwork creation does NOT trigger fabric manager VPC or CUDN provisioning
@@ -446,7 +451,7 @@ func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, sub
     }
 
     // One Subnet is necessary but not sufficient: the target must have a
-    // READY CUDN and namespace.
+    // READY CUDN and an Active, non-terminating namespace.
     if !cudnNamespaceReady(ctx, subnet) {
         return fmt.Errorf("Cannot create VM in Subnet %q: CUDN namespace is not Ready.", subnet.Name)
     }
@@ -1744,10 +1749,10 @@ None. All infrastructure (OCP cluster, physical fabric managed by the configured
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

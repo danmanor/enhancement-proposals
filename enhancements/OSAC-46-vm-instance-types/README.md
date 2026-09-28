@@ -528,6 +528,10 @@ message CreateComputeInstanceResponse {
 }
 ```
 
+The repeated field is retained for wire compatibility, but the service accepts
+at most one network attachment per ComputeInstance and rejects requests with
+more than one. This preserves the OSAC-1433 workload attachment limit.
+
 **Kubernetes CR Schema (osac-operator CRD):**
 ```yaml
 # ComputeInstance CR (created by fulfillment-service)
