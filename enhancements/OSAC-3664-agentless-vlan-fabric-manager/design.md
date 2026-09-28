@@ -124,17 +124,18 @@ those primitives are exercised only in backend-level fixtures and are not
 connected to OSAC API status or tenant workload use. [PRD: FR-1, FR-2]
 
 The flow below separates the unsupported API path from raw backend tests. OSAC
-API selection is rejected until NetworkACL enforcement is implemented. Raw
-topology fixtures may invoke the agentless roles directly, but they do not create
-API-Ready Subnets or workload attachments and do not claim shared-contract
-support.
+API selection is rejected until effective Subnet policy enforcement is
+implemented. Raw topology fixtures may invoke the agentless roles directly,
+but they do not create API-Ready Subnets or workload attachments and do not
+claim shared-contract support.
 
 For supported implementations, the osac-operator dispatcher routes a Networking
 CR using the NetworkClass `fabric_manager` and `k8s_manager` values, resolves
 labeled manager ConfigMaps, stamps the implementation strategy used by the
 generic AAP playbook, and tracks retries, finalizers, job history, and status.
 This milestone keeps `agentless_net` out of that supported selection path until
-it implements mandatory NetworkACL enforcement.
+it enforces the effective Subnet policy: the deployment default action on every
+Subnet and the rules for any explicitly associated NetworkACL.
 ~~~mermaid
 flowchart LR
     Admin[Cloud Infrastructure Admin] --> Helm[Candidate backend test configuration]
@@ -166,7 +167,7 @@ resources. Pool CIDRs remain API/controller input and are not AgentlessNet
 state.
 
 1. The unified Networking API must not select this backend through
-   `NetworkClass.fabric_manager` while mandatory NetworkACL enforcement is
+   `NetworkClass.fabric_manager` while effective Subnet policy enforcement is
    absent. Selection validation rejects it as an unsupported fabric manager. It does not
    use NETWORK_STEPS_COLLECTION. That variable selects the AAP collection used
    by embedded CaaS workflows such as cluster_infra and external_access; the
@@ -1878,7 +1879,7 @@ any explicitly associated NetworkACL rules. An ACL association is optional. In
 the current milestone, only selection rejection and raw backend topology
 fixtures are applicable.
 
-- In a future backend version with mandatory NetworkACL enforcement, render
+- In a future backend version with effective Subnet policy enforcement, render
   manager configuration and NetworkClass selection with Helm values. In this
   milestone, verify selection is rejected and mismatched resources remain not Ready.
 - Reconcile VirtualNetwork and multiple Subnets through envtest/fake AAP
@@ -1957,8 +1958,10 @@ workload E2E is supported in this milestone.
 The target milestone is the IPv4-only agentless VLAN backend described by the
 PRD; this does not make it a supported OSAC fabric manager. In this milestone,
 selection remains rejected and API Subnets/workloads cannot become Ready through
-this backend. Graduation to supported API networking requires mandatory
-NetworkACL enforcement, after which the following criteria apply:
+this backend. Graduation to supported API networking requires enforcing the
+deployment default ACL action on every Subnet and enforcing NetworkACL rules
+when a Subnet explicitly references an ACL. The ACL association remains
+optional. After that policy is implemented, the following criteria apply:
 
 - all PRD acceptance criteria pass for the Cumulus reference environment;
 - no critical tenant-isolation, DNAT/SNAT-direction, or deletion-order defects;
@@ -1981,10 +1984,11 @@ versions. Existing physical fabric manager deployments remain selected by their 
 NetworkClass and are not migrated automatically.
 
 The agentless state file uses a schema version. The backend remains unavailable
-for supported NetworkClass selection until it implements mandatory NetworkACL
-enforcement; these migration requirements apply when that support is added. The
-design's schema 2 adds the
-per-VirtualNetwork transit link and consumer-owned external-route fields. An
+for supported NetworkClass selection until it enforces the effective Subnet
+policy: the deployment default action on every Subnet and the rules for any
+explicitly associated NetworkACL. These migration requirements apply when that
+support is added. The design's schema 2 adds the per-VirtualNetwork transit
+link and consumer-owned external-route fields. An
 upgrade must migrate state additively before new reconciliation begins,
 preserve existing VLAN, namespace, transit, firewall, provider-side ExternalIP,
 BGP route, DNAT, and SNAT mappings, and refuse to start a destructive migration
@@ -2073,7 +2077,7 @@ Support personnel diagnose failures in this order:
    `port_bindings`; never infer detach behavior from a display name.
 
 The agentless manager cannot be selected for supported API resources in this
-milestone. When mandatory NetworkACL enforcement is implemented, the provider
+milestone. When effective Subnet policy enforcement is implemented, the provider
 may enable supported selection only after checking the state-file schema and
 network inventory and planning migration for any existing topology fixtures; raw
 topology fixtures do not make API Subnets or workloads Ready.
@@ -2106,4 +2110,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind or
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
