@@ -769,20 +769,24 @@ IDs), trigger queries must add tenant predicates when switching from ID-based
 to name-based matching. The scoping rule depends on the reference type:
 
 - **Same-tenant local references** (Subnet→VN, NetworkACL→VN, Subnet→NetworkACL,
-  CI→Subnet, CI→InstanceType): Currently match on `id` with no tenant filter. After
-  migration, add `tenant = new.tenant` (forward triggers) or
-  `tenant = old.tenant` (reverse triggers) to scope lookups within the
-  correct tenant.
-- **Cross-tenant/shared references** (Cluster→CatalogItem,
-  CI→CatalogItem): Already have tenant scoping via
-  `(tenant = new.tenant OR tenant = 'shared')`. After migration, drop the
-  ID match alternative and update JSON paths to nested `->>'name'`.
+  CI→Subnet): Currently match on `id` with no tenant filter. After migration,
+  add `tenant = new.tenant` (forward triggers) or `tenant = old.tenant`
+  (reverse triggers) to scope lookups within the correct tenant and project.
+- **Cross-tenant/shared references** (Cluster→CatalogItem, CI→CatalogItem,
+  CI→InstanceType): Already have tenant scoping via
+  `(tenant = new.tenant OR tenant = 'shared')`. After migration, drop the ID
+  match alternative and update JSON paths to nested `->>'name'`. For
+  `CI→InstanceType`, resolve the stored `InstanceTypeReference` using its full
+  reference scope, including `shared = true` and project resolution; do not
+  restrict the target to the ComputeInstance's tenant.
 - **Platform-scoped references** (VN→NetworkClass): No triggers exist
   today. If added, no tenant filter is needed — platform-scoped names are
   globally unique.
 
-Associated indexes must include `tenant` as a leading column for
-same-tenant triggers to keep queries efficient.
+Associated indexes must include `tenant` as a leading column for same-tenant
+triggers to keep queries efficient. NetworkACL references are unique within
+`(tenant, project)`, so both forward and reverse ACL checks and their supporting
+indexes must also include the owning `project` before matching by name.
 
 Example path changes:
 
@@ -790,10 +794,10 @@ Example path changes:
 |---|---|---|---|
 | `check_virtual_network_not_in_use()` (Z0003) | virtual_networks | `= old.id` → `data->'spec'->'virtual_network'->>'name'` | Add `tenant = old.tenant` |
 | `check_subnet_not_in_use()` (Z0003) | subnets | `->>'subnet'` → `->'subnet'->>'name'` | Add `tenant = old.tenant` |
-| `check_network_acl_not_in_use()` (Z0003) | network_acls | `subnets.data->'spec'->'network_acl'->>'name'` | Add `tenant = old.tenant` |
-| `check_instance_type_not_in_use()` (Z0003) | instance_types | `->>'instance_type'` → `->'instance_type'->>'name'` | Add `tenant = old.tenant` |
+| `check_network_acl_not_in_use()` (Z0003) | network_acls | `subnets.data->'spec'->'network_acl'->>'name'` | Add `tenant = old.tenant AND project = old.project` |
+| `check_instance_type_not_in_use()` (Z0003) | instance_types | `->>'instance_type'` → `->'instance_type'->>'name'` | Resolve the full reference scope, including shared target and project; do not use only the referencing tenant |
 | `check_subnet_virtual_network_ref()` (Z0002) | subnets | `id = vn_id` → `name = vn_name` | Add `tenant = new.tenant` |
-| `check_subnet_network_acl_ref()` (Z0002) | subnets | `id = acl_id` → `name = acl_name` | Add `tenant = new.tenant` |
+| `check_subnet_network_acl_ref()` (Z0002) | subnets | `id = acl_id` → `name = acl_name` | Add `tenant = new.tenant AND project = new.project` |
 | `check_compute_instance_subnet_refs()` (Z0002) | compute_instances | `id = subnet_id` → `name = subnet_name` | Add `tenant = new.tenant` |
 | `check_cluster_catalog_item_ref()` (Z0002) | clusters | Drop `id =` alternative | Already scoped |
 | `check_ci_catalog_item_ref()` (Z0002) | compute_instances | Drop `id =` alternative | Already scoped |
@@ -1256,10 +1260,10 @@ osac-ux) and use existing CI infrastructure.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

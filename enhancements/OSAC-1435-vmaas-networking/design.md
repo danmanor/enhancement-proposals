@@ -103,10 +103,10 @@ ComputeInstance already participates in the networking API. Today's flow:
      --egress-rule "action=ALLOW,protocol=TCP,ports=443,cidr=203.0.113.0/24" \
      --egress-rule "action=ALLOW,protocol=TCP,ports=1024-65535,cidr=198.51.100.0/24"
    ```
-   - NetworkACLs have no seeded rules. An ACL with empty ingress and egress lists contributes no matching decisions, so the required deployment default ACL action decides traffic. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with the reverse-direction rules needed for both reply paths. Replace the documentation CIDRs with trusted deployment ranges.
+   - NetworkACLs have no seeded rules. An ACL with empty ingress and egress lists contributes no matching decisions, so the required deployment default ACL action decides traffic. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range and include explicit reverse-direction rules for replies. Those reverse rules are needed to permit replies under a `DENY` fallback; with `PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY` rule applies. Replace the documentation CIDRs with trusted deployment ranges.
    - The NetworkACL has independent ingress and egress rules. Rules contain an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR.
    - Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic uses the required deployment default ACL action.
-   - The ACL is stateless. Every allowed connection needs explicit rules in both directions; the reverse rules above permit response packets to their destination ephemeral ports.
+   - The ACL is stateless. Ingress and egress, including replies in the reverse direction, are evaluated independently. Under a `DENY` fallback, the reverse rules above permit response packets to their destination ephemeral ports; under `PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY` rule applies.
    - Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
    - NetworkACL rule lists are fixed at creation. Changing policy requires deleting and recreating the affected networking resources; workload attachments are also immutable.
 
@@ -137,7 +137,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - fulfillment-service:
      - If `network_attachments` is omitted or empty: populates the sole attachment with the tenant's default Subnet (see Default Networking PRD)
      - If one attachment is supplied, defaults only a missing Subnet; supplied values are preserved
-     - Validates: at most one attachment; the Subnet is Ready, including completion of its NetworkACL association
+     - Validates: at most one attachment; the Subnet is Ready, including completion of any NetworkACL association. With the `cudn_evpn` manager, VM placement also requires that the parent VirtualNetwork has exactly one Subnet and that the target Subnet has a READY CUDN and an Active, non-terminating target Namespace, as defined in the OSAC-4291 design.
      - Any NetworkACL associated with the Subnet refines the deployment default policy for this VM and every other workload attached to the Subnet; if no ACL is associated, the deployment default action applies. ACL rules and the Subnet association are immutable after creation; changing them requires recreating the affected networking resources.
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
    - Creates ComputeInstance CR with `network_attachments`
@@ -314,7 +314,7 @@ This feature inherits the existing tenant isolation model:
 - No new authentication or authorization changes
 - Any NetworkACL associated with the VM's Subnet refines the deployment default policy for every workload on that Subnet; if no ACL is associated, the deployment default action applies. The ACL is not stored on the VM attachment
 - Ingress and egress are evaluated independently using the shared match-specificity order; the first matching rule allows or denies traffic, and unmatched traffic uses the deployment default ACL action
-- The ACL is stateless, so return traffic requires an explicit reverse-direction rule
+- Return traffic is evaluated independently in the reverse direction. With a `DENY` deployment fallback, a matching reverse-direction `ALLOW` rule must win precedence to permit a reply; with `PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY` rule applies.
 - Same-Subnet traffic is not filtered by the Subnet NetworkACL. Cross-Subnet traffic must pass source-Subnet egress and destination-Subnet ingress policy
 
 ### Failure Handling and Recovery
@@ -419,7 +419,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 - fulfillment-service: max-one validation (accept no attachment or one attachment)
 - fulfillment-service: max-one `network_attachments` validation
-- fulfillment-service: omitted and partial attachment defaulting (the tenant default Subnet is used only when no Subnet is supplied; any associated NetworkACL refines the deployment default policy for all workloads there; otherwise the deployment default action applies)
+- fulfillment-service: omitted and partial attachment defaulting (an omitted Subnet resolves to the unassociated tenant default Subnet and uses the deployment default action; an explicitly selected Subnet may have an optional NetworkACL association that refines the deployment default policy for all workloads there)
 - fulfillment-service: BM-only deployment validation (reject VM when no k8s_manager)
 - fulfillment-service: auto ExternalIP pool selection (pick READY pool with most capacity, respect IP family)
 - osac-operator ComputeInstance controller: `PrimarySubnetRef()` resolution (implicit single attachment)
@@ -427,11 +427,12 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 ### Integration Tests
 
 - E2E: create ComputeInstance with two attachments, verify the API rejects the request
+- E2E on `cudn_evpn`: reject VM placement unless the parent VirtualNetwork has exactly one Subnet and the target Subnet has a READY CUDN and Active, non-terminating Namespace
 - E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
 - E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route and any ACL associated with the Subnet refines the deployment default policy; otherwise the deployment default action governs unmatched traffic
-- E2E: verify specificity-based matching, first-match allow/deny, deployment default ACL action, explicit reverse-direction rules, same-Subnet bypass, and independent source-egress/destination-ingress checks across Subnets
+- E2E: verify specificity-based matching, first-match allow/deny, both deployment fallback actions, unmatched replies under `PERMIT`, reverse-direction `ALLOW` rules under `DENY`, same-Subnet bypass, and independent source-egress/destination-ingress checks across Subnets
 
 ### Tricky Test Cases
 
@@ -464,7 +465,7 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- The repeated `network_attachments` field remains wire-compatible for the Subnet-only attachment shape. Existing network policies must be mapped to NetworkACL rules on READY Subnets, including reverse-direction rules for required reply traffic.
+- The repeated `network_attachments` field remains wire-compatible for the Subnet-only attachment shape. Existing network policies must be mapped to NetworkACL rules on READY Subnets, including reverse-direction rules when needed to permit replies under the selected deployment fallback and matching rules.
 - Tenants may need to recreate workloads when different policies require separate Subnets. Existing single-attachment resources remain usable after their Subnets have READY NetworkACL associations.
 
 Minor version upgrades (`x.N → x.N+1`):
@@ -561,10 +562,10 @@ Consequences:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

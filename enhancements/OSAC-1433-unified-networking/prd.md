@@ -61,8 +61,8 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 ### 3.1 Functional Requirements
 
 - **FR-1:** Tenants can create isolated VirtualNetworks and Subnets. Resources in different VirtualNetworks cannot communicate, and resources in the same Subnet share a broadcast domain. [Jira: OSAC-1433]
-- **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, protocol, an optional TCP or UDP destination-port range, and a canonical IPv4 CIDR. In each direction, the effective order is derived from the match fields: longest CIDR prefixes first, then protocol (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port ranges from smallest to largest, with rules matching all ports after port-specific rules. Action and request order do not determine precedence. The first matching rule decides; identical match fields in one direction are rejected. If no ACL rule matches, the deployment's default ACL policy decides the result. [User]
-- **FR-3:** NetworkACLs are stateless. Ingress and egress are evaluated independently, and return traffic requires a matching rule in the reverse direction. [User]
+- **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, protocol, an optional TCP or UDP destination-port range with endpoints from 1 through 65535, and a canonical IPv4 CIDR. In each direction, the effective order is derived from the match fields: longest CIDR prefixes first, then protocol (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port ranges from smallest to largest, with rules matching all ports after port-specific rules. Action and request order do not determine precedence. The first matching rule decides; identical match fields in one direction are rejected. If no ACL rule matches, the deployment's default ACL policy decides the result. [User]
+- **FR-3:** NetworkACLs are stateless. Ingress and egress, including return traffic in the reverse direction, are evaluated independently. With a deployment `DENY` fallback, permitting return traffic requires a matching reverse-direction `ALLOW` rule to win precedence; with `PERMIT`, an unmatched return packet passes unless a matching reverse-direction `DENY` rule applies. [User]
 - **FR-4:** A Subnet may have zero or one associated NetworkACL. If the ACL is
   omitted at Subnet creation, the association remains unset; an explicit ACL
   must be READY and belong to the same VirtualNetwork, and requests with more
@@ -93,7 +93,7 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
   the default Subnet. Tenant readiness waits for the default VirtualNetwork,
   Subnet, and NATGateway to become READY, with no per-tenant ACL resource or
   association prerequisite. [User; OSAC-1433]
-- **FR-14:** Existing workload traffic policies require tenant-assisted migration where their scope or stateful behavior cannot be represented by a Subnet-level stateless ACL. Tenants can group workloads by intended policy, place each group on a Subnet with the corresponding shared NetworkACL, and add reverse-direction rules where return traffic is required. [User]
+- **FR-14:** Existing workload traffic policies require tenant-assisted migration where their scope or stateful behavior cannot be represented by a Subnet-level stateless ACL. Tenants can group workloads by intended policy, place each group on a Subnet with the corresponding shared NetworkACL, and add reverse-direction rules when needed to permit return traffic under the selected deployment fallback and matching rules. [User]
 - **FR-15:** The provider must configure a deployment-wide default ACL policy of `PERMIT` or `DENY`. ACL rules are evaluated by match specificity before this policy; the policy is the final catch-all for each direction and applies whether or not a Subnet has an associated NetworkACL. [User]
 
 ### 3.2 Non-Functional Requirements
@@ -108,8 +108,8 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 
 - [ ] Resources in different VirtualNetworks cannot communicate; Subnets in the same VirtualNetwork retain Layer 3 connectivity subject to their ingress and egress NetworkACL rules.
 - [ ] A tenant can create a NetworkACL with ingress and egress rules that include ALLOW or DENY, protocol, optional TCP/UDP destination ports, and an IPv4 CIDR.
-- [ ] Each direction derives rule precedence from CIDR prefix length, protocol, and destination-port range; action and request order do not affect precedence, identical match fields are rejected, the first matching rule determines the result, and unmatched traffic uses the deployment's default ACL policy.
-- [ ] Reply traffic is evaluated independently and passes only when the reverse direction has a matching rule.
+- [ ] Each direction derives rule precedence from CIDR prefix length, protocol, and destination-port range; action and request order do not affect precedence, identical match fields are rejected, port endpoints are limited to 1–65535, the first matching rule determines the result, and unmatched traffic uses the deployment's default ACL policy.
+- [ ] Reply traffic is evaluated independently in the reverse direction: with a `DENY` deployment fallback, a matching reverse-direction `ALLOW` rule must win precedence to permit the reply; with `PERMIT`, an unmatched reply passes unless a matching reverse-direction `DENY` rule applies.
 - [ ] A Subnet has zero or one NetworkACL association. An omitted reference
   remains unset; an explicit ACL must be READY and in the same VirtualNetwork,
   and multiple ACLs are rejected. One NetworkACL can be shared by multiple
@@ -125,11 +125,12 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
   and NATGateway, with no tenant default ACL resource.
 - [ ] The deployment has a configured `PERMIT` or `DENY` default ACL policy.
   More-specific matching ACL rules take precedence over the policy, which is
-  the final catch-all; reply traffic passes only when the reverse-direction
-  evaluation allows it.
+  the final catch-all; reply traffic follows the same reverse-direction ACL and
+  fallback evaluation, so an unmatched reply passes under `PERMIT` and is
+  denied under `DENY` unless a matching `ALLOW` rule wins precedence.
 - [ ] Default-based workload creation stores and returns the resolved Subnet attachment.
 - [ ] Unsupported IPv6, dual-stack, disconnected, and multi-hub configurations are rejected before provisioning.
-- [ ] Existing policies that cannot be represented exactly are migrated through tenant-directed workload grouping and explicit reverse-direction ACL rules.
+- [ ] Existing policies that cannot be represented exactly are migrated through tenant-directed workload grouping and reverse-direction ACL rules where needed to permit required return traffic under the selected deployment fallback and matching rules.
 - [ ] Networking implementations remain hidden from tenant-facing APIs.
 
 ## 5. Dependencies
@@ -144,10 +145,10 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

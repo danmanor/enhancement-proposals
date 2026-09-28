@@ -79,7 +79,8 @@ Pure consumer of the existing private `ExternalIPPools` service
 - **Create form:** **Name**, ingress rule table, and egress rule table. Each
   rule row has **Action** (ALLOW or DENY), **Protocol** (ALL, TCP, UDP, ICMP),
   optional TCP/UDP **Destination Port Range**, and an IPv4 **CIDR**. The UI
-  rejects duplicate match fields within one direction and validates port
+  rejects duplicate match fields within one direction and validates that both
+  port endpoints are within 1–65535 and form a valid range. It validates port
   endpoints and canonical IPv4 CIDRs before submission. Rule precedence is
   derived from match specificity: longest CIDR prefix first, then protocol
   (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port range from smallest to
@@ -87,8 +88,10 @@ Pure consumer of the existing private `ExternalIPPools` service
   not affect precedence. The rule set is immutable after creation, and the UI
   displays rules in effective evaluation order. If no rule matches, the
   required deployment default ACL policy decides the result; the form explains
-  that reply traffic needs a reverse-direction rule. ACL details show rules
-  read-only.
+  that return traffic is evaluated independently in the reverse direction. A
+  `DENY` fallback requires a matching reverse-direction `ALLOW` to permit a
+  reply, while a `PERMIT` fallback allows unmatched replies unless a
+  reverse-direction `DENY` matches. ACL details show rules read-only.
 - **Delete:** an ACL can be deleted only when no Subnet references it; the
   server returns `FAILED_PRECONDITION` while a reference remains.
 
@@ -159,7 +162,7 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | Pool create: non-IPv4 address family | Server's `INVALID_ARGUMENT` shown as a form-level error. |
 | Pool create: empty, malformed, multiple, or overlapping CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
-| NetworkACL create has duplicate match fields or an invalid rule | Validation error is shown beside the rule row; no create is submitted. |
+| NetworkACL create has duplicate match fields, an invalid port range, or another invalid rule | Validation error is shown beside the rule row; no create is submitted. |
 | Subnet creation omits an ACL | Subnet creation proceeds without an ACL association; unmatched traffic uses the deployment default ACL policy. |
 | Subnet creation references an ACL in another VirtualNetwork or a non-READY ACL | Server's `INVALID_ARGUMENT` or `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
 | NetworkACL delete while associated with a Subnet | Delete action reports the server's `FAILED_PRECONDITION`; the ACL remains listed. |

@@ -584,11 +584,11 @@ This rule is evaluated before role-based authorization rules, allowing any authe
 - Test server behavior with both success and error cases using mock evaluator
 
 **Integration Tests (against Kind cluster with Keycloak):**
-- **Authorization consistency:** For each role (Admin, Tenant Admin, Client) and each service:
-  - `SelfSubjectAccessReview(service, "Create")` returns `allowed=true` ⟺ actual `Create()` succeeds
-  - `SelfSubjectAccessReview(service, "Delete", metadata.name=name)` returns `allowed=false` ⟺ actual `Delete(name)` returns `PermissionDenied`
+- **Authorization consistency:** For each role (Admin, Tenant Admin, Client):
+  - For each service that exposes `Create`, `SelfSubjectAccessReview(service, "Create")` returns `allowed=true` ⟺ actual `Create()` succeeds.
+  - For each service that exposes `Delete`, `SelfSubjectAccessReview(service, "Delete", metadata.name=name)` returns `allowed=false` ⟺ actual `Delete(name)` returns `PermissionDenied`.
 - **Tenant scoping:** Tenant Admin for `org-a` checks permission on `org-b` resource → `allowed=false`
-- **Networking method validation:** Requests to check `Update` on NetworkACLs or Subnets return `InvalidArgument` because those services do not expose that method; the checks do not imply that ACL rules or Subnet associations can be changed after creation
+- **Unsupported-method validation:** Requests to check `Update` on NetworkACLs or Subnets, or `Delete` on ExternalIPPools, return `InvalidArgument` because those services do not expose those methods; these validation cases do not imply unsupported operations exist.
 - **Advisory nature:** Permission check returns `allowed=true`, then user's role is revoked, then actual operation fails → demonstrates checks are advisory, not authoritative
 - **Unauthenticated requests:** Calling endpoint without valid JWT returns `Unauthenticated` error
 - **Invalid inputs:** Unknown service, invalid method, malformed tenant name → appropriate validation errors
@@ -874,10 +874,10 @@ No version skew concerns. The fulfillment-service is the only component that imp
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 06d340f90 (72 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":72,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

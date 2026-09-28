@@ -98,9 +98,9 @@ dual-stack networking are not supported.
 #### Default Networking
 
 - **FR-1:** At tenant onboarding, the system provisions a default
-  VirtualNetwork, an IPv4 Subnet, and a NATGateway for the tenant. The
-  deployment-wide default ACL policy applies to this Subnet unless a
-  NetworkACL is explicitly associated. The tenant transitions to READY only
+  VirtualNetwork, an IPv4 Subnet, and a NATGateway for the tenant. The default
+  Subnet has no NetworkACL association, so the deployment-wide default ACL
+  action governs its unmatched traffic. The tenant transitions to READY only
   after the default VirtualNetwork, Subnet, and NATGateway are READY. If
   default networking provisioning fails, the tenant remains non-READY with a
   status condition describing the failure. The Cloud Provider Admin can
@@ -112,8 +112,11 @@ dual-stack networking are not supported.
   matches or no ACL is associated, the NetworkClass default action decides it.
   ACL rules add more-specific decisions and do not replace the default action.
   Rule precedence is based on match specificity, not action or request order.
-  Since ACLs are stateless, ingress and egress are evaluated independently
-  and reply traffic requires a matching reverse-direction rule. A NetworkClass
+  Since ACLs are stateless, ingress and egress, including reply traffic, are
+  evaluated independently. With a `DENY` default, permitting a reply requires
+  a matching reverse-direction `ALLOW` rule to win precedence; with `PERMIT`,
+  an unmatched reply passes unless a matching reverse-direction `DENY` applies.
+  A NetworkClass
   without the required defaults is rejected. [User]
 - **FR-3:** All tenants receive the same default IPv4 CIDR ranges as
   configured on the NetworkClass. Tenants are isolated at the
@@ -205,7 +208,9 @@ dual-stack networking are not supported.
 - [ ] The deployment has one required default ACL action, `PERMIT` or `DENY`.
   The first matching ACL rule decides traffic; if no rule matches or no ACL
   is associated, the configured default action decides. Reply traffic is
-  evaluated independently in the reverse direction.
+  evaluated independently in the reverse direction: unmatched replies pass
+  under `PERMIT` unless a matching `DENY` rule applies, and are denied under
+  `DENY` unless a matching `ALLOW` rule wins precedence.
 - [ ] Default VirtualNetwork, Subnet, and NATGateway resources appear in list
   views with a label identifying them as defaults.
 - [ ] Default networking resources support read/create/delete. Subnet address
@@ -290,10 +295,10 @@ Resolved: E2E tests for simplified creation are defined in each per-service desi
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
