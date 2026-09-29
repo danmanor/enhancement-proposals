@@ -100,7 +100,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto External IP
 
-- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system auto-selects the external IP pool with the most available capacity, allocates an external IP, and creates an external IP attachment binding it to the server's primary attachment subnet IP. The external IP and attachment are labeled as auto-provisioned. [User]
+- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system selects an available external IP pool with the most capacity and reserves capacity for an IP with the server create request. The IP is allocated asynchronously. Its attachment routes inbound traffic to the server's primary attachment IP only after the IP is Allocated and the server is Ready with its tenant-network IP available. The external IP and attachment are labeled as auto-provisioned. [User]
 
 #### Network Connectivity Configuration
 
@@ -120,7 +120,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto-Cleanup on Deletion
 
-- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. Manually created resources are NOT cleaned up. Default networking resources (VirtualNetwork, Subnet, NATGateway) are NOT cleaned up. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
+- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. An active, manually created ExternalIPAttachment targeting the server blocks its deletion until the tenant removes it; other manually created ExternalIPs remain tenant-managed. Default networking resources (VirtualNetwork, Subnet, NATGateway) are NOT cleaned up. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
 
 #### Network Attachment Deletion
 
@@ -132,7 +132,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto external IP allocation completes synchronously within the create API call (no async allocation delay). If no pool has available capacity, the create API call returns an error. [User]
+- **NFR-1:** ExternalIPPool selection and capacity reservation complete synchronously with the create API call. ExternalIP allocation proceeds asynchronously. If no pool has available capacity, the create API call returns an error. [User]
 
 - **NFR-2:** Network attachment provisioning (connectivity configuration) completes within 2 minutes for the selected interface. [User]
 
@@ -143,6 +143,8 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] A bare-metal server with one attachment is provisioned with that attachment providing the default gateway
 - [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a bare-metal server with auto-provisioned external IP causes the auto-created external IP and external IP attachment to be cleaned up automatically
+- [ ] Deleting a bare-metal server with an active, manually created ExternalIPAttachment targeting it is rejected until the tenant removes that attachment
+- [ ] An auto-created ExternalIPAttachment is created only after the ExternalIP is Allocated and the server is Ready with its tenant-network IP available
 - [ ] BareMetalInstanceType API returns structured physical network ports (name, role, type, speed)
 - [ ] Creating a bare-metal server with an invalid interface (not in the BareMetalInstanceType's `network_ports` list) returns an error
 - [ ] Creating a bare-metal server with `primary: false` returns an error

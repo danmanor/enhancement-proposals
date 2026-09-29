@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-24
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -136,25 +136,25 @@ The design covers three capabilities: default networking (including NATGateway) 
    ```bash
    osac create tenant --name acme-corp
    ```
-   - **fulfillment-service** creates Tenant record, then creates default
-     networking resources through its own API (same path as tenant-created
-     resources — persisted in PostgreSQL, reconciled to K8s CRs):
-     - Creates default VirtualNetwork with label
-       `osac.openshift.io/default: "true"`, using CIDR from NetworkClass defaults
-     - Creates default IPv4 Subnet with label
-       `osac.openshift.io/default: "true"`, using `ipv4SubnetCIDR` from
-       NetworkClass defaults. It has no `spec.network_acl` association.
-     - Creates default NATGateway with an auto-allocated ExternalIP on the
-       default VirtualNetwork, labeled `osac.openshift.io/default: "true"`
-   - Reads NetworkClass defaults configuration (single NetworkClass per
-     deployment)
-   - Default resources go through the normal reconciliation path:
-     fulfillment-service reconciler pushes CRs → osac-operator networking
-     controllers dispatch to configured networking managers → resources
-     transition to READY
-   - fulfillment-service tracks default networking readiness on the Tenant:
-     sets `DefaultNetworkingReady` once the default VN, IPv4 Subnet, and
-     NATGateway are READY (via feedback). It does not create or wait for an ACL.
+   - **fulfillment-service** creates the Tenant record and provisions its
+     default networking resources through the normal resource APIs. Its
+     internal reconciler waits for each dependency to become ready before
+     creating the next resource:
+     1. Wait for the deployment NetworkClass to be READY, then create the
+        default VirtualNetwork with label `osac.openshift.io/default: "true"`
+        and the configured CIDR. Wait for the VirtualNetwork to be READY.
+     2. Create the default IPv4 Subnet with label
+        `osac.openshift.io/default: "true"`, using `ipv4SubnetCIDR`. Leave
+        `spec.network_acl` unset and wait for the Subnet to be READY.
+     3. Select an available ExternalIPPool, create the ExternalIP, and wait
+        until the ExternalIP is Allocated.
+     4. Create the default NATGateway with the READY VirtualNetwork and
+        Allocated ExternalIP, label it `osac.openshift.io/default: "true"`,
+        and wait for the NATGateway to be READY.
+   - No default NetworkACL resource or Subnet association is created. The
+     deployment default ACL action governs traffic when no ACL rule matches.
+   - fulfillment-service sets `DefaultNetworkingReady` only after the default
+     VirtualNetwork, Subnet, and NATGateway are READY.
    - Tenant overall status becomes READY only when
      `DefaultNetworkingReady` is true.
 
@@ -285,7 +285,7 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
       - Deletes ExternalIPAttachment first (DNAT rule removed)
       - Deletes ExternalIP second (IP returned to pool)
       - If cleanup fails permanently (after retries): finalizer is removed, parent resource deleted, orphaned resources left in cluster
-    - **Manually created resources are NOT cleaned up** — if tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they persist after parent deletion
+    - **Manually created ExternalIPAttachments block workload deletion** — the tenant must remove any active attachment targeting the workload before deleting it. Other manually created ExternalIPs remain tenant-managed and are not cascade-deleted.
     - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources
 
 11. **Tenant Admin inspects default resources:**
@@ -476,7 +476,7 @@ type ClusterSpec struct {
 - Pool selection: pick a READY IPv4 ExternalIPPool with the most available capacity
 - If multiple pools have equal capacity: selection is deterministic but implementation-defined (e.g., alphabetical by pool name)
 - If no pool has capacity: return error `ExternalIPPool exhaustion: no available capacity in any READY pool for IPv4`
-- Pool capacity is checked and decremented synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). "Synchronous" here means the API call validates and creates DB records atomically — actual IP address allocation from the fabric manager and DNAT rule creation happen asynchronously through the operator reconciliation loop. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the full two-phase flow.
+- Pool capacity is checked and reserved synchronously during the API call. If the pool is exhausted, the call fails and no resources are persisted (including the parent resource). Actual IP address allocation and DNAT rule creation happen asynchronously after their readiness prerequisites are met. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full multi-step flow.
 
 ### Implementation Details/Notes/Constraints
 
@@ -491,12 +491,21 @@ type ClusterSpec struct {
 
 #### Default Resource Lifecycle
 
-- **Creation:** fulfillment-service creates the tenant default VirtualNetwork,
-  IPv4 Subnet, and NATGateway at onboarding. No default NetworkACL resource is
-  created for a tenant or VirtualNetwork. The default Subnet's ACL association
-  remains unset, so the deployment default ACL action applies wherever no
-  matching rule exists. A tenant that wants specific rules must create a
-  NetworkACL first and associate it when creating a Subnet.
+- **Creation:** fulfillment-service follows the dependency readiness gates at
+  tenant onboarding:
+  1. After the deployment NetworkClass is `Ready`, create the default
+     VirtualNetwork and wait for `Ready`.
+  2. Create the default IPv4 Subnet in that VirtualNetwork with no ACL
+     association, then wait for `Ready`. No default NetworkACL resource is
+     created for a tenant or VirtualNetwork, so the deployment default ACL
+     action applies wherever no matching rule exists.
+  3. Create the ExternalIP for the default NATGateway and wait for `Allocated`.
+  4. Create the default NATGateway with the ready VirtualNetwork and allocated
+     ExternalIP, then wait for `Ready`.
+  The `DefaultNetworkingReady` tenant condition becomes true only after the
+  default VirtualNetwork, Subnet, and NATGateway are ready. A tenant that wants
+  subnet-specific rules creates a NetworkACL and associates it when creating
+  another Subnet.
 - **Labeling:** Default VirtualNetworks, Subnets, and NATGateways are labeled
   `osac.openshift.io/default: "true"`.
 - **Visibility:** Default networking resources appear in list/detail views
@@ -526,7 +535,7 @@ type ClusterSpec struct {
 - **Cleanup:** Parent resource finalizer deletes auto-created ExternalIP/ExternalIPAttachment on parent deletion
 - **Cleanup order:** ExternalIPAttachment → ExternalIP → parent resource removal
 - **Cleanup failure:** If cleanup fails permanently (after retries), finalizer is removed, parent deleted, orphaned ExternalIP/ExternalIPAttachment left in cluster (manual cleanup required)
-- **Manual resources block deletion:** If tenant created ExternalIP/ExternalIPAttachment explicitly (not labeled auto-created), they block the parent workload's deletion — the tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)
+- **Manual resources block deletion:** An active, manually created ExternalIPAttachment targeting the workload blocks its deletion until the tenant removes the attachment. Other manually created ExternalIPs remain tenant-managed. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)
 
 #### Prerequisite Ordering for Clusters
 
@@ -711,8 +720,9 @@ Resolved: Return error, no resource persisted.
   most capacity, respect IP family)
 - fulfillment-service: capacity exhaustion error (return error, resource not
   persisted)
-- fulfillment-service: tenant onboarding creates default VN, IPv4 Subnet
-  without an ACL association, and NATGateway with default labels
+- fulfillment-service: tenant onboarding creates the default VN, unassociated
+  Subnet, NAT ExternalIP, and NATGateway in dependency order, waiting for
+  NetworkClass/VN/Subnet readiness and ExternalIP allocation at each gate
 - fulfillment-service: DefaultNetworkingReady condition tracks only default
   VN, Subnet, and NATGateway readiness
 - fulfillment-service: NetworkACL validation (rule actions, duplicate match
@@ -726,8 +736,11 @@ Resolved: Return error, no resource persisted.
 
 ### Integration Tests
 
-- E2E: create Tenant, verify default VN, unassociated IPv4 Subnet, and
-  NATGateway are READY and labeled `osac.openshift.io/default: "true"`
+- E2E: create Tenant, verify the default VN is READY before the unassociated
+  IPv4 Subnet is created, the Subnet is READY before the NAT ExternalIP is
+  created, and the NATGateway is created only after that ExternalIP is Allocated;
+  verify the default VN, Subnet, and NATGateway labels and that no default ACL
+  resource or association exists
 - E2E: create Tenant, default Subnet provisioning fails, verify Tenant remains
   non-READY with condition
 - E2E: create ComputeInstance without network_attachments, verify defaults
@@ -741,10 +754,13 @@ Resolved: Return error, no resource persisted.
 - E2E: verify a custom ACL cannot be deleted while any Subnet references it
 - E2E: change deployment default action only through replacement of the
   NetworkClass and verify the new action governs unmatched traffic
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto
-  ExternalIP + ExternalIPAttachment created, DNAT rule functional
+- E2E: create ComputeInstance with `--external-ip-attachment`, verify the
+  ExternalIPAttachment is absent until the ExternalIP is Allocated and the VM
+  is READY, then verify the DNAT rule is functional
 - E2E: create Cluster with `--external-ip-attachment`, verify two ExternalIPs
-  created BEFORE provisioning, cluster VIPs match
+  are created before provisioning and the two ExternalIPAttachments are created
+  only after both IPs are Allocated and the Cluster is READY with both endpoints
+  available; verify the VIP mappings
 - E2E: delete ComputeInstance with auto-created resources, verify ExternalIP-
   Attachment and ExternalIP cleaned up
 - E2E: create ComputeInstance with a complete explicit attachment and verify

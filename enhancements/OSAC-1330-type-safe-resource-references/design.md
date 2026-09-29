@@ -764,14 +764,16 @@ resource IDs (primary keys), but will switch to matching on resource names
 (unique within a tenant). This aligns with the name-based resolution model
 introduced by this EP.
 
-**Tenant scoping.** Because names are unique per tenant (not globally like
-IDs), trigger queries must add tenant predicates when switching from ID-based
-to name-based matching. The scoping rule depends on the reference type:
+**Tenant and project scoping.** Project-scoped resource names are unique within
+`(tenant, project)`, not globally. When triggers switch from ID-based to
+name-based matching, same-tenant local lookups must include both the owning
+tenant and project. The scoping rule depends on the reference type:
 
 - **Same-tenant local references** (Subnet→VN, NetworkACL→VN, Subnet→NetworkACL,
-  CI→Subnet): Currently match on `id` with no tenant filter. After migration,
-  add `tenant = new.tenant` (forward triggers) or `tenant = old.tenant`
-  (reverse triggers) to scope lookups within the correct tenant and project.
+  CI→Subnet): Currently match on `id` with no tenant/project filter. After
+  migration, add `tenant = new.tenant AND project = new.project` (forward
+  triggers) or `tenant = old.tenant AND project = old.project` (reverse
+  triggers) to scope lookups to the owning resource's full local scope.
 - **Cross-tenant/shared references** (Cluster→CatalogItem, CI→CatalogItem,
   CI→InstanceType): Already have tenant scoping via
   `(tenant = new.tenant OR tenant = 'shared')`. After migration, drop the ID
@@ -783,22 +785,23 @@ to name-based matching. The scoping rule depends on the reference type:
   today. If added, no tenant filter is needed — platform-scoped names are
   globally unique.
 
-Associated indexes must include `tenant` as a leading column for same-tenant
-triggers to keep queries efficient. NetworkACL references are unique within
-`(tenant, project)`, so both forward and reverse ACL checks and their supporting
-indexes must also include the owning `project` before matching by name.
+Associated indexes must include `tenant` and `project` as leading scope columns
+for same-tenant local-reference triggers. This applies to VirtualNetwork,
+Subnet, and NetworkACL lookups, including both forward existence checks and
+reverse deletion checks.
 
 Example path changes:
 
-| Trigger function | Table | Path change | Tenant scoping |
+| Trigger function | Table | Path change | Tenant/project scoping |
 |---|---|---|---|
-| `check_virtual_network_not_in_use()` (Z0003) | virtual_networks | `= old.id` → `data->'spec'->'virtual_network'->>'name'` | Add `tenant = old.tenant` |
-| `check_subnet_not_in_use()` (Z0003) | subnets | `->>'subnet'` → `->'subnet'->>'name'` | Add `tenant = old.tenant` |
+| `check_virtual_network_not_in_use()` (Z0003) | virtual_networks | `= old.id` → `data->'spec'->'virtual_network'->>'name'` | Add `tenant = old.tenant AND project = old.project` |
+| `check_subnet_not_in_use()` (Z0003) | subnets | `->>'subnet'` → `->'subnet'->>'name'` | Add `tenant = old.tenant AND project = old.project` |
+| `check_network_acl_virtual_network_ref()` (Z0002) | network_acls | `id = vn_id` → `name = vn_name` | Add `tenant = new.tenant AND project = new.project` |
 | `check_network_acl_not_in_use()` (Z0003) | network_acls | `subnets.data->'spec'->'network_acl'->>'name'` | Add `tenant = old.tenant AND project = old.project` |
 | `check_instance_type_not_in_use()` (Z0003) | instance_types | `->>'instance_type'` → `->'instance_type'->>'name'` | Resolve the full reference scope, including shared target and project; do not use only the referencing tenant |
-| `check_subnet_virtual_network_ref()` (Z0002) | subnets | `id = vn_id` → `name = vn_name` | Add `tenant = new.tenant` |
+| `check_subnet_virtual_network_ref()` (Z0002) | subnets | `id = vn_id` → `name = vn_name` | Add `tenant = new.tenant AND project = new.project` |
 | `check_subnet_network_acl_ref()` (Z0002) | subnets | `id = acl_id` → `name = acl_name` | Add `tenant = new.tenant AND project = new.project` |
-| `check_compute_instance_subnet_refs()` (Z0002) | compute_instances | `id = subnet_id` → `name = subnet_name` | Add `tenant = new.tenant` |
+| `check_compute_instance_subnet_refs()` (Z0002) | compute_instances | `id = subnet_id` → `name = subnet_name` | Add `tenant = new.tenant AND project = new.project` |
 | `check_cluster_catalog_item_ref()` (Z0002) | clusters | Drop `id =` alternative | Already scoped |
 | `check_ci_catalog_item_ref()` (Z0002) | compute_instances | Drop `id =` alternative | Already scoped |
 
@@ -1154,6 +1157,10 @@ details on the URI/ARN trade-off.
   operation commits: if Subnet creation wins, ACL deletion fails with ErrInUse;
   if ACL deletion wins, Subnet creation fails with ErrReference. No active Subnet
   may reference an inactive ACL.
+- Project-local reference isolation (Chunk 1): Create same-named VirtualNetworks
+  and Subnets in two projects within one tenant. Verify forward reference checks
+  resolve only within the owning project, and deleting a resource in one project
+  is not blocked by an unrelated same-named reference in the other project.
 - Project-scoped full reference (Chunk 2): Create a CatalogItem in project
   `team-a`, then create a ComputeInstance referencing it with
   `project = "team-a"`. Verify the stored reference includes the resolved
@@ -1266,4 +1273,4 @@ Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","respond","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

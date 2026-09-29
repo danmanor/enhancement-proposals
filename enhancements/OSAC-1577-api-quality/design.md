@@ -400,12 +400,22 @@ The existing Pattern B helper tables (`tenant_domains`, `project_membership_subj
 
 ##### DAO Error Translation
 
-PostgreSQL FK violations produce SQLSTATE `23503` (foreign_key_violation). The generic DAO's `translateError` must map `23503` to either `ErrReference` (Z0002) or `ErrInUse` (Z0003) based on the constraint name, not the operation type alone:
+PostgreSQL FK violations produce SQLSTATE `23503` (foreign_key_violation).
+The generic DAO's `translateError` uses both the constraint and the DAO
+operation context to map `23503` to `ErrReference` (Z0002) or `ErrInUse`
+(Z0003). Constraint name alone is insufficient when the same relationship
+constraint can fail in opposite directions:
 
-- FK on `<child>_refs` table referencing `active_<parent>(id)` → `ErrReference` (child references inactive parent). Triggered by INSERT or UPDATE on the child.
-- FK on `active_<parent>(id)` referenced by a `_refs` table → `ErrInUse` (parent has active children). Triggered by DELETE from `active_<parent>` during soft-delete.
+- A child-reference write that targets an inactive parent → `ErrReference` (Z0002).
+- A parent soft-delete blocked by an active child reference → `ErrInUse` (Z0003).
 
-Constraint names follow a naming convention that encodes direction: `<child_table>_<parent>_id_fkey` for child-to-parent references, allowing the error translator to classify without relying on the calling operation.
+For the Subnet-to-NetworkACL relationship, the same foreign-key constraint on
+`subnet_network_acl_refs.network_acl_id` can fail while inserting an
+association to an inactive ACL or while deleting an ACL that an active Subnet
+still references. The first is `ErrReference`; the second is `ErrInUse`. The
+translator must use the operation context as well as the SQLSTATE and
+constraint details rather than assuming the constraint name identifies the
+failure direction.
 
 ##### CheckSchema Updates
 
@@ -578,6 +588,9 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 - Verify that inserting a child referencing an active parent succeeds
 - Verify that inserting a child referencing a soft-deleted parent raises `ErrReference`
 - Verify that soft-deleting a parent with active children raises `ErrInUse`
+- Verify that a Subnet association insert referencing an inactive NetworkACL
+  raises `ErrReference`, while deleting that referenced ACL raises `ErrInUse`
+  even though both failures involve the same foreign-key constraint.
 - Verify that soft-deleting a parent with no active children succeeds
 - Verify that hard-deleting a row removes it from `active_<table>`
 - Verify that an explicitly associated Subnet's NetworkACL reference is removed on soft-delete, restored on undelete, and blocks NetworkACL soft-delete while the Subnet is active; an ACL-less Subnet has no reference row
@@ -595,6 +608,9 @@ Should each parent-child relationship get its own `_refs` table (e.g., `compute_
 **OSAC-1331:**
 - Create a parent resource, create a child referencing it, attempt to soft-delete the parent — verify rejection with ErrInUse
 - Create a parent, soft-delete it, attempt to create a child referencing it — verify rejection with ErrReference
+- For the Subnet-to-NetworkACL relationship, verify that the same foreign-key
+  constraint maps a failed association create to ErrReference and a blocked ACL
+  delete to ErrInUse.
 - Create a parent, create a child, delete the child, then soft-delete the parent — verify success
 - Create a Subnet with a NetworkACL association, soft-delete and undelete the Subnet, then verify the ACL reference is restored and prevents ACL deletion
 - Run the migration preflight with an active Subnet whose ACL association is unset and verify migration succeeds without an ACL-reference row. With an explicit association that is unresolved or inactive, verify the transaction aborts with tenant and Subnet details before inserting ACL-reference rows. After repairing the explicit association to an active ACL, verify the backfill succeeds.
@@ -645,10 +661,10 @@ None. All changes use existing build and test infrastructure. protoc-gen-cleanap
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

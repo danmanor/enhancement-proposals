@@ -90,7 +90,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Auto External IP
 
-- **FR-3:** Cluster creation supports `--external-ip-attachment`. When enabled, the system allocates external IPs for both the API server and ingress from available IP pools before provisioning begins. External IPs and their attachments are labeled as auto-provisioned. The attachments are activated once the cluster's API server and ingress endpoints are available. [User]
+- **FR-3:** Cluster creation supports `--external-ip-attachment`. When enabled, the system reserves capacity for two external IPs, one for the API server and one for ingress, before provisioning begins. The IPs are allocated asynchronously. Their attachments are created only after both IPs are Allocated and the Cluster is Ready with both endpoints available; inbound routing begins after the attachments are provisioned. External IPs and attachments are labeled as auto-provisioned. [User]
 
 #### Endpoint Discovery
 
@@ -98,7 +98,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### External IP Activation
 
-- **FR-5:** When automatic external IP allocation is enabled, the system creates external IP attachments before provisioning begins. After the cluster's API server and/or ingress endpoints are available, the system configures inbound routing from the external IPs to the endpoints and activates the attachments. [User]
+- **FR-5:** When automatic external IP allocation is enabled, inbound routing to the API server and ingress becomes available after the Cluster is Ready, the endpoint addresses are available, and the corresponding ExternalIPs are Allocated. [User]
 
 #### Host Selection and Network Configuration
 
@@ -122,7 +122,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Auto-Provisioned Resource Cleanup
 
-- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
+- **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in dependency order: external IP attachments first, then external IPs. An active, manually created ExternalIPAttachment targeting the cluster blocks its deletion until the tenant removes it; other manually created ExternalIPs remain tenant-managed. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
 
 #### NetworkACL Policy
 
@@ -130,7 +130,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Automatic external IP allocation and endpoint discovery complete synchronously within the cluster creation flow. Endpoint addresses are available in cluster status during provisioning, not minutes later.
+- **NFR-1:** ExternalIPPool selection and capacity reservation complete synchronously with the cluster create request. ExternalIP allocation and attachment provisioning follow their readiness prerequisites; API and ingress endpoint addresses are available in Cluster status when the Cluster becomes Ready, without an additional delayed discovery step.
 
 ## 5. Acceptance Criteria
 
@@ -138,10 +138,11 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with the appropriate physical interface automatically selected from each node set's BareMetalInstanceType
 - [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress
 - [ ] Cluster status exposes API server and ingress endpoint addresses after provisioning completes
-- [ ] Auto-created external IP attachments activate after endpoint addresses are available and inbound routing is configured
+- [ ] Auto-created external IP attachments are created only after both ExternalIPs are Allocated and the Cluster is Ready with API and ingress endpoint addresses; DNAT is configured afterward
 - [ ] The system selects hosts and configures network connectivity before cluster provisioning begins
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
+- [ ] Deleting a cluster with an active, manually created ExternalIPAttachment targeting it is rejected until the tenant removes that attachment
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
 - [ ] Cluster traffic uses the first matching NetworkACL rule under the shared match-specificity order and unmatched traffic uses the deployment default ACL action; under `DENY`, permitting return traffic requires a matching reverse-direction `ALLOW` rule to win precedence, while under `PERMIT`, unmatched replies pass unless a reverse-direction `DENY` rule applies
 

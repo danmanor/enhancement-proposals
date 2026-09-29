@@ -77,7 +77,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Auto External IP
 
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
+- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system selects an available external IP pool with the most capacity and reserves capacity for an IP with the VM create request. The IP is allocated asynchronously; its attachment routes inbound traffic to the VM's primary interface only after the IP is Allocated and the VM is Ready. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
 
 #### IP Address Discovery
 
@@ -97,7 +97,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto external IP allocation completes synchronously within the create request. If no pool has available capacity, the create request fails with a clear error. [User]
+- **NFR-1:** ExternalIPPool selection and capacity reservation complete synchronously with the create request. ExternalIP allocation proceeds asynchronously. If no pool has available capacity, the create request fails with a clear error. [User]
 
 ## 5. Acceptance Criteria
 
@@ -109,6 +109,8 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
+- [ ] Deleting a VM with an active, manually created ExternalIPAttachment targeting it is rejected until the tenant removes that attachment
+- [ ] An auto-created ExternalIPAttachment is created only after the ExternalIP is Allocated and the VM is Ready
 - [ ] Creating a VM with an omitted or empty attachment list receives the tenant default Subnet, which has no ACL association, so the deployment default action decides unmatched traffic
 - [ ] Creating a VM with a partial single attachment defaults only its missing subnet; its resolved Subnet's optional NetworkACL refines the deployment default policy
 - [ ] Ingress and egress use the first matching rule under the shared match-specificity order and unmatched traffic uses the deployment default ACL action; under `DENY`, permitting return traffic requires a matching reverse-direction `ALLOW` rule to win precedence, while under `PERMIT`, unmatched replies pass unless a reverse-direction `DENY` rule applies

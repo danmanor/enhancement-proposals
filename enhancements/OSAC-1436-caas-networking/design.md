@@ -3,7 +3,7 @@ title: caas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-24
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1436
 prd: "prd.md"
@@ -104,6 +104,9 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
    NetworkACLs have no seeded rules. An ACL with empty ingress and egress lists contributes no matching decisions, so the required deployment default ACL action decides traffic. These example rules allow HTTPS from the illustrative client range and to the illustrative endpoint range, with explicit reverse-direction rules for replies. Replace the documentation CIDRs with trusted deployment ranges. The ACL has independent ingress and egress lists. Each rule has an allow or deny action, protocol, optional TCP/UDP destination port range, and IPv4 CIDR. Rule precedence is derived from match specificity, not input order or action; the first matching rule decides the result, and unmatched traffic uses the required deployment default ACL action. The complete rule set is fixed at ACL creation. Changing policy requires recreating the affected networking resources. Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
 
 3. **Create Subnet:**
+   If using `--network-acl`, wait until `NetworkACL.status.phase == "Ready"`
+   before running the command. The API rejects a non-READY ACL before
+   persisting or provisioning the Subnet.
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
      --network-acl my-acl --name my-subnet
@@ -195,8 +198,8 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 12. **Delete Cluster:**
-    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types).
-    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle. Manually created ExternalIPAttachments transition back to detached / Pending.
+    - **Auto-provisioned cleanup (osac-operator ClusterOrder controller):** Phased requeue: deletes ExternalIPAttachments first (by target reference), waits, then deletes ExternalIPs (by `auto-created-for` label), waits, then proceeds. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioned-resource-cleanup-on-parent-deletion).
+    - **Manually created ExternalIPAttachments block workload deletion** — the tenant must remove any active attachment targeting the Cluster before deleting it. Other manually created ExternalIPs remain tenant-managed and are not cascade-deleted.
     - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - ClusterOrder controller triggers AAP delete workflow
     - CaaS delete template:
@@ -561,8 +564,8 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 ### Integration Tests
 
 - E2E: create Cluster with explicit network_attachment, verify cluster provisioned on correct subnet
-- E2E: create Cluster with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created for API and ingress, DNAT rules functional
-- E2E: create Cluster with `--external-ip-attachment`, verify full connectivity (ExternalIP + ExternalIPAttachment for API and ingress)
+- E2E: create Cluster with `--external-ip-attachment`, verify both ExternalIPAttachments are created only after the ExternalIPs are Allocated and the Cluster is READY with API and ingress endpoints, then verify both DNAT rules
+- E2E: verify full API and ingress connectivity after the readiness gates complete
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
 - E2E: create Cluster with omitted network_attachment, verify the default Subnet is populated without an ACL association and unmatched traffic follows the deployment default action
 - E2E: verify NetworkACL specificity-based matching, first-match allow/deny, both deployment fallback actions, unmatched replies under `PERMIT`, reverse-direction `ALLOW` rules under `DENY`, same-Subnet bypass, and source-egress/destination-ingress checks across Subnets
@@ -744,4 +747,4 @@ Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -5,10 +5,10 @@
 **Last updated:** 2026-09-26
 
 - **Feature:** OSAC-4291 — CUDN EVPN K8s Manager Phase 1 Networking: Single-Cluster VM-to-Fabric Bridging
-- **Total test cases:** 20
+- **Total test cases:** 18
 - **Requirements covered:** 9 of 9 (R1-R9)
 - **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
-- **Additional operational tests:** 2 deletion lifecycle tests + 1 skip-k8s-manager annotation test + 1 admission-fencing concurrency test
+- **Additional operational tests:** 2 deletion lifecycle tests
 
 **Subnet policy precondition:** The deployment has a required default ACL action (`PERMIT` or `DENY`). A Subnet may have no ACL association or one READY ACL from its VirtualNetwork. When `network_acl` is omitted, the association remains unset and the deployment default action decides unmatched traffic; the Subnet does not wait for ACL readiness. When an ACL is explicitly associated, that ACL's rules must be active before the Subnet becomes READY. No default ACL resource is expected.
 
@@ -338,7 +338,7 @@
 - The first Subnet's persistent CUDN does not make the multi-Subnet VirtualNetwork eligible for VM placement.
 - The Subnets and their active NetworkACL associations remain unchanged.
 
-#### TC-R5-05: Reject stale VirtualNetwork admission writes after lease turnover
+#### TC-R5-05: Fence stale admissions and reject creates during Subnet termination
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -348,6 +348,8 @@
 
 - A `cudn_evpn` VirtualNetwork has one READY Subnet with active same-VirtualNetwork NetworkACL enforcement.
 - The test can pause admission persistence and control lease expiry and token issuance across two service replicas.
+- The deletion controller can be paused after the existing Subnet receives
+  `metadata.deletionTimestamp` but before its deletion reservation is created.
 
 ##### Steps
 
@@ -355,12 +357,18 @@
 2. Expire A's lease and have replica B acquire a newer token for the same VirtualNetwork.
 3. Resume A's write attempt.
 4. Retry the operation with the current token and re-evaluate the VirtualNetwork state.
+5. Set `metadata.deletionTimestamp` on the existing Subnet and pause its
+   controller before reservation creation. Attempt to create another Subnet in
+   the same VirtualNetwork, then resume deletion and retry after cleanup.
 
 ##### Expected Results
 
 - Each expired or superseded write is rejected atomically; no stale Subnet, placement, deletion admission, or transition to `Admitted` is persisted.
 - A retry is accepted only after acquiring the current lock token and repeating the state checks.
-- Deletion reservations continue to block new Subnet creates and VM placements until cleanup completes and the finalizer is removed.
+- A new Subnet create is rejected while any existing Subnet is terminating,
+  including the interval before its deletion reservation exists. Deletion
+  reservations continue to block new Subnet creates and VM placements until
+  cleanup completes and the finalizer is removed.
 
 ### R6: Non-conflicting IP address assignment
 
@@ -554,10 +562,10 @@ None identified. All requirements map to test cases, all interface changes exerc
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
 
-> Context changed between revise and revise.
->
+> Context changed between revise and respond.
+
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: cluster-and-vm-provisioning-wizard
 authors:
   - brotman@redhat.com
 creation-date: 2026-06-22
-last-updated: 2026-09-24
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1421
 prd:
@@ -69,7 +69,7 @@ sequenceDiagram
 | Catalog Item | Shared | `adapter.useCatalogItems()` |
 | General | Shared | Name (required), optional SSH key (catalog `ssh_key` overlay); cluster adds required pull secret and optional `ssh_public_key` overlay |
 | Configuration | Adapter | VM: image, OS family, instance type, user data, boot disk, run strategy. Cluster: release image, tenant-managed `node_sets` table (add/remove rows) |
-| Networking | Adapter | VM: VN → subnet → SG pickers (single `network_attachments` entry). Cluster: pod/service CIDR |
+| Networking | Adapter | VM: VN → Subnet picker (single `network_attachments` entry; associated ACL shown read-only). Cluster: pod/service CIDR |
 | Review | Shared | `adapter.getReviewSections()` — same labels and values as wizard steps; submit via `buildCreatePayload` |
 
 Register `/vms/create` and `/clusters/create` before `:id` routes. On failure: inline errors on the step; any non-2xx create response stays on Review; deprecated instance type warnings from create response are non-blocking and surfaced after submit.
