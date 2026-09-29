@@ -222,12 +222,11 @@ followed by Attach (create new ExternalIPAttachment) with a different
 ExternalIP — not an in-place edit, matching the unified create/read/delete
 contract.
 
-Manually created ExternalIPAttachments are **not** auto-deleted on cluster
-delete — they are detached and transition back to **Pending** status (the
-backend removes the DNAT mapping but preserves the attachment resource). Only
-auto-provisioned ones (created via `auto_external_ip_attachment`) are fully
-cleaned up by the backend finalizer. The deletion confirmation dialog
-mentions this distinction when both auto and manual attachments exist.
+Ready, manually created ExternalIPAttachments are **not** auto-deleted or
+detached on cluster deletion; they block deletion until the tenant removes them
+through endpoint management. Pending or Failed manual attachments do not block
+deletion and remain tenant-managed. Only auto-provisioned attachments (created
+via `auto_external_ip_attachment`) are cleaned up by the backend finalizer.
 
 Fetching: `ExternalIPAttachments.List` filtered by target cluster reference
 (≤2 results, one per endpoint). Shares the query cache with the
@@ -240,15 +239,18 @@ associated NetworkACL, endpoints) are available on the cluster detail page only.
 
 #### Cluster Deletion Confirmation
 
-When `cluster.auto_external_ip_attachment == true`, the deletion confirmation
-dialog adds:
+The deletion confirmation explains the applicable cleanup before submission:
 
-> "Deleting this cluster will also delete the auto-provisioned External IPs and
-> External IP Attachments associated with it. Manually created External IP
-> Attachments will be detached and return to Pending status."
+> "Auto-provisioned External IPs and External IP Attachments will be deleted.
+> Ready manually created External IP Attachments must be removed before this
+> cluster can be deleted; they will not be detached automatically. Pending or
+> Failed manual attachments do not block deletion and remain tenant-managed."
 
-No additional user action — the backend handles phased cleanup
-(ExternalIPAttachments first, then ExternalIPs).
+Show the manual-attachment warning when a Ready, manually created attachment
+targets the Cluster. If the Delete API returns `FAILED_PRECONDITION` because one
+remains, keep the Cluster and its attachment visible, explain that the tenant
+must remove the attachment through endpoint management, and allow a retry. The
+backend handles phased cleanup of auto-provisioned attachments and ExternalIPs.
 
 #### Auto-Provisioned Resource Indicators
 
@@ -448,10 +450,10 @@ Add to `createMockConnectTransport.ts`:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

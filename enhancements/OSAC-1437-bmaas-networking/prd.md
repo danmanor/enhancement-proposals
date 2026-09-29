@@ -120,7 +120,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto-Cleanup on Deletion
 
-- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. An active, manually created ExternalIPAttachment targeting the server blocks its deletion until the tenant removes it; other manually created ExternalIPs remain tenant-managed. Default networking resources (VirtualNetwork, Subnet, NATGateway) are NOT cleaned up. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
+- **FR-11:** When a bare-metal server is deleted, if external IP and external IP attachment were auto-provisioned (labeled as auto-provisioned), the system deletes the external IP attachment first, then the external IP. A manually created ExternalIPAttachment in `Ready` status targeting the server blocks its deletion until the tenant removes it; Pending or Failed attachments do not block deletion and remain tenant-managed. Other manually created ExternalIPs remain tenant-managed. Default networking resources (VirtualNetwork, Subnet, NATGateway) are NOT cleaned up. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
 
 #### Network Attachment Deletion
 
@@ -143,7 +143,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 - [ ] A bare-metal server with one attachment is provisioned with that attachment providing the default gateway
 - [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a bare-metal server with auto-provisioned external IP causes the auto-created external IP and external IP attachment to be cleaned up automatically
-- [ ] Deleting a bare-metal server with an active, manually created ExternalIPAttachment targeting it is rejected until the tenant removes that attachment
+- [ ] Deleting a bare-metal server with a Ready, manually created ExternalIPAttachment targeting it is rejected until the tenant removes that attachment; Pending or Failed attachments do not block deletion
 - [ ] An auto-created ExternalIPAttachment is created only after the ExternalIP is Allocated and the server is Ready with its tenant-network IP available
 - [ ] BareMetalInstanceType API returns structured physical network ports (name, role, type, speed)
 - [ ] Creating a bare-metal server with an invalid interface (not in the BareMetalInstanceType's `network_ports` list) returns an error
@@ -211,10 +211,10 @@ Resolved: First in the list. Ports are ordered in the BareMetalInstanceType; whe
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

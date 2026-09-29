@@ -174,7 +174,7 @@
 
 - The VirtualNetwork has exactly one Subnet and uses the cudn_evpn k8s manager.
 - The Subnet explicitly references a READY NetworkACL scoped to the same VirtualNetwork; policy enforcement completes before the Subnet becomes READY.
-- The deployment default ACL action is `PERMIT`. The associated NetworkACL has a more-specific `DENY ALL` rule in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. These subnet-specific rules match the VM-to-bare-metal flow and its reply.
+- The deployment default ACL action is `PERMIT`. The associated NetworkACL has more-specific `DENY ALL` rules in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. Their selectors would match the endpoint addresses if evaluated, but both endpoints are in one Subnet, so the flow bypasses Subnet ACL evaluation.
 - The CUDN is provisioned for the single Subnet.
 - A VirtualMachine runs in the CUDN namespace with IP 200.200.1.3.
 - A bare-metal endpoint is attached to the configured fabric in the same Subnet with IP 200.200.1.10.
@@ -183,7 +183,7 @@
 ##### Steps
 
 1. Verify the VM is running: `oc get vmi -n <namespace>`.
-2. Inspect the associated ACL and confirm its ingress and egress `DENY ALL` rules for `200.200.1.0/24` match the request and reply addresses; this more-specific ACL action applies independently of the deployment `PERMIT` fallback.
+2. Inspect the associated ACL and confirm it is Ready with the ingress and egress `DENY ALL` rules for `200.200.1.0/24`; these selectors would match the endpoints if evaluated, but same-Subnet traffic bypasses the ACL.
 3. Connect to the VM console: `virtctl console <vm-name>`.
 4. Ping the bare-metal endpoint: `ping 200.200.1.10`.
 5. Verify FRR shows a Type-2 route for the VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`.
@@ -192,7 +192,7 @@
 ##### Expected Results
 
 - Ping succeeds (RTT <10ms).
-- The same-Subnet ping succeeds even though the associated ACL's active deny rules match the flow and its reply, confirming same-Subnet traffic bypasses that ACL.
+- The same-Subnet ping succeeds because traffic between resources on the same Subnet bypasses the associated ACL, even though its rule selectors would otherwise match the endpoints.
 - FRR advertises a Type-2 EVPN route with the VM MAC and IP.
 - The configured fabric EVPN table shows the VM MAC through the OCP VTEP.
 - The Subnet is in a one-Subnet VirtualNetwork; this test does not place VMs in a multi-Subnet VirtualNetwork.
@@ -562,10 +562,10 @@ None identified. All requirements map to test cases, all interface changes exerc
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
