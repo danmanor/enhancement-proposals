@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-24
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -111,6 +111,9 @@ ComputeInstance already participates in the networking API. Today's flow:
    - NetworkACL rule lists are fixed at creation. Changing policy requires deleting and recreating the affected networking resources; workload attachments are also immutable.
 
 3. **Tenant creates Subnet:**
+   - If using `--network-acl`, first wait until
+     `NetworkACL.status.phase == "Ready"`; the API rejects a non-READY ACL
+     before persisting or provisioning the Subnet.
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
      --network-acl my-acl --name my-subnet
@@ -139,7 +142,7 @@ ComputeInstance already participates in the networking API. Today's flow:
      - If one attachment is supplied, defaults only a missing Subnet; supplied values are preserved
      - Validates: at most one attachment; the Subnet is Ready, including completion of any NetworkACL association. With the `cudn_evpn` manager, VM placement also requires that the parent VirtualNetwork has exactly one Subnet and that the target Subnet has a READY CUDN and an Active, non-terminating target Namespace, as defined in the OSAC-4291 design.
      - Any NetworkACL associated with the Subnet refines the deployment default policy for this VM and every other workload attached to the Subnet; if no ACL is associated, the deployment default action applies. ACL rules and the Subnet association are immutable after creation; changing them requires recreating the affected networking resources.
-     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP + ExternalIPAttachment in the same DB transaction — both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the shared two-phase flow.
+     - If `auto_external_ip_attachment == true`: selects a READY ExternalIPPool with the most available capacity, reserves capacity, and creates an ExternalIP in the same DB transaction as the ComputeInstance. The ExternalIP starts in **Pending** state. If the pool is exhausted, the API call fails and no resources are persisted. The ExternalIPAttachment is created only after the ExternalIP is Allocated and the ComputeInstance is READY. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment).
    - Creates ComputeInstance CR with `network_attachments`
 
 5. **osac-operator ComputeInstance controller:**
@@ -187,8 +190,8 @@ ComputeInstance already participates in the networking API. Today's flow:
 #### Deletion (reverse order)
 
 9. **Delete ComputeInstance:**
-   - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-provisioned: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
-   - **Manually created resources are NOT cleaned up** — if the tenant created ExternalIP/ExternalIPAttachment explicitly, they persist after the resource is deleted. The tenant manages their lifecycle.
+   - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-created: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
+   - **Manually created ExternalIPAttachments block workload deletion** — the tenant must remove any active attachment targeting the ComputeInstance before deleting it. Other manually created ExternalIPs remain tenant-managed and are not cascade-deleted.
    - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
    - osac-operator triggers `osac-delete-compute-instance` AAP job
    - Template deletes KubeVirt VM + DataVolume
@@ -344,7 +347,7 @@ No RBAC or tenancy changes. All new resources (ComputeInstance with its existing
   networking resources use read/create/delete; NetworkACL rules and
   Subnet-to-ACL associations are immutable after creation. Supported
   non-network workload updates remain available
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-provisioned: "true"`) via standard API
+- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
 
 ### Observability and Monitoring
 
@@ -428,7 +431,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 - E2E: create ComputeInstance with two attachments, verify the API rejects the request
 - E2E on `cudn_evpn`: reject VM placement unless the parent VirtualNetwork has exactly one Subnet and the target Subnet has a READY CUDN and Active, non-terminating Namespace
-- E2E: create ComputeInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
+- E2E: create ComputeInstance with `--external-ip-attachment`, verify the ExternalIPAttachment is created only after the ExternalIP is Allocated and the ComputeInstance is READY, then verify DNAT is functional
 - E2E: delete ComputeInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create ComputeInstance in BM-only deployment, verify error returned
 - E2E: create ComputeInstance with one `network_attachments` entry, verify it is used as the default route and any ACL associated with the Subnet refines the deployment default policy; otherwise the deployment default action governs unmatched traffic
@@ -568,4 +571,4 @@ Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

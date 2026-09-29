@@ -349,12 +349,23 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
         // List existing Subnets under this VirtualNetwork
         // Acquire the shared VirtualNetwork-scoped admission lock before reading topology.
         // Hold it through committing this Subnet so VM placement cannot race the check.
-        // Reject while any Subnet deletion reservation is Requested or Admitted for this VirtualNetwork.
+        // Read all Subnets, including terminating ones, under the lock. Reject
+        // if any has metadata.deletionTimestamp, even if its controller has not
+        // created a deletion reservation yet. Also reject while any Subnet
+        // deletion reservation is Requested or Admitted for this VirtualNetwork.
+        // Keep these checks and the create write in the same fenced admission decision.
         listResp, err := s.List(ctx, &v1.ListSubnetsRequest{
             Filter: fmt.Sprintf("spec.virtualNetwork='%s'", vnetResp.GetVirtualNetwork().GetId()),
         })
         if err != nil {
             return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
+        }
+
+        // A deletion reservation may lag the Kubernetes deletion timestamp.
+        // Reject against the Subnet state while still holding the admission lock.
+        if hasTerminatingSubnet(listResp.GetSubnets()) {
+            return nil, status.Error(codes.FailedPrecondition,
+                "Cannot create a Subnet while another Subnet in this VirtualNetwork is terminating")
         }
 
         // Check authoritative VM placement admissions, including pending placements.
@@ -1755,4 +1766,4 @@ Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

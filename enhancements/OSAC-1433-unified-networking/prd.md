@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-24
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -95,6 +95,7 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
   association prerequisite. [User; OSAC-1433]
 - **FR-14:** Existing workload traffic policies require tenant-assisted migration where their scope or stateful behavior cannot be represented by a Subnet-level stateless ACL. Tenants can group workloads by intended policy, place each group on a Subnet with the corresponding shared NetworkACL, and add reverse-direction rules when needed to permit return traffic under the selected deployment fallback and matching rules. [User]
 - **FR-15:** The provider must configure a deployment-wide default ACL policy of `PERMIT` or `DENY`. ACL rules are evaluated by match specificity before this policy; the policy is the final catch-all for each direction and applies whether or not a Subnet has an associated NetworkACL. [User]
+- **FR-16:** The fulfillment-service enforces resource dependencies at the API layer. A create request is rejected with `FailedPrecondition` if a referenced resource is missing, not Ready/Allocated, or being deleted. NetworkACL creation requires a Ready VirtualNetwork; Subnet creation requires a Ready VirtualNetwork and, when an ACL is specified, a Ready NetworkACL in that same VirtualNetwork; workload creation requires a Ready Subnet, including readiness of any associated ACL. ExternalIP, ExternalIPAttachment, NATGateway, and FabricDomain creation follow their referenced-resource readiness gates. Internal defaulting and auto-provisioning flows wait for the same gates. Deletes are rejected while active dependents remain; manually created ExternalIPAttachments block deletion of their target workload, while system-created attachments and ExternalIPs are cleaned up in dependency order. [OSAC-1433]
 
 ### 3.2 Non-Functional Requirements
 
@@ -132,6 +133,33 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - [ ] Unsupported IPv6, dual-stack, disconnected, and multi-hub configurations are rejected before provisioning.
 - [ ] Existing policies that cannot be represented exactly are migrated through tenant-directed workload grouping and reverse-direction ACL rules where needed to permit required return traffic under the selected deployment fallback and matching rules.
 - [ ] Networking implementations remain hidden from tenant-facing APIs.
+
+### Resource Lifecycle Enforcement
+
+- [ ] Creating a VirtualNetwork before its NetworkClass is Ready is rejected.
+- [ ] Creating a NetworkACL before its VirtualNetwork is Ready is rejected.
+- [ ] Creating a Subnet before its VirtualNetwork is Ready is rejected; an
+  explicitly associated NetworkACL must also be Ready and belong to that
+  VirtualNetwork. A Subnet with no ACL association remains valid.
+- [ ] Creating a ComputeInstance, Cluster, or BaremetalInstance requires a
+  Ready Subnet; when the Subnet has an ACL association, that policy must be
+  ready before the Subnet is Ready.
+- [ ] Creating a NATGateway requires a Ready VirtualNetwork and an Allocated
+  ExternalIP; creating an ExternalIP requires a Ready ExternalIPPool.
+- [ ] Creating an ExternalIPAttachment requires an Allocated ExternalIP and a
+  Ready target workload. Auto-provisioned attachments are created by the
+  internal reconciler only after both conditions hold.
+- [ ] Creating a FabricDomain requires a Ready VirtualNetwork.
+- [ ] Deleting a VirtualNetwork with active Subnets, NetworkACLs, NATGateways,
+  or FabricDomains is rejected; deleting a Subnet with active workload
+  attachments or a NetworkACL with referencing Subnets is rejected.
+- [ ] Deleting an ExternalIP with active ExternalIPAttachments or NATGateways,
+  or an ExternalIPPool with active ExternalIPs, is rejected.
+- [ ] Deleting a ComputeInstance, Cluster, or BaremetalInstance with an active
+  manually created ExternalIPAttachment targeting it is rejected. System-
+  created attachments and ExternalIPs are cascade-deleted in dependency order.
+- [ ] Default networking resources cannot be deleted while active resources
+  reference them, and rejection errors identify the blocking resource type.
 
 ## 5. Dependencies
 

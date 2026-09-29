@@ -155,29 +155,31 @@ dual-stack networking are not supported.
 #### Auto ExternalIP
 
 - **FR-8:** ComputeInstance and BaremetalInstance support
-  `--external-ip-attachment`. When enabled, the system selects the
-  available ExternalIPPool with the most capacity, allocates an
-  ExternalIP, and creates an ExternalIPAttachment binding it to the
-  resource. The system selects the pool with the most available capacity
-  using IPv4. When multiple
-  pools have equal capacity, selection is deterministic but unspecified.
-  [User]
+  `--external-ip-attachment`. When enabled, the system selects an available
+  IPv4 ExternalIPPool with the most capacity and reserves capacity for one
+  ExternalIP with the workload create request. The ExternalIP is allocated
+  asynchronously. The ExternalIPAttachment is created only after the ExternalIP
+  is Allocated and the target workload is Ready. When pools have equal
+  capacity, selection is deterministic but unspecified. [User]
 - **FR-9:** Cluster supports `--external-ip-attachment`. When enabled,
-  the system allocates two ExternalIPs and creates two
-  ExternalIPAttachments — one for the API server and one for ingress.
-  [User]
-- **FR-10:** For clusters, ExternalIPs are allocated before provisioning
-  begins, resolving the ordering requirement that cluster nodes need
-  external access during setup. ExternalIPAttachments are created in an
-  inactive state and activate once the cluster's endpoint addresses are
-  available. [User]
+  the system reserves capacity for two ExternalIPs with the cluster create
+  request: one for the API server and one for ingress. The IPs are allocated
+  asynchronously. [User]
+- **FR-10:** The two ExternalIPAttachments are created only after both
+  ExternalIPs are Allocated and the Cluster is Ready with its API and ingress
+  endpoint addresses. Inbound routing becomes available after those
+  attachments are provisioned; no attachment targets a cluster before it is
+  Ready. [User]
 - **FR-11:** Auto-created ExternalIP and ExternalIPAttachment resources
   are labeled as auto-provisioned. When the parent resource is deleted,
   the system deletes auto-created ExternalIPAttachments first, then
   ExternalIPs, before the parent resource is removed. If cleanup of
   auto-created resources fails permanently, the parent resource is still
   deleted — orphaned ExternalIPs remain and must be cleaned up manually
-  by the Tenant Admin or Cloud Provider Admin. [User]
+  by the Tenant Admin or Cloud Provider Admin. An active, manually created
+  ExternalIPAttachment targeting a workload blocks its deletion until the
+  tenant removes the attachment; other manually created ExternalIPs remain
+  tenant-managed. [User]
 
 #### Default NATGateway
 
@@ -197,11 +199,13 @@ dual-stack networking are not supported.
   ExternalIPs for both API and ingress, all resolved automatically
 - [ ] A Tenant User can create a BaremetalInstance with
   `--external-ip-attachment` and no explicit network attachments — the
-  server is placed on the default subnet with an auto-provisioned
-  ExternalIP
-- [ ] Tenant onboarding creates the default VirtualNetwork, Subnet, and
-  NATGateway and waits for them to become READY; it does not create a tenant
-  default ACL or wait for an ACL association.
+  server is placed on the default subnet and receives inbound connectivity
+  after its ExternalIP is Allocated and the server is Ready
+- [ ] Tenant onboarding creates the default VirtualNetwork and waits for it
+  to become READY before creating the unassociated default Subnet; it waits
+  for the Subnet to become READY before creating the NAT ExternalIP, waits for
+  that IP to become Allocated, and then creates the NATGateway and waits for it
+  to become READY. It creates no default NetworkACL resource.
 - [ ] A Subnet may have zero or one NetworkACL association. Omitting the ACL
   leaves it unset; an explicit ACL must be READY and scoped to the same
   VirtualNetwork, and multiple ACL references are rejected.
@@ -223,7 +227,10 @@ dual-stack networking are not supported.
   attachment defaults; an omitted or partial attachment receives defaults for
   missing fields as specified in FR-6
 - [ ] When no ExternalIPPool has available capacity, the create API call
-  returns an error and the resource is not persisted
+  returns an error and the workload is not persisted
+- [ ] Auto-created ExternalIPAttachments are created only after the
+  ExternalIP is Allocated and the target workload is Ready; cluster
+  attachments wait for the Cluster to be Ready with both endpoint addresses
 - [ ] A resource created without explicit network attachments shows the
   resolved default Subnet attachment when retrieved via the API, and its
   effective policy is visible through the Subnet's NetworkACL association

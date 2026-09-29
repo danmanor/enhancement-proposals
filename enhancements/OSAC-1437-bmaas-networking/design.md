@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-24
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -199,6 +199,9 @@ Same as VMaaS/CaaS — the networking API is uniform.
    Dispatcher → `osac.templates.{{ fabric_manager }}.create_network_acl`
 
 3. **Create Subnet:**
+   If using `--network-acl`, wait until `NetworkACL.status.phase == "Ready"`
+   before running the command. The API rejects a non-READY ACL before
+   persisting or provisioning the Subnet.
    ```bash
    osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
      --network-acl my-acl --name my-subnet
@@ -302,8 +305,8 @@ Same as VMaaS/CaaS — the networking API is uniform.
 #### Deletion (reverse order)
 
 10. **Delete BaremetalInstance:**
-    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-created-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
-    - **Manually created resources are NOT cleaned up** — tenant manages their lifecycle.
+    - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-created-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioned-resource-cleanup-on-parent-deletion) for the pattern. This runs concurrently with the bare-metal-fulfillment-operator's deletion flow but does not conflict (different CRs).
+    - **Manually created ExternalIPAttachments block workload deletion** — the tenant must remove any active attachment targeting the BaremetalInstance before deleting it. Other manually created ExternalIPs remain tenant-managed and are not cascade-deleted.
     - **Default networking resources (VirtualNetwork, Subnet, and NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
       - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
@@ -569,7 +572,7 @@ the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
 
 IP discovery is decoupled from switch port configuration. The `move_network_attachment` role is switch-side only — it moves the server's fabric port onto the tenant subnet's network segment during `reconcileNetworking`, after OS provisioning and before the handoff reboot. It does not query DHCP leases or return an IP address.
 
-After `reconcileReboot` completes and sets `NetworkHandoffComplete=True`, the host is running on the tenant network and its tenant-network DHCP lease is available. Only then does the operator run `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the sole attachment's Subnet reference and the server's selected port MAC address. The role queries the DHCP lease API for that tenant Subnet, matches the port MAC to find the tenant-network IP, and returns it. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
+After `reconcileReboot` completes and sets `NetworkHandoffComplete=True`, the operator starts `reconcileIPDiscovery`. This phase dispatches `osac.templates.{{ fabric_manager }}.query_dhcp_lease`, passing the sole attachment's Subnet reference and the server's selected port MAC address. The lease may not have propagated yet, so discovery retries with exponential backoff until the role finds a valid lease, as described in IP discovery lease validation. The role queries the DHCP lease API for that tenant Subnet, matches the port MAC, and returns the tenant-network IP. The operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR.
 
 **MAC resolution — the `osac.openshift.io/interface-macs` contract.** Bare-metal servers are not registered as named fabric servers, so their DHCP leases appear in the fabric manager's IPAM as MAC-only host entries (no server name). To match a lease, the operator must know the selected NIC MAC. Inventory tooling annotates each `BareMetalHost` with a JSON map of OSAC interface name → NIC MAC, e.g. `{"eth9":"52:54:00:16:04:83"}`, under the `osac.openshift.io/interface-macs` annotation. During `reconcileIPDiscovery` the operator reads this annotation, resolves the sole attachment's interface to a MAC, and passes it to the job as an extra var. The `query_dhcp_lease` role matches the IPAM host by MAC (the fabric manager stores lease MACs lowercase; the role compares against the lowercased `mac[].address` values). When no MAC is supplied, the role falls back to matching by server name — the path named CaaS fabric servers use, which BMaaS is converging onto.
 
@@ -656,7 +659,7 @@ This feature inherits the existing security model:
 
 #### Auto ExternalIP Allocation Failures
 
-- Pool exhaustion: create API call returns error, no resources persisted (pool capacity checked synchronously during the API call — see [auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#external-access-same-for-all-resource-types))
+- Pool exhaustion: create API call returns error, no resources persisted (pool capacity checked synchronously during the API call — see [auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment))
 - ExternalIP provisioning failure: ExternalIP enters Failed state, BaremetalInstance remains in Pending (external access unavailable, BM may still function without inbound connectivity)
 - ExternalIPAttachment provisioning failure: DNAT rule not created, inbound traffic does not reach BM (BM functional, external access unavailable)
 
@@ -771,7 +774,7 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 ### Integration Tests
 
 - E2E: create BaremetalInstance with two attachments, verify the API rejects the request
-- E2E: create BaremetalInstance with `--external-ip-attachment`, verify auto ExternalIP + ExternalIPAttachment created, DNAT rule functional
+- E2E: create BaremetalInstance with `--external-ip-attachment`, verify the ExternalIPAttachment is created only after the ExternalIP is Allocated and the BaremetalInstance is READY with a discovered IP, then verify DNAT is functional
 - E2E: delete BaremetalInstance with auto-provisioned resources, verify ExternalIPAttachment and ExternalIP cleaned up
 - E2E: create BaremetalInstance with interface not in BareMetalInstanceType, verify error returned
 - E2E: create BaremetalInstance with a second `--network-attachment`, verify the CLI and API return a maximum-one error
@@ -986,4 +989,4 @@ Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

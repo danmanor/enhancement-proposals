@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-24
+last-updated: 2026-09-29
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -615,10 +615,11 @@ osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet
 
 When `--network-acl` is omitted, the Subnet remains unassociated and the
 required deployment default ACL policy governs traffic unless a matching ACL
-rule is present. To add more-specific decisions, create a NetworkACL first and
-pass `--network-acl web-acl` when creating the Subnet; the ACL must be READY
-and belong to `my-net`. Since the association cannot be updated, create the
-ACL before the Subnet.
+rule is present. To add more-specific decisions, create a NetworkACL first,
+wait until `NetworkACL.status.phase == "Ready"`, then pass
+`--network-acl web-acl` when creating the Subnet. The ACL must belong to
+`my-net`. Since the association cannot be updated, create and wait for the ACL
+before creating the Subnet.
 
 The fabric manager creates the network segment and enforces any explicitly
 associated Subnet ACL policy. If the NetworkClass has a K8s manager, it also
@@ -1334,11 +1335,29 @@ caller knows what to remove first.
 
 | Resource | Reject delete if active … exist |
 |---|---|
-| VirtualNetwork | No Subnet, NetworkACL, or NATGateway CRs with `spec.virtualNetwork` referencing this VNet |
-| Subnet | No ComputeInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet; no BareMetalInstance CRs with `spec.networkAttachments[].subnetRef` referencing this Subnet (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)) |
-| NetworkACL | No Subnet CRs with `spec.networkACL` referencing this ACL |
+| VirtualNetwork | Subnets, NetworkACLs, NATGateways, or FabricDomains referencing this VirtualNetwork |
+| Subnet | ComputeInstances, Clusters, or BaremetalInstances with network attachments referencing this Subnet |
+| NetworkACL | Subnets with `spec.network_acl` referencing this ACL |
 | ExternalIP | No ExternalIPAttachment or NATGateway CRs with `spec.externalIP` referencing this EIP |
 | ExternalIPPool | No ExternalIP CRs with `spec.pool` referencing this pool |
+| ExternalIPAttachment | (leaf — no dependents) |
+| NATGateway | (leaf — no dependents) |
+| ComputeInstance / Cluster / BaremetalInstance | Manually created ExternalIPAttachments targeting this resource |
+| NetworkClass | VirtualNetworks referencing this NetworkClass |
+
+"Active" means the resource exists and has not been fully deleted. A resource
+with a deletion timestamp that is still being deprovisioned remains active for
+these guards; its parent cannot be deleted until the child is fully gone.
+
+Auto-created ExternalIPAttachments and ExternalIPs are cascade-deleted when
+their parent workload is deleted. The workload delete handler initiates the
+cascade, and the operator finalizer deletes the attachment before the ExternalIP.
+Manually created ExternalIPAttachments are not cascade-deleted and block
+deletion of their target workload until the tenant removes them.
+
+Operator controllers retain child-resource checks before dispatching AAP
+deprovision jobs as defense in depth. The fulfillment-service API rejection is
+the primary enforcement point.
 
 The full dependency chain (delete order, leaf first):
 
@@ -1353,9 +1372,9 @@ NATGateway (leaf)
   must be gone before --> ExternalIP
   must be gone before --> VirtualNetwork
 
-Custom NetworkACL
+NetworkACL
   must be gone before --> VirtualNetwork
-  (blocked by ComputeInstances / Clusters / BaremetalInstances referencing it)
+  (blocked by Subnets referencing it)
 
 ComputeInstance / Cluster / BaremetalInstance
   must be gone before --> Subnet
@@ -1372,6 +1391,9 @@ Subnet
 
 ExternalIP
   must be gone before --> ExternalIPPool
+
+FabricDomain (leaf)
+  must be gone before --> VirtualNetwork
 
 VirtualNetwork
   must be gone before --> NetworkClass
@@ -1392,18 +1414,16 @@ does not exist, is not ready, or is being deleted.
 |---|---|---|
 | VirtualNetwork | NetworkClass | Ready |
 | Subnet | VirtualNetwork | Ready |
-| SecurityGroup | VirtualNetwork | Ready |
+| NetworkACL | VirtualNetwork | Ready |
+| Subnet with an ACL association | NetworkACL in the same VirtualNetwork | Ready |
 | NATGateway | VirtualNetwork | Ready |
 | NATGateway | ExternalIP | Allocated |
 | ExternalIP | ExternalIPPool | Ready |
 | ExternalIPAttachment | ExternalIP | Allocated |
 | ExternalIPAttachment | Target (ComputeInstance / Cluster / BaremetalInstance) | Ready |
-| ComputeInstance | Subnet | Ready |
-| ComputeInstance | SecurityGroup(s) | Ready |
-| Cluster | Subnet | Ready |
-| Cluster | SecurityGroup(s) | Ready |
-| BaremetalInstance | Subnet | Ready |
-| BaremetalInstance | SecurityGroup(s) | Ready |
+| ComputeInstance | Subnet, including any ACL association | Ready |
+| Cluster | Subnet, including any ACL association | Ready |
+| BaremetalInstance | Subnet, including any ACL association | Ready |
 | FabricDomain | VirtualNetwork | Ready |
 
 The fulfillment-service checks these conditions synchronously during the
@@ -1529,8 +1549,8 @@ VirtualNetwork at creation time.
 |------|--------|------------|
 | Fabric manager complexity | One Ansible role handles all networking concerns | Clear interface contract per operation; tested independently per manager |
 | K8s-to-fabric bridge failure | VMs unreachable from fabric | k8sManager validates bridge connectivity at subnet creation; subnet stays Pending until bridge is confirmed |
-| CaaS prerequisite ordering | ExternalIPs may be needed before cluster | Pending state for attachments; template validates its own prerequisites |
-| ExternalIPAttachment target validation | Target may not exist yet (CaaS) or may be deleted | Pending state for forward references; attachment tracks target lifecycle |
+| CaaS prerequisite ordering | ExternalIP allocation can overlap cluster provisioning, but attachments require both the IP and Cluster to be ready | Create ExternalIP records with the Cluster request; create ExternalIPAttachments only after the ExternalIPs are Allocated and the Cluster is READY with endpoint addresses |
+| ExternalIPAttachment target validation | An attachment must reference an existing READY workload | Reject early creation; auto-provisioning waits for the workload and ExternalIP readiness gates |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
 
 ### Drawbacks
@@ -1759,4 +1779,4 @@ Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

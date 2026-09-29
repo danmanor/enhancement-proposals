@@ -72,7 +72,7 @@ don't have the ability to add or modify ansible roles.
 
   **List and map constraints:**
   - **Item count** (`minItems`, `maxItems`): control whether users can add or remove entries in repeated fields. Setting `minItems` and `maxItems` to the same value locks the list length, preventing users from adding or removing items while still allowing edits to each item's fields.
-    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose which subnet and security groups but cannot add a second NIC.
+    Example: `network_attachments` with `{"minItems": 1, "maxItems": 1}` locks a VM to exactly one network attachment — the user can choose a subnet, whose optional NetworkACL association determines its traffic policy, but cannot add a second NIC.
     `network_attachments` uses `maxItems: 1` for current VMaaS and BMaaS
     resources. A catalog schema must not advertise more than one attachment;
     the backend rejects additional entries even when a catalog item omits a

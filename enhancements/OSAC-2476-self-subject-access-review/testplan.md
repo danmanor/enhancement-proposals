@@ -106,7 +106,7 @@ scope and target resource name are supplied in the review object's top-level
 - Response `status.allowed` is `true`
 - `status.reason` is empty
 
-#### TC-US2-02: Check permission to delete Subnet in own tenant
+#### TC-US2-02: Check that Tenant User cannot delete Subnet in own tenant
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -116,7 +116,7 @@ scope and target resource name are supplied in the review object's top-level
 
 - Tenant user is authenticated with JWT token
 - User is a member of tenant `org-a`
-- User has previously created READY NetworkACL `test-acl` in VirtualNetwork `prod-net` and Subnet `test-subnet` in `prod-net` with an explicit `network_acl` reference to `test-acl`
+- A Tenant Admin in `org-a` created READY NetworkACL `test-acl` in VirtualNetwork `prod-net` and Subnet `test-subnet` in `prod-net` with an explicit `network_acl` reference to `test-acl`
 
 ##### Steps
 
@@ -125,7 +125,7 @@ scope and target resource name are supplied in the review object's top-level
 
 ##### Expected Results
 
-- Response `status.allowed` is `true`
+- Response `status.allowed` is `false`
 - `status.reason` is empty
 
 ### US-3: Tenant User Resource-Scoped Permissions
@@ -397,7 +397,10 @@ All interface changes are exercised by test cases.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"06d340f90","source_repo_branch":"main","commits_behind_main":43,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","respond","respond"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
