@@ -320,7 +320,7 @@ spec:
 
 **API-Level VM Constraint**
 
-When a NetworkClass has `k8s_manager: "cudn_evpn"`, fulfillment-service enforces a constraint: **if the first Subnet under a VirtualNetwork has VMs running, block creation of additional Subnets**.
+Every Subnet create uses the shared VirtualNetwork admission lock and rejects a terminating Subnet or an active deletion reservation, regardless of NetworkClass managers. When a NetworkClass has `k8s_manager: "cudn_evpn"`, fulfillment-service additionally enforces a topology constraint: **if the first Subnet under a VirtualNetwork has VMs running, block creation of additional Subnets**.
 
 ```go
 // internal/servers/subnet_server.go
@@ -343,51 +343,50 @@ func (s *SubnetServer) Create(ctx context.Context, req *v1.CreateSubnetRequest) 
         return nil, status.Errorf(codes.Internal, "failed to fetch NetworkClass: %v", err)
     }
 
-    // Enforce single-subnet-with-VMs constraint for cudn_evpn
     k8sManager := ncResp.GetNetworkClass().GetKubernetesManager()
-    if k8sManager == "cudn_evpn" {
-        // List existing Subnets under this VirtualNetwork
-        // Acquire the shared VirtualNetwork-scoped admission lock before reading topology.
-        // Hold it through committing this Subnet so VM placement cannot race the check.
-        // Read all Subnets, including terminating ones, under the lock. Reject
-        // if any has metadata.deletionTimestamp, even if its controller has not
-        // created a deletion reservation yet. Also reject while any Subnet
-        // deletion reservation is Requested or Admitted for this VirtualNetwork.
-        // Keep these checks and the create write in the same fenced admission decision.
-        listResp, err := s.List(ctx, &v1.ListSubnetsRequest{
-            Filter: fmt.Sprintf("spec.virtualNetwork='%s'", vnetResp.GetVirtualNetwork().GetId()),
-        })
-        if err != nil {
-            return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
-        }
 
-        // A deletion reservation may lag the Kubernetes deletion timestamp.
-        // Reject against the Subnet state while still holding the admission lock.
-        if hasTerminatingSubnet(listResp.GetSubnets()) {
-            return nil, status.Error(codes.FailedPrecondition,
-                "Cannot create a Subnet while another Subnet in this VirtualNetwork is terminating")
-        }
+    // All Subnet creates share the VirtualNetwork admission contract, regardless
+    // of NetworkClass managers. Hold the lock through the fenced create write.
+    admission, err := s.admission.Acquire(ctx, vnetResp.GetVirtualNetwork().GetId())
+    if err != nil {
+        return nil, status.Errorf(codes.Internal, "failed to acquire VirtualNetwork admission lock: %v", err)
+    }
+    defer admission.Release()
 
-        // Check authoritative VM placement admissions, including pending placements.
-        if len(listResp.GetSubnets()) > 0 {
-            hasVMs, err := s.checkVirtualNetworkHasVMs(ctx, vnetResp.GetVirtualNetwork().GetId())
-            if err != nil {
-                return nil, status.Errorf(codes.Internal, "failed to check VM placements in VirtualNetwork: %v", err)
-            }
-
-            if hasVMs {
-                return nil, status.Errorf(codes.FailedPrecondition,
-                    "Cannot create additional subnets under VirtualNetwork %q: "+
-                    "active or in-progress VM placements exist. "+
-                    "Phase 1 limitation: cudn_evpn supports only one subnet per VirtualNetwork when VMs are present. "+
-                    "To add subnets for bare-metal workloads, delete VMs first or create a new VirtualNetwork.",
-                    vnetResp.GetVirtualNetwork().GetMetadata().GetName())
-            }
-
-            // No active or in-progress VM placements → allow second subnet (fabric-only).
-        }
+    listResp, err := s.List(ctx, &v1.ListSubnetsRequest{
+        Filter: fmt.Sprintf("spec.virtualNetwork='%s'", vnetResp.GetVirtualNetwork().GetId()),
+    })
+    if err != nil {
+        return nil, status.Errorf(codes.Internal, "failed to list existing subnets: %v", err)
     }
 
+    // These shared checks apply to every manager. A deletion reservation may
+    // lag the Kubernetes deletion timestamp, so check both while holding the lock.
+    if hasTerminatingSubnet(listResp.GetSubnets()) ||
+        hasActiveDeletionReservation(ctx, vnetResp.GetVirtualNetwork().GetId()) {
+        return nil, status.Error(codes.FailedPrecondition,
+            "Cannot create a Subnet while this VirtualNetwork has a terminating Subnet or deletion reservation")
+    }
+
+    // Only the CUDN/EVPN VM-topology rule depends on the Kubernetes manager.
+    if k8sManager == "cudn_evpn" && len(listResp.GetSubnets()) > 0 {
+        hasVMs, err := s.checkVirtualNetworkHasVMs(ctx, vnetResp.GetVirtualNetwork().GetId())
+        if err != nil {
+            return nil, status.Errorf(codes.Internal, "failed to check VM placements in VirtualNetwork: %v", err)
+        }
+
+        if hasVMs {
+            return nil, status.Errorf(codes.FailedPrecondition,
+                "Cannot create additional subnets under VirtualNetwork %q: "+
+                "active or in-progress VM placements exist. "+
+                "Phase 1 limitation: cudn_evpn supports only one subnet per VirtualNetwork when VMs are present. "+
+                "To add subnets for bare-metal workloads, delete VMs first or create a new VirtualNetwork.",
+                vnetResp.GetVirtualNetwork().GetMetadata().GetName())
+        }
+        // No active or in-progress VM placements → allow second subnet (fabric-only).
+    }
+
+    // Persist the Subnet create under this lock and fencing token for every manager.
     // ... continue with normal create flow ...
 }
 
@@ -1553,6 +1552,7 @@ Where is the authoritative MAC value? Does fabric manager VNet gateway MAC come 
 - With an active or in-progress VM placement on the first Subnet, create a second Subnet referencing the same ACL → API returns 400 FailedPrecondition
 - Remove the VM, retry the second Subnet create with the same explicit ACL association → succeeds as fabric-only
 - Race a second-Subnet create against VM placement from a one-Subnet, VM-free VirtualNetwork → exactly one topology admission succeeds; never admit both a VM and a multi-Subnet VirtualNetwork
+- For a NetworkClass without `cudn_evpn`, attempt Subnet creation while a `Requested` or `Admitted` VirtualNetwork deletion reservation exists → create is rejected and no Subnet is persisted
 - Race Subnet deletion against an in-progress VM placement before a VM object exists → deletion request persists a `Requested` reservation, blocks new placements and Subnet creates, and does not start cleanup until the placement completes
 - For Subnet creation, VM placement, the `Requested` deletion reservation, and the `Requested`→`Admitted` transition, expire one replica's lock lease, acquire a newer fencing token on another replica, then resume the stale writer; verify each stale or expired write is rejected atomically and retried only after reacquiring the lock and repeating its state checks
 - Verify VM placement and additional Subnet creation remain blocked through both deletion reservation states, deprovisioning retries, and finalizer removal
@@ -1760,10 +1760,10 @@ None. All infrastructure (OCP cluster, physical fabric managed by the configured
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
