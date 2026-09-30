@@ -82,7 +82,7 @@ Regardless of how the domain is created:
 
 - As a Tenant Admin, I want confidence that my tenant's east-west network isolation is enforced at the fabric level so that other tenants cannot access my data or traffic.
 
-- As a Tenant Admin, I want to optionally associate a NetworkACL with a Subnet so that east-west traffic between subnets follows stateless ingress and egress rules when an ACL is configured, with return traffic explicitly allowed by a reverse-direction rule. Without an association, the deployment default ACL action governs unmatched traffic.
+- As a Tenant Admin, I want to optionally associate a NetworkACL with a Subnet so that east-west traffic follows stateless ingress and egress rules when an ACL is configured. If no ACL is associated or no rule matches, the deployment default ACL action applies. Each direction is evaluated independently using the shared rule-specificity order. With a `DENY` fallback, a matching reverse-direction `ALLOW` must win that order for return traffic to pass; with `PERMIT`, unmatched replies pass unless the winning reverse-direction rule denies them.
 
 ### Tenant User
 
@@ -106,7 +106,7 @@ Regardless of how the domain is created:
 - [ ] Hosts in different isolation domains cannot exchange traffic on the east-west fabric
 - [ ] Hosts in the same isolation domain and same subnet have L2 connectivity on the east-west fabric
 - [ ] Hosts in the same isolation domain but different subnets route at L3 within the domain
-- [ ] NetworkACLs associated with Subnets translate to fabric-level ACLs; cross-subnet traffic is checked against source Subnet egress and destination Subnet ingress rules, and reply traffic requires an explicit matching rule in the reverse direction
+- [ ] When a NetworkACL is associated with a Subnet, it translates to fabric-level ACLs; cross-subnet traffic is checked against source Subnet egress and destination Subnet ingress rules. If no ACL is associated or no rule matches, the deployment default ACL action applies. With a `DENY` fallback, a matching reverse-direction `ALLOW` must win the shared specificity order for reply traffic to pass; with `PERMIT`, unmatched replies pass unless the winning reverse-direction rule denies them. A Subnet does not require an ACL association for provisioning or readiness; when one is associated, its policy must be active before the Subnet is Ready.
 
 **East-West Connectivity**
 - [ ] Bare metal instances and VMs in the same isolation domain can communicate over the east-west fabric without additional network configuration

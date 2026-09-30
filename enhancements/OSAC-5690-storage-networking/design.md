@@ -431,10 +431,11 @@ ingress policy after reverse NAT.
 With a deployment `PERMIT` fallback, unmatched packets pass unless a matching
 NetworkACL `DENY` rule applies. With a `DENY` fallback, the Subnet's associated
 NetworkACL must allow egress to the VAST addresses on the required TCP service
-ports (4420 for NVMe-TCP, 2049 for NFS, and the configured VMS API port when
-that endpoint is routable from tenant VirtualNetworks) and allow the
-corresponding return traffic in ingress. Since the ACL is stateless, each
-direction is decided independently.
+ports (4420 for NVMe-TCP and the configured VMS API port when that endpoint is
+routable from tenant VirtualNetworks) and allow the corresponding return traffic
+in ingress. File storage is out of scope for this phase, so NFS port 2049 is not
+part of this ACL requirement. Since the ACL is stateless, each direction is
+decided independently.
 
 The default Subnet has no NetworkACL association, and that association cannot
 be added after creation. Under a `DENY` fallback, a storage workload must use
