@@ -57,8 +57,8 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 - As a Tenant User, I want to create a cluster with explicit network configuration so that I can place it on a specific subnet and use an optional NetworkACL associated with that subnet to refine the deployment default traffic policy
 - As a Tenant User, I want my cluster's node sets to automatically use the correct physical interface based on their BareMetalInstanceType so that network connectivity is configured without manual interface specification
-- As a Tenant User, I want to create a cluster with `--external-ip-attachment` so that the system provisions external IPs for both the API server and ingress and the cluster is externally reachable in a single API call
-- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default Subnet under the deployment default ACL policy
+- As a Tenant User, I want to create a cluster with `--external-ip-attachment` so that the system provisions external IPs for both the API server and ingress; inbound reachability follows the effective Subnet policy
+- As a Tenant User, I want to create a cluster without specifying network configuration and have it placed on my default Subnet under the deployment default ACL policy; with a `DENY` fallback, cluster installation requires a selected Subnet with a READY NetworkACL that permits required egress and reply flows, or a deployment configured with `PERMIT`
 - As a Tenant User, I want to see my cluster's API server and ingress endpoint addresses in the cluster status so that I can access the cluster
 - As a Tenant User, I want auto-provisioned networking resources to be automatically cleaned up when I delete my cluster so that I do not accumulate orphaned resources
 
@@ -86,7 +86,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Optional Network Configuration with Defaults
 
-- **FR-2:** Network configuration is optional when creating a cluster. When the attachment is omitted or empty, the system applies the tenant's default Subnet, which has no ACL association. When an attachment is supplied without a Subnet, only the Subnet is defaulted; supplied values are preserved. The resolved Subnet is stored with the cluster so the cluster is self-describing after creation. For an explicitly selected Subnet, any associated NetworkACL refines the deployment default policy. [User]
+- **FR-2:** Network configuration is optional when creating a cluster. When the attachment is omitted or empty, the system applies the tenant's default Subnet, which has no ACL association. When an attachment is supplied without a Subnet, only the Subnet is defaulted; supplied values are preserved. The resolved Subnet is stored with the cluster so the cluster is self-describing after creation. For an explicitly selected Subnet, any associated NetworkACL refines the deployment default policy. The default Subnet's unmatched traffic follows the deployment action: `DENY` blocks unmatched ingress and egress. Because connected cluster installation requires outbound access to assisted-service and image sources, a deployment using `DENY` must use an explicitly selected Subnet created with a READY NetworkACL that allows those flows and required replies, with the egress path configured; otherwise the deployment must use `PERMIT` for the default Subnet. [User; PR review: CodeRabbit]
 
 #### Auto External IP
 
@@ -98,7 +98,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### External IP Activation
 
-- **FR-5:** When automatic external IP allocation is enabled, inbound routing to the API server and ingress becomes available after the Cluster is Ready, the endpoint addresses are available, and the corresponding ExternalIPs are Allocated. [User]
+- **FR-5:** When automatic external IP allocation is enabled, inbound routing to the API server and ingress becomes available after the Cluster is Ready, the endpoint addresses are available, and the corresponding ExternalIPs are Allocated, subject to the effective Subnet policy. ExternalIP routing does not bypass that policy; unmatched inbound traffic to the unassociated default Subnet is denied when the deployment action is `DENY`. To permit it, use the `PERMIT` default or an explicitly selected Subnet created with a NetworkACL that allows the required inbound and return flows. [User; PR review: CodeRabbit]
 
 #### Host Selection and Network Configuration
 
@@ -136,7 +136,8 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 - [ ] A Tenant User can create a cluster with network configuration specifying a subnet, and the cluster nodes are provisioned on that subnet under its optional NetworkACL association and the deployment default ACL policy
 - [ ] A Tenant User can create a cluster with a single network attachment and multiple node sets, and all node sets are provisioned on the same subnet with the appropriate physical interface automatically selected from each node set's BareMetalInstanceType
-- [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress
+- [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress; inbound reachability follows the effective Subnet policy, and unmatched inbound traffic is denied when the deployment action is `DENY`
+- [ ] Cluster installation can reach assisted-service and image sources only when its effective Subnet policy permits the required outbound and reply flows; under a `DENY` fallback, the tenant uses an explicitly selected Subnet created with a permitting NetworkACL and a configured egress path, or the deployment uses `PERMIT` for the default Subnet
 - [ ] Cluster status exposes API server and ingress endpoint addresses after provisioning completes
 - [ ] Auto-created external IP attachments are created only after both ExternalIPs are Allocated and the Cluster is Ready with API and ingress endpoint addresses; DNAT is configured afterward
 - [ ] The system selects hosts and configures network connectivity before cluster provisioning begins
@@ -198,10 +199,10 @@ Resolved: The system creates IP address pools for cluster endpoint allocation at
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -25,7 +25,12 @@ Subnet, and NATGateway. The Subnet has no NetworkACL association unless one
 was explicitly selected at creation; there is no tenant or VirtualNetwork
 default ACL resource. The deployment's required default ACL action, configured
 on NetworkClass as `PERMIT` or `DENY`, decides traffic when no associated ACL
-rule matches or a Subnet has no ACL. Tenants may create a NetworkACL before a
+rule matches or a Subnet has no ACL. The tenant default Subnet has no ACL, so
+`DENY` blocks unmatched ingress and egress there; NATGateway and ExternalIP
+resources do not bypass that policy. To permit specific traffic under `DENY`,
+tenants create a NetworkACL with the required rules, create a Subnet associated
+with it, and attach workloads to that Subnet. The immutable association cannot
+be added later to the default Subnet. Tenants may create a NetworkACL before a
 Subnet and associate that ACL with the Subnet. Workload attachments can use
 the tenant's default Subnet, auto ExternalIP provisioning is available, and
 auto-created external-access resources are cleaned up on deletion. IPv6 and
@@ -54,7 +59,11 @@ NetworkClass also requires one deployment-wide ACL default action, shared by
 all tenants and VirtualNetworks. No default NetworkACL resource is created.
 ComputeInstance, Cluster, and BaremetalInstance resources can omit their
 network attachment field and use the tenant default Subnet. Auto ExternalIP
-modes enable fully connected resources in one API call. See the
+modes enable fully connected resources in one API call when the deployment
+default ACL action permits the required traffic. With a `DENY` fallback, the
+unassociated default Subnet denies unmatched ingress and egress; workloads that
+need connectivity must use a separately created Subnet with an associated ACL
+that permits the required flows. See the
 [PRD](prd.md) for requirements.
 
 Default networking also inherits the [Unified Networking hub support
@@ -105,7 +114,9 @@ The design covers three capabilities: default networking (including NATGateway) 
    not a NetworkACL resource or an ACL rule set. It decides each packet
    direction when no matching rule in an explicitly associated NetworkACL
    decides the result. ACL rules are tenant-created, scoped to one
-   VirtualNetwork, and may refine policy for Subnets that reference them.
+   VirtualNetwork, and may refine policy for Subnets that reference them. The
+   generated default Subnet has no ACL; under `DENY`, unmatched traffic on it
+   is denied, including traffic routed through its NATGateway or ExternalIP.
    NetworkClass changes follow the unified create/read/delete contract and
    require replacement.
 
@@ -971,11 +982,8 @@ Consequences:
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
-
-> Context changed between revise and respond.
+Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

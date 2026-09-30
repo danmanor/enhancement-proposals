@@ -91,6 +91,8 @@ The step is split into two visually distinct sections using
   picker cascade is shown for custom network selection. This matches the bare metal wizard
   pattern and will also be added to the VM wizard.
 
+  Always show helper text: "The tenant default Subnet has no NetworkACL; unmatched traffic follows the deployment default ACL action. With `DENY`, unmatched traffic is blocked. For cluster installation or endpoint flows that need access, turn off this option and select a Subnet whose NetworkACL permits the required traffic and replies, with an egress path configured."
+
 When "Use tenant default network" is disabled, `NetworkAttachmentPickers`
 (shared component) renders the Virtual Network and Subnet pickers bound to the cluster
 adapter's Formik paths:
@@ -103,7 +105,9 @@ adapter's Formik paths:
 - **Subnet** (`SelectField`): loads from `useSubnets()` filtered by
   `this.spec.virtual_network.name == "<selected-vn-name>"`. Disabled until a
   VirtualNetwork is selected. Displays Name and IPv4 CIDR, plus the associated NetworkACL name and
-  status when present; otherwise it shows the deployment default ACL action.
+  status when present; otherwise it says unmatched traffic follows the
+  deployment default policy. The UI does not fetch or display the configured
+  `PERMIT`/`DENY` value.
   Any READY Subnet can be selected; if an ACL is associated, that ACL must
   also be READY. Optional when VN is also empty;
   required when a VN is selected. Auto-selects when the filtered list returns
@@ -158,6 +162,9 @@ pickers. Neither attachment carries ACL policy.
   - **Subnet**: selected Subnet name (shown only when custom)
   - **Network ACL**: associated ACL name and status from the selected Subnet,
     shown as read-only context when custom
+  - **Policy note**: when "Tenant default" is selected, state that traffic uses
+    the deployment default ACL action and that `DENY` blocks unmatched traffic;
+    this is guidance, not a dynamically queried NetworkClass value
   - **Auto External IP**: "Enabled" or omitted when disabled
 - **Cluster Networking**:
   - **Pod CIDR**: entered value, or omitted when empty
@@ -428,7 +435,7 @@ Add to `createMockConnectTransport.ts`:
 | VN selection filters Subnet list | Options update on VN change |
 | Clearing VN resets Subnet value | Formik value cleared |
 | Single-option list auto-selects | Value auto-selected |
-| Selected READY Subnet has no ACL association | Subnet can be selected; the deployment default ACL action is shown as its unmatched-traffic policy |
+| Selected READY Subnet has no ACL association | Subnet can be selected; show the generic deployment-policy fallback note without claiming to read the configured `PERMIT`/`DENY` value |
 | `allOptional={true}` with all pickers empty | No errors |
 | `allOptional={false}` with VN empty | Validation error |
 | Loading and error states | Pickers disabled during load; error on failure |
@@ -437,7 +444,7 @@ Add to `createMockConnectTransport.ts`:
 
 | Suite | Coverage |
 |-------|----------|
-| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); "Use tenant default network" toggle on by default hides pickers; disabling toggle shows pickers with `allOptional={true}`; re-enabling toggle clears picker values; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; default-network-on omits `network_attachment`; review step shows "Tenant default" when toggle off and all pickers empty (payload omits `network_attachment`); review step shows "Custom" only when toggle off and at least one picker has a value |
+| `ClusterNetworkingStep` | Two FormSections rendered ("Infrastructure Networking", "Cluster Networking"); "Use tenant default network" toggle on by default hides pickers; default-network helper explains that unmatched traffic follows deployment action and is blocked under `DENY`; disabling toggle shows pickers with `allOptional={true}`; re-enabling toggle clears picker values; auto external IP toggle in Infrastructure section; `pod_cidr`/`service_cidr` in Cluster section; default-network-on omits `network_attachment`; review step shows "Tenant default" and the deployment-policy note when the toggle is on or pickers are empty; review step shows "Custom" only when toggle off and at least one picker has a value |
 | `VmNetworkingStep` | Existing tests pass after refactor to shared component |
 | `ClusterDetailPage` | "Pending" endpoints; auto-provisioned section conditional on `auto_external_ip_attachment`; statuses rendered |
 | `ExternalIpManagementSection` | Attach button shown when no attachment; Detach shown when attached; endpoint details rendered; empty state for no unattached IPs |
@@ -450,10 +457,10 @@ Add to `createMockConnectTransport.ts`:
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

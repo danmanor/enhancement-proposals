@@ -212,7 +212,11 @@ managed-switch infrastructure, limiting where the platform can run.
   and becomes selectable, a NATGateway can provide outbound connectivity only
   after each source Subnet is Ready under the deployment default action and any
   explicitly associated NetworkACL. This milestone cannot report that
-  readiness or permit workload use.
+  readiness or permit workload use. The tenant default Subnet has no ACL
+  association, so a `DENY` fallback blocks unmatched egress through its
+  NATGateway. A tenant that needs NAT egress under `DENY` must use a source
+  Subnet created with an associated NetworkACL that permits the required
+  outbound and reply flows and configure an egress path for that Subnet.
   [Jira: OSAC-3664; Clarify: D14; User direction]
 
 #### External IP Pools
@@ -406,8 +410,8 @@ selected as a supported fabric manager.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace HEAD @ 43141585d
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"cc0daa6","source_repo":"43141585d","source_repo_branch":"HEAD","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

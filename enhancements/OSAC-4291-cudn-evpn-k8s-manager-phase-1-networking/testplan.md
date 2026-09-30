@@ -119,12 +119,22 @@
 1. Create a Subnet without `spec.network_acl`.
 2. Verify the persisted Subnet has no ACL association.
 3. Verify the Subnet controller provisions fabric and, for the first eligible Subnet, the CUDN without waiting for a NetworkACL resource or `NetworkACLAssociationReady` condition.
-4. Wait for fabric, CUDN, and namespace readiness; verify the Subnet becomes READY.
-5. Send traffic that matches no tenant ACL rule and verify the deployment default action denies it.
+4. After the CUDN reports Ready, hold the target Namespace absent or in a
+   non-Active phase. Verify the k8s-manager job remains incomplete and the
+   Subnet does not become READY.
+5. Make the Namespace exist with `status.phase == "Active"` and no
+   `metadata.deletionTimestamp`; verify the k8s-manager job completes and the
+   Subnet becomes READY.
+6. Send traffic that matches no tenant ACL rule and verify the deployment
+   default action denies it.
 
 ##### Expected Results
 
-- The Subnet remains unassociated and becomes READY after its network-segment and CUDN prerequisites complete.
+- The Subnet remains unassociated and becomes READY only after fabric, CUDN,
+  and Namespace readiness are independently confirmed.
+- CUDN Ready alone is insufficient: an absent or non-Active Namespace keeps the
+  k8s-manager job incomplete and the Subnet non-READY.
+- A Namespace with a deletion timestamp is not ready for VM placement.
 - No NetworkACL object or association-ready condition is required.
 - Unmatched traffic follows the deployment-wide `DENY` default action.
 
@@ -338,7 +348,7 @@
 - The first Subnet's persistent CUDN does not make the multi-Subnet VirtualNetwork eligible for VM placement.
 - The Subnets and their active NetworkACL associations remain unchanged.
 
-#### TC-R5-05: Fence stale admissions and reject creates during Subnet termination
+#### TC-R5-05: Fence stale admissions and serialize Subnet create/delete admission
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -348,8 +358,11 @@
 
 - A `cudn_evpn` VirtualNetwork has one READY Subnet with active same-VirtualNetwork NetworkACL enforcement.
 - The test can pause admission persistence and control lease expiry and token issuance across two service replicas.
-- The deletion controller can be paused after the existing Subnet receives
-  `metadata.deletionTimestamp` but before its deletion reservation is created.
+- Tenant RBAC denies direct Kubernetes DELETE requests for Subnets; tenants can
+  initiate deletion only through the fulfillment-service Delete API.
+- The Delete API and Subnet create path use the same VirtualNetwork admission
+  lock and fenced reservation store. Test hooks can pause the Delete API after
+  reservation persistence and before issuing Kubernetes DELETE.
 
 ##### Steps
 
@@ -357,18 +370,31 @@
 2. Expire A's lease and have replica B acquire a newer token for the same VirtualNetwork.
 3. Resume A's write attempt.
 4. Retry the operation with the current token and re-evaluate the VirtualNetwork state.
-5. Set `metadata.deletionTimestamp` on the existing Subnet and pause its
-   controller before reservation creation. Attempt to create another Subnet in
-   the same VirtualNetwork, then resume deletion and retry after cleanup.
+5. Start a Subnet create through replica A. Pause it after reading VirtualNetwork
+   state while it holds the lock. Start a Delete API request for the existing
+   Subnet through replica B; verify it waits and has not set
+   `metadata.deletionTimestamp`. Resume the create, then allow the Delete API
+   to acquire the lock, re-read state, and persist its `Requested` reservation
+   before issuing Kubernetes DELETE.
+6. In a separate ordering, let the Delete API persist the `Requested`
+   reservation first and pause it before Kubernetes DELETE. Attempt a Subnet
+   create through the other replica, then resume deletion.
+7. Attempt a direct Kubernetes DELETE as the tenant. Separately, simulate a
+   terminating Subnet with no reservation using an administrator fixture and
+   reconcile it.
 
 ##### Expected Results
 
 - Each expired or superseded write is rejected atomically; no stale Subnet, placement, deletion admission, or transition to `Admitted` is persisted.
 - A retry is accepted only after acquiring the current lock token and repeating the state checks.
-- A new Subnet create is rejected while any existing Subnet is terminating,
-  including the interval before its deletion reservation exists. Deletion
-  reservations continue to block new Subnet creates and VM placements until
-  cleanup completes and the finalizer is removed.
+- Create and Delete API operations serialize on the shared VirtualNetwork lock:
+  the delete timestamp is set only after its durable reservation exists, and a
+  delete-first ordering blocks subsequent Subnet creation.
+- The tenant's direct Kubernetes DELETE is forbidden. If a Subnet is observed
+  terminating without a reservation, the controller emits `DeletionBlocked`
+  and requeues without creating a late reservation or starting cleanup.
+- Deletion reservations continue to block new Subnet creates and VM placements
+  until cleanup completes and the finalizer is removed.
 
 ### R6: Non-conflicting IP address assignment
 
@@ -561,11 +587,8 @@ None identified. All requirements map to test cases, all interface changes exerc
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
-
-> Context changed between revise and revise.
+Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
