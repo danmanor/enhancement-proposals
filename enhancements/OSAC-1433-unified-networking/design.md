@@ -189,10 +189,6 @@ spec:
     virtualNetworkCIDR: 10.0.0.0/16
     ipv4SubnetCIDR: 10.0.1.0/24
     defaultAclAction: DENY
-capabilities:
-  supportsIpv4: true
-  supportsIpv6: false
-  supportsDualStack: false
 ```
 
 **BM-only deployment (no VMs):**
@@ -208,10 +204,6 @@ spec:
     virtualNetworkCIDR: 10.0.0.0/16
     ipv4SubnetCIDR: 10.0.1.0/24
     defaultAclAction: DENY
-capabilities:
-  supportsIpv4: true
-  supportsIpv6: false
-  supportsDualStack: false
 ```
 
 #### Capabilities
@@ -1772,11 +1764,9 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
-
-> Context changed between revise and respond.
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Phases: respond, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

@@ -434,16 +434,17 @@ VMaaS enforces subnet count validation before allowing VM placement in EVPN-brid
 func (r *ComputeInstanceReconciler) validateSubnetForVM(ctx context.Context, subnet *osacv1.Subnet) error {
     // Caller holds the shared VirtualNetwork-scoped admission lock until the
     // ComputeInstance placement has been persisted.
+    // A pending or admitted Subnet deletion blocks VM placement for every
+    // manager; check the shared reservation before manager-specific checks.
+    if hasDeletingSubnetOrAdmission(ctx, subnet.Spec.VirtualNetwork) {
+        return fmt.Errorf("Cannot create VM while a Subnet is being deleted in VirtualNetwork %q", subnet.Spec.VirtualNetwork)
+    }
+
     // Check if subnet has cudn_evpn k8s manager
     networkClass := getNetworkClass(ctx, subnet)
     if networkClass.Spec.KubernetesManager != "cudn_evpn" {
         // Not EVPN-bridged, use regular placement logic
         return nil
-    }
-
-    // Reject placement while a Subnet deletion is pending or admitted for this VirtualNetwork.
-    if hasDeletingSubnetOrAdmission(ctx, subnet.Spec.VirtualNetwork) {
-        return fmt.Errorf("Cannot create VM while a Subnet is being deleted in VirtualNetwork %q", subnet.Spec.VirtualNetwork)
     }
 
     // For cudn_evpn: count total subnets under this VirtualNetwork
@@ -1765,9 +1766,11 @@ None. All infrastructure (OCP cluster, physical fabric managed by the configured
 
 ## Provenance
 
-Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
-Phases: respond, respond
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

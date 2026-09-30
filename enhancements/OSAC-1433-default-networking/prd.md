@@ -254,8 +254,10 @@ dual-stack networking are not supported.
   ExternalIP is Allocated and the target workload is Ready; cluster
   attachments wait for the Cluster to be Ready with both endpoint addresses
 - [ ] A resource created without explicit network attachments shows the
-  resolved default Subnet attachment when retrieved via the API, and its
-  effective policy is visible through the Subnet's NetworkACL association
+  resolved default Subnet attachment when retrieved via the API. If the Subnet
+  has a NetworkACL association, the association is visible through the Subnet;
+  if no ACL is associated, the tenant-facing UI shows generic deployment-policy
+  fallback guidance without displaying the provider-only action value
 - [ ] An IPv6 or dual-stack default CIDR is rejected when NetworkClass defaults
   are validated, and no default resource is persisted from the invalid input
 
@@ -323,8 +325,9 @@ Resolved: E2E tests for simplified creation are defined in each per-service desi
 
 ## Provenance
 
-Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Phases: respond, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
