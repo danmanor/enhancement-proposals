@@ -30,7 +30,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ### 2.1 Goals
 
 - A tenant can provision a bare-metal server with one explicit network attachment, optionally specifying which physical interface connects to its subnet
-- A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP for inbound access automatically
+- A tenant can create a bare-metal server with `--external-ip-attachment` and have the system allocate an external IP automatically; inbound reachability follows the effective Subnet policy
 - Network attachments are optional — when omitted, the system attaches the server to the tenant's default Subnet, which has no ACL association and uses the deployment default ACL policy
 - BareMetalInstanceTypes expose available physical network ports through the API (name, role, type, speed) for bare-metal servers
 - Bare-metal provisioning uses the provisioning network for inventory and OS provisioning, then moves the selected fabric port to the tenant network and reboots the host so it receives its tenant-network IP
@@ -57,7 +57,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 - As a Tenant User, I want to create a bare-metal server with one explicit network attachment so that I can connect a selected physical interface to a subnet
 - As a Tenant User, I want to see which physical network ports are available on a BareMetalInstanceType so that I can select the appropriate interface when creating the attachment
-- As a Tenant User, I want to create a bare-metal server with `--external-ip-attachment` and have it externally reachable in a single API call, without manually creating external IP and attachment resources
+- As a Tenant User, I want to create a bare-metal server with `--external-ip-attachment` and have the system provision its external IP and attachment in one API call; inbound reachability follows the effective Subnet policy
 - As a Tenant User, I want the sole network attachment to provide the default gateway without needing a second attachment
 - As a Tenant User, I want auto-provisioned external IPs to be automatically cleaned up when I delete the server, so that I do not accumulate orphaned resources
 - As a Tenant User, I want network interface validation when creating the attachment so that I get a clear error if I specify a port that does not exist or is not tenant-attachable
@@ -100,7 +100,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 
 #### Auto External IP
 
-- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system selects an available external IP pool with the most capacity and reserves capacity for an IP with the server create request. The IP is allocated asynchronously. Its attachment routes inbound traffic to the server's primary attachment IP only after the IP is Allocated and the server is Ready with its tenant-network IP available. The external IP and attachment are labeled as auto-provisioned. [User]
+- **FR-6:** Bare-metal servers support `--external-ip-attachment`. When enabled, the system selects an available external IP pool with the most capacity and reserves capacity for an IP with the server create request. The IP is allocated asynchronously. Its attachment routes inbound traffic to the server's primary attachment IP only after the IP is Allocated and the server is Ready with its tenant-network IP available. ExternalIP routing does not bypass the effective Subnet policy: on the unassociated default Subnet, unmatched inbound traffic is denied when the deployment action is `DENY`. To allow inbound traffic with that fallback, the tenant must use a Subnet created with a NetworkACL that permits the inbound flow and corresponding return traffic under the shared stateless policy, or the deployment must use `PERMIT`. The external IP and attachment are labeled as auto-provisioned. [User; PR review: CodeRabbit]
 
 #### Network Connectivity Configuration
 
@@ -139,7 +139,7 @@ Provisioning bare-metal servers requires manual switch configuration outside the
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a bare-metal server with one explicit network attachment and an optional physical interface from the BareMetalInstanceType; the server follows that Subnet's optional ACL rules and the deployment default policy
-- [ ] A Tenant User can create a bare-metal server with `--external-ip-attachment` and no explicit network attachments — the server is created on the default subnet with an auto-provisioned external IP for inbound access
+- [ ] A Tenant User can create a bare-metal server with `--external-ip-attachment` and no explicit network attachments — the server is created on the default Subnet with an auto-provisioned external IP; inbound reachability follows the effective Subnet policy. With a `DENY` fallback, unmatched inbound is blocked and the tenant must use a Subnet created with an ACL that permits the required inbound and return flows, or the deployment must use `PERMIT`.
 - [ ] A bare-metal server with one attachment is provisioned with that attachment providing the default gateway
 - [ ] Auto-created external IP and external IP attachment are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a bare-metal server with auto-provisioned external IP causes the auto-created external IP and external IP attachment to be cleaned up automatically
@@ -211,10 +211,10 @@ Resolved: First in the list. Ports are ordered in the BareMetalInstanceType; whe
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

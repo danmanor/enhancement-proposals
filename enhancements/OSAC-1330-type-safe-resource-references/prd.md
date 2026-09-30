@@ -13,7 +13,7 @@ When users create or update OSAC resources that reference other resources — a 
 ## In Scope
 
 - Name-based, type-safe resource references replacing opaque identifier strings, across all services (BMaaS, CaaS, VMaaS, MaaS, Enclave) and all resource types. [Clarify: R1.Q2]
-- Both local references (same tenant and project, by name only) and full references (cross-tenant/project, by tenant, project, and name).
+- Both local references (same tenant and project, by name only) and full references (cross-tenant/project, resolved by name or identifier within the specified scope).
 - Immediate validation of references at request time with clear error messages. [Clarify: R1.Q3]
 - UI, CLI, and API all updated to support the new reference format. [Clarify: R1.Q4]
 - No backward-compatible transition period — clean replacement of the current format. [Clarify: R1.Q1]
@@ -54,7 +54,7 @@ When users create or update OSAC resources that reference other resources — a 
 
 - As any user, I want references displayed in the UI to show the referenced resource's name rather than an opaque identifier so that I can understand resource relationships at a glance. [Clarify: R1.Q4]
 - As any user, I want the CLI to accept resource names in reference fields and display resolved references with names so that CLI workflows are human-readable. [Clarify: R1.Q4]
-- As any user, I want the system to resolve references consistently — if I provide an identifier, the system resolves and returns the name, and vice versa — so that I always see a complete, unambiguous reference regardless of what I originally provided.
+- As any user, I want a full reference to resolve by either identifier or name and be returned fully populated; local references require a name — so that I always see a complete, unambiguous reference regardless of what I originally provided.
 
 ## Dependencies
 
@@ -64,11 +64,8 @@ When users create or update OSAC resources that reference other resources — a 
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
-
-> Context changed between revise and revise.
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

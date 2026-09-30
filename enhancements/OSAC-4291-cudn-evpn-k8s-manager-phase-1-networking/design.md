@@ -265,6 +265,8 @@ The `osac.openshift.io/skip-k8s-manager` annotation is **optional** and provides
 ```yaml
 # A READY NetworkACL named shared-acl is scoped to vpc-1. It may be reused
 # by Subnets in this VirtualNetwork; each Subnet explicitly references it.
+# This Kubernetes CRD manifest uses the serialized camelCase property
+# `networkACL`; API/proto field paths use `spec.network_acl`.
 
 # First Subnet - creates fabric manager VNet + CUDN (auto-detected, VMs allowed)
 apiVersion: osac.openshift.io/v1
@@ -412,7 +414,9 @@ Subnet creation, Subnet deletion, and VM placement use one distributed admission
 
 **Fenced admission writes:** The shared persistence layer must atomically verify that the fencing token is still current and its lease is unexpired in the same transaction that writes a Subnet-create admission, VM-placement admission, or `Requested` deletion reservation. The controller must perform the same check when promoting a reservation to `Admitted`. If the lease expired or a newer token superseded it, reject the write; the operation must reacquire the lock and repeat its state checks. A separate token check before the write is insufficient.
 
-The Subnet Delete API persists a VirtualNetwork-scoped `Requested` reservation before accepting the deletion; the controller creates the same reservation idempotently if it observes a delete initiated through another path. VM placement records its admission before releasing the lock; Subnet creation checks active and in-progress placements, not only Kubernetes VM objects. The `Requested` reservation blocks new Subnet creates and VM placements while existing placements drain. The controller checks active and in-progress placement admissions and VM objects on each reconcile; only when none remain does it transition the reservation to `Admitted` and start cleanup. Both reservation states remain active until fabric and K8s cleanup succeeds and the Subnet finalizer is removed. The distributed lease is not held across asynchronous deprovisioning. All service replicas honor the shared lock and reservation. This prevents stale admissions and deletion-versus-placement races.
+Only the Subnet Delete API may initiate tenant deletion. It acquires the VirtualNetwork admission lock, re-reads the current Subnet and placement state, persists a fenced `Requested` reservation, and only then sends the Kubernetes DELETE request that sets `metadata.deletionTimestamp`. Tenant RBAC denies direct Kubernetes DELETE requests, so the timestamp cannot be set outside this serialized path. Retries of the Delete API reuse the existing reservation. If the controller observes a terminating Subnet without a reservation, it fails closed, emits a `DeletionBlocked` event, and requeues; it does not create a late reservation.
+
+VM placement records its admission before releasing the lock; Subnet creation checks active and in-progress placements, not only Kubernetes VM objects. The `Requested` reservation blocks new Subnet creates and VM placements while existing placements drain. The controller checks active and in-progress placement admissions and VM objects on each reconcile; only when none remain does it transition the reservation to `Admitted` and start cleanup. Both reservation states remain active until fabric and K8s cleanup succeeds and the Subnet finalizer is removed. The distributed lease is not held across asynchronous deprovisioning. All service replicas honor the shared lock and reservation. This prevents stale admissions and deletion-versus-placement races.
 
 #### VMaaS: VM Placement Validation
 
@@ -954,6 +958,7 @@ capabilities:
 - VNI values (L2 macVRF, L3 ipVRF) from extra_vars (passed by provisioning package from fabric ConfigMap output)
 - Route targets omitted in Phase 1 — CUDN auto-generates as "AS:VNI" (Phase 2 multi-cluster may require explicit RT control for inter-cluster route distribution)
 - Wait for CUDN Ready before completing (prevents race with VM provisioning)
+- Wait independently for the target Namespace to exist, have `status.phase == "Active"`, and have no `metadata.deletionTimestamp`; CUDN Ready alone does not make the namespace ready for VM placement.
 - **reservedSubnets (REQUIRED)** set to fabric_reserved_range — prevents OVN IPAM from allocating IPs in fabric-managed range (SVIs, DHCP) — mandatory for correctness (collision causes connectivity failure)
 - Validation fails k8s job if fabric_reserved_range missing from fabric job ConfigMap (generic name works with any fabric manager)
 - defaultGatewayIPs omitted — OVN auto-picks .1, which fabric SVI answers (documented working behavior)
@@ -1017,7 +1022,7 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
     }
     defer unlock()
 
-    // Read or create the durable deletion reservation while holding the shared lock.
+    // Read the reservation created by the Delete API before Kubernetes DELETE.
     state, err := r.admission.GetSubnetDeletionState(ctx, virtualNetworkID, subnet.GetUID())
     if err != nil {
         return reconcile.Result{}, err
@@ -1027,10 +1032,11 @@ func (r *SubnetReconciler) handleDelete(ctx context.Context, subnet *osacv1.Subn
         return r.runDeprovisionJob(ctx, subnet)
     }
     if state == "None" {
-        // Fence new Subnet creates and VM placements before waiting for existing work.
-        if err := r.admission.BeginSubnetDeletionRequest(ctx, virtualNetworkID, subnet.GetUID()); err != nil {
-            return reconcile.Result{}, err
-        }
+        // Do not create a reservation after deletionTimestamp: that would leave
+        // a race window where a concurrent create can persist. Fail closed.
+        r.Recorder.Event(subnet, corev1.EventTypeWarning, "DeletionBlocked",
+            "Subnet is terminating without a pre-delete reservation")
+        return reconcile.Result{RequeueAfter: 30 * time.Second}, nil
     }
 
     // Check authoritative admissions, including placements with no VM object yet.
@@ -1759,11 +1765,9 @@ None. All infrastructure (OCP cluster, physical fabric managed by the configured
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
-
-> Context changed between revise and revise.
+Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Phases: respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

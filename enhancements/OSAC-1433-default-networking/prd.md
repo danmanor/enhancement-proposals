@@ -38,8 +38,11 @@ All default networking resources use canonical IPv4 CIDRs. IPv6 and
 dual-stack networking are not supported.
 
 - A tenant can create a fully connected VM, bare-metal server, or cluster
-  (inbound + outbound) with a single API call, without pre-creating any
-  networking resources
+  (inbound + outbound) with a single API call on a deployment whose required
+  default ACL action is `PERMIT`. With `DENY`, the default Subnet has no ACL
+  association and denies unmatched ingress and egress; a tenant that needs
+  connectivity must first create an ACL and a Subnet associated with it, then
+  select that Subnet when creating the workload.
 - Tenants who need custom networking retain the full explicit workflow —
   simplified creation is additive, not a replacement
 - Auto-provisioned networking resources are visible and follow the unified
@@ -111,6 +114,12 @@ dual-stack networking are not supported.
   associated NetworkACL's first matching rule decides the packet; if no rule
   matches or no ACL is associated, the NetworkClass default action decides it.
   ACL rules add more-specific decisions and do not replace the default action.
+  The tenant default Subnet has no NetworkACL association, so `DENY` blocks
+  unmatched ingress and egress on that Subnet. NATGateway and ExternalIP
+  resources do not bypass this policy. To permit traffic with a `DENY` fallback,
+  a tenant creates a NetworkACL with the needed rules, creates a Subnet that
+  references it, and attaches workloads to that Subnet; the association cannot
+  be added to the already-created default Subnet.
   Rule precedence is based on match specificity, not action or request order.
   Since ACLs are stateless, ingress and egress, including reply traffic, are
   evaluated independently. With a `DENY` default, permitting a reply requires
@@ -185,22 +194,32 @@ dual-stack networking are not supported.
 
 - **FR-12:** At tenant onboarding, the system also provisions a
   NATGateway on the default VirtualNetwork with an automatically
-  allocated ExternalIP. The NATGateway provides outbound connectivity
-  for all resources on the default VirtualNetwork. [User]
+  allocated ExternalIP. The NATGateway provides a path for outbound traffic,
+  subject to the effective Subnet policy; it does not bypass NetworkACL rules
+  or the deployment default ACL action. The default Subnet has no ACL
+  association, so a `DENY` fallback blocks unmatched egress and replies. A
+  workload that needs outbound connectivity under `DENY` must use a Subnet
+  associated at creation with an ACL that permits the required egress and
+  reverse-direction reply traffic. [User]
 
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a ComputeInstance with
   `--external-ip-attachment` and no explicit network attachments — the VM
-  is created on the default subnet with an auto-provisioned ExternalIP
-  for inbound access
+  is created on the default subnet with an auto-provisioned ExternalIP;
+  inbound reachability follows the effective Subnet policy, so unmatched
+  inbound traffic is denied when the deployment default is `DENY`
 - [ ] A Tenant User can create a Cluster with `--external-ip-attachment`
   and no explicit network attachments — the cluster is provisioned with
-  ExternalIPs for both API and ingress, all resolved automatically
+  ExternalIPs for both API and ingress, all resolved automatically; inbound
+  reachability follows the effective Subnet policy, so unmatched inbound
+  traffic is denied when the deployment default is `DENY`
 - [ ] A Tenant User can create a BaremetalInstance with
   `--external-ip-attachment` and no explicit network attachments — the
-  server is placed on the default subnet and receives inbound connectivity
-  after its ExternalIP is Allocated and the server is Ready
+  server is placed on the default subnet and receives an ExternalIP after it
+  is Allocated and the server is Ready; inbound reachability follows the
+  effective Subnet policy, so unmatched inbound traffic is denied when the
+  deployment default is `DENY`
 - [ ] Tenant onboarding creates the default VirtualNetwork and waits for it
   to become READY before creating the unassociated default Subnet; it waits
   for the Subnet to become READY before creating the NAT ExternalIP, waits for
@@ -215,6 +234,9 @@ dual-stack networking are not supported.
   evaluated independently in the reverse direction: unmatched replies pass
   under `PERMIT` unless a matching `DENY` rule applies, and are denied under
   `DENY` unless a matching `ALLOW` rule wins precedence.
+- [ ] With `DENY` and no ACL association on the tenant default Subnet, unmatched
+  ingress and egress remain denied; NATGateway and ExternalIP configuration do
+  not bypass the Subnet policy
 - [ ] Default VirtualNetwork, Subnet, and NATGateway resources appear in list
   views with a label identifying them as defaults.
 - [ ] Default networking resources support read/create/delete. Subnet address
@@ -301,11 +323,8 @@ Resolved: E2E tests for simplified creation are defined in each per-service desi
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
-
-> Context changed between revise and respond.
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

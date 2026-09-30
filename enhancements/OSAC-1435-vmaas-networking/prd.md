@@ -30,7 +30,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 ### 2.1 Goals
 
 - A tenant can create a VM with zero or one network attachment; the sole attachment is the primary/default route
-- A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically for inbound access
+- A tenant can create a VM with `--external-ip-attachment` and have the system allocate an external IP and attach it automatically; inbound reachability follows the effective Subnet policy
 - A tenant can create a VM without specifying networking details — the system uses the tenant's default Subnet, which has no ACL association, under the deployment default ACL policy
 - The platform prevents VM creation in deployments that do not support virtualization
 
@@ -45,7 +45,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 - As a Tenant User, I want to create a VM with one network attachment, so that it receives connectivity on the selected subnet
 - As a Tenant User, I want the sole network attachment to provide the VM's default gateway and DNS configuration without requiring a second API field
-- As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the VM is externally reachable without manually allocating an IP
+- As a Tenant User, I want to create a VM with `--external-ip-attachment`, so that the system provisions an external IP automatically and inbound reachability follows the effective Subnet policy
 - As a Tenant User, I want to create a VM without specifying network details, so that the system uses my default Subnet under the deployment default ACL policy and I can get started quickly
 - As a Tenant User, I want clear error messages when I try to create a VM in a deployment that only supports bare-metal servers, so that I understand the limitation and can choose a different deployment
 
@@ -77,7 +77,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Auto External IP
 
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system selects an available external IP pool with the most capacity and reserves capacity for an IP with the VM create request. The IP is allocated asynchronously; its attachment routes inbound traffic to the VM's primary interface only after the IP is Allocated and the VM is Ready. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User]
+- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system selects an available external IP pool with the most capacity and reserves capacity for an IP with the VM create request. The IP is allocated asynchronously; its attachment routes inbound traffic to the VM's primary interface only after the IP is Allocated and the VM is Ready. ExternalIP routing does not bypass the effective Subnet policy: on the unassociated default Subnet, unmatched inbound traffic is denied when the deployment action is `DENY`. To allow inbound traffic with that fallback, the tenant must use a Subnet created with a NetworkACL that permits the inbound flow and corresponding return traffic under the shared stateless policy, or the deployment must use `PERMIT`. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. Tenant-created NetworkACLs are not auto-deleted because they may be shared by multiple Subnets. [User; PR review: CodeRabbit]
 
 #### IP Address Discovery
 
@@ -102,7 +102,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 ## 5. Acceptance Criteria
 
 - [ ] A Tenant User can create a VM with zero or one `--network-attachment` flag; a second flag is rejected with a clear maximum-one error
-- [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
+- [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP; inbound reachability follows the effective Subnet policy, and unmatched inbound traffic is denied when the deployment action is `DENY`
 - [ ] Creating a VM in a bare-metal-only deployment returns an error with a clear message
 - [ ] A VM with one attachment is provisioned with that attachment providing the default gateway
 - [ ] VM status shows the allocated IP address for the sole network attachment after provisioning completes
@@ -156,11 +156,9 @@ Resolved: Return error, no resource persisted.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
-
-> Context changed between revise and respond.
+Authored: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Phases: respond, respond
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
