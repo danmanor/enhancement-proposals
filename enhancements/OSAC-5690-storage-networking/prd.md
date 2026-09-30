@@ -84,8 +84,8 @@ the first phase.
 - Validation preventing tenants from creating VirtualNetworks whose CIDRs
   overlap with the Storage CIDR, ensuring storage-bound packets always
   route externally.
-- Ensuring tenant VirtualNetworks used by CaaS workers, BMaaS hosts, or VM
-  guest mounts have a NATGateway with adequate NAT capacity for storage
+- Ensuring tenant VirtualNetworks used by CaaS workers or BMaaS hosts for
+  block storage have a NATGateway with adequate NAT capacity for storage
   traffic.
 - VAST block storage only.
 
@@ -158,7 +158,7 @@ the first phase.
   the same SNAT path to VAST.
 
 - SNAT via NATGateway is sufficient for tenant-Subnet block storage data-plane
-  traffic (including CaaS and BMaaS NVMe-TCP sessions and VM guest mounts).
+  traffic, including CaaS and BMaaS NVMe-TCP sessions.
   The VMaaS CSI path uses the management network. No inbound (DNAT)
   connectivity from VAST to tenant workloads is required — all storage
   connections are initiated by the client side. Tenant Subnet ACLs are
@@ -171,8 +171,8 @@ the first phase.
 - The Storage CIDR is a single contiguous range configured once at
   installation and does not change during the deployment's lifetime.
 
-- Tenant VirtualNetworks used by CaaS workers, BMaaS hosts, or VM guest storage
-  mounts must have a NATGateway configured. The VMaaS CSI path uses the
+- Tenant VirtualNetworks used by CaaS workers or BMaaS hosts for block storage
+  must have a NATGateway configured. The VMaaS CSI path uses the
   management network. The default VirtualNetwork created during tenant
   onboarding already includes a NATGateway, but that does not guarantee
   connectivity when the deployment ACL fallback is `DENY`. Its default Subnet

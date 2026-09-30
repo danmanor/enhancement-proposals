@@ -592,12 +592,15 @@ osac create network-acl --virtual-network my-net --name web-acl \
 
 The example allows HTTPS from the illustrative client range and to the
 illustrative external endpoint range. The higher destination-port rules allow
-the corresponding replies in each reverse direction. These documentation
-CIDRs must be replaced with the deployment's actual trusted client and
-endpoint ranges. These examples include explicit reverse-direction rules. They
-are needed to permit the replies when the deployment fallback is `DENY`; with
-`PERMIT`, unmatched replies pass unless a matching reverse-direction `DENY`
-rule applies.
+the corresponding replies in each reverse direction, but they also permit new
+TCP connections from those peer CIDRs to destination ports in the listed
+ranges; a stateless ACL cannot distinguish a reply from a new connection.
+Restrict both the peer CIDRs and destination-port ranges to the intended trust
+boundary. Replace these documentation CIDRs with the deployment's actual
+trusted client and endpoint ranges. These examples include explicit
+reverse-direction rules. They are needed to permit the replies when the
+deployment fallback is `DENY`; with `PERMIT`, unmatched replies pass unless a
+matching reverse-direction `DENY` rule applies.
 
 **Create Subnet using the deployment default policy:**
 
