@@ -705,9 +705,9 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ### E2E Tests
 
-- Full lifecycle on netris-lab: create NetworkClass → create VN and wait for
-  it to become READY → create FabricDomain → verify Netris Server Cluster
-  exists in VPC → verify EW
+- Full lifecycle in the fabric test environment: create NetworkClass → create
+  VN and wait for it to become READY → create FabricDomain → verify a Server
+  Cluster exists in the VPC → verify EW
   isolation (same-tenant ping succeeds, cross-tenant blocked) → resize
   servers → delete FabricDomain → verify cleanup.
 - VNet coexistence: create VPC → Server Cluster → OSAC Subnet → verify
@@ -906,3 +906,13 @@ None. E2E testing uses the existing netris-lab on zeus12 (already provisioned).
 - [NICo NVLink Partitioning](https://docs.nvidia.com/infra-controller/infra-controller/documentation/operations-day-2/nv-link-partitioning)
 - [DGX SuperPOD Network Fabrics (GB200)](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html)
 - Netris Server Cluster + UFM/NMX integrations
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
