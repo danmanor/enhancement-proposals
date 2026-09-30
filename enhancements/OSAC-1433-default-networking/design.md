@@ -316,9 +316,12 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
     - The default address/resource set (VirtualNetwork, Subnet, and NATGateway)
       is replaced as a coordinated transition: pause default-based creates,
       drain or delete workloads attached to the old defaults, and run
-      reverse-reference checks before deleting resources. A replacement
-      NATGateway receives a newly allocated ExternalIP; the old address is
-      not rebound. Create replacement defaults with the same tenant scope and
+      reverse-reference checks before deleting resources. Deleting the old
+      NATGateway removes its SNAT rule and releases its ExternalIP for use by
+      another resource; no separate ExternalIP deletion is required to return
+      the address to pool capacity. The replacement NATGateway receives a
+      newly allocated ExternalIP, and the old address is not rebound. Create
+      replacement defaults with the same tenant scope and
       `osac.openshift.io/default: "true"` label. Attachments are immutable,
       so existing workloads are not rebound and the replacement applies to
       later creates only.
