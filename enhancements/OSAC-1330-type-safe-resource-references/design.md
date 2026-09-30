@@ -1149,10 +1149,11 @@ details on the URI/ARN trade-off.
 - Both-mismatch resolution (Chunk 2): Create two CatalogItems, then create
   a ComputeInstance providing `id` of one and `name` of the other. Verify
   `InvalidArgument` with a message explaining the inconsistency.
-- Concurrent create/delete (Chunk 1, VirtualNetwork): Create a READY NetworkACL
-  scoped to a VirtualNetwork, then concurrently create a Subnet referencing that
-  VirtualNetwork and ACL while deleting the VirtualNetwork. Verify the
-  `FOR SHARE` serialization prevents a dangling reference from committing.
+- Concurrent create/delete (Chunk 1, VirtualNetwork): Create a READY
+  VirtualNetwork, then concurrently create a Subnet referencing that
+  VirtualNetwork without a NetworkACL association while deleting the
+  VirtualNetwork. Verify the `FOR SHARE` serialization prevents a dangling
+  reference from committing.
 - Concurrent create/delete (Chunk 1, NetworkACL): Concurrently create a Subnet
   referencing a READY NetworkACL and soft-delete that ACL. Verify only one
   operation commits: if Subnet creation wins, ACL deletion fails with ErrInUse;
