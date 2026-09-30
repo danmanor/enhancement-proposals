@@ -479,19 +479,24 @@ traffic.
 - Both source Subnets explicitly reference READY NetworkACLs in the same
   VirtualNetwork, and enforcement is active on both before the NATGateway may
   become Ready.
-- Test traffic originates from one of the source Subnets, whose NetworkACL
-  permits the egress flow. If enforcement is absent or unready on either source
-  Subnet, the NetworkClass is rejected or the dependent NATGateway remains not
-  Ready.
+- Test traffic originates from one of the source Subnets. Its NetworkACL permits
+  the egress flow and the corresponding response on ingress after reverse NAT.
+  Use an external endpoint that returns a response to the test traffic. If
+  enforcement is absent or unready on either source Subnet, the NetworkClass is
+  rejected or the dependent NATGateway remains not Ready.
 
 ##### Steps
 
-1. Send traffic from a Subnet interface to an external endpoint.
+1. Send traffic from a Subnet interface to an external endpoint that returns a
+   response.
 2. Inspect the endpoint's observed source address and the NATGateway status.
+3. Verify that the response reaches the originating Subnet interface.
 
 ##### Expected Results
 
 - The endpoint observes the NATGateway ExternalIP as the source address.
+- The external endpoint's response passes the source Subnet ingress policy after
+  reverse NAT and reaches the originating interface.
 - One explicit `SNAT --to-source` rule exists for each source CIDR; no
   host-side MASQUERADE changes the observed source.
 - The consumer-owned `/32` route is learned by the provider BGP peer.

@@ -91,7 +91,7 @@ The step is split into two visually distinct sections using
   picker cascade is shown for custom network selection. This matches the bare metal wizard
   pattern and will also be added to the VM wizard.
 
-  Always show helper text: "The tenant default Subnet has no NetworkACL; unmatched traffic follows the deployment default ACL action. With `DENY`, unmatched traffic is blocked. For cluster installation or endpoint flows that need access, turn off this option and select a Subnet whose NetworkACL permits the required traffic and replies, with an egress path configured."
+  Always show helper text: "The tenant default Subnet has no NetworkACL; unmatched traffic follows the deployment default ACL action. With `PERMIT`, unmatched traffic is allowed. With `DENY`, unmatched traffic is blocked; cluster installation or endpoint flows that need access require turning off this option and selecting a Subnet whose NetworkACL permits the required traffic and replies, with an egress path configured."
 
 When "Use tenant default network" is disabled, `NetworkAttachmentPickers`
 (shared component) renders the Virtual Network and Subnet pickers bound to the cluster
