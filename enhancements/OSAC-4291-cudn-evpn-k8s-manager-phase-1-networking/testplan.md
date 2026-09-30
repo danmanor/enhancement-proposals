@@ -357,6 +357,7 @@
 ##### Preconditions
 
 - A `cudn_evpn` VirtualNetwork has one READY Subnet with active same-VirtualNetwork NetworkACL enforcement.
+- A second VirtualNetwork is available on which VM placement is normally supported and whose k8s manager is not `cudn_evpn`.
 - The test can pause admission persistence and control lease expiry and token issuance across two service replicas.
 - Tenant RBAC denies direct Kubernetes DELETE requests for Subnets; tenants can
   initiate deletion only through the fulfillment-service Delete API.
@@ -379,7 +380,10 @@
 6. In a separate ordering, let the Delete API persist the `Requested`
    reservation first and pause it before Kubernetes DELETE. Attempt a Subnet
    create through the other replica, then resume deletion.
-7. Attempt a direct Kubernetes DELETE as the tenant. Separately, simulate a
+7. On the second VirtualNetwork, persist a `Requested` Subnet deletion
+   reservation and pause before Kubernetes DELETE. Attempt VM placement while
+   the reservation is active, then resume deletion.
+8. Attempt a direct Kubernetes DELETE as the tenant. Separately, simulate a
    terminating Subnet with no reservation using an administrator fixture and
    reconcile it.
 
@@ -390,6 +394,10 @@
 - Create and Delete API operations serialize on the shared VirtualNetwork lock:
   the delete timestamp is set only after its durable reservation exists, and a
   delete-first ordering blocks subsequent Subnet creation.
+- A `Requested` deletion reservation blocks VM placement on both the
+  `cudn_evpn` fixture and the fixture using a different k8s manager, before
+  manager-specific placement validation runs; the Create request is rejected
+  and no ComputeInstance or placement admission is persisted.
 - The tenant's direct Kubernetes DELETE is forbidden. If a Subnet is observed
   terminating without a reservation, the controller emits `DeletionBlocked`
   and requeues without creating a late reservation or starting cleanup.

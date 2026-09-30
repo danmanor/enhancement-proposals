@@ -215,13 +215,14 @@ scope and target resource name are supplied in the review object's top-level
 
 ##### Steps
 
-1. Request a review for an unknown service.
-2. Request a review for a known service with an unsupported method, including `Create` on `osac.public.v1.ExternalIPPools` and `Update` on `osac.public.v1.NetworkACLs` and `osac.public.v1.Subnets`.
-3. Request a review for `osac.public.v1.SelfSubjectAccessReviews` with method `Create`.
+1. Request a review for schema-valid but unregistered service `osac.public.v1.UnknownServices`.
+2. Request a review with malformed service name `NonExistentType` to exercise service-format validation separately.
+3. Request a review for a known service with an unsupported method, including `Create` on `osac.public.v1.ExternalIPPools` and `Update` on `osac.public.v1.NetworkACLs` and `osac.public.v1.Subnets`.
+4. Request a review for `osac.public.v1.SelfSubjectAccessReviews` with method `Create`.
 
 ##### Expected Results
 
-- Each request returns `InvalidArgument` and no authorization evaluation is performed.
+- Each request returns `InvalidArgument` and no authorization evaluation is performed; the malformed service name fails schema validation, while the schema-valid unregistered name reaches unknown-service handling.
 - The review service cannot recursively evaluate itself.
 
 #### TC-TR1-04: Require authentication for permission reviews
