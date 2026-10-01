@@ -87,7 +87,8 @@ The step is split into two visually distinct sections using
 - **Use tenant default network** (`SwitchField`): toggle at the top of the
   section. Default: on. When enabled, VN/Subnet pickers are hidden — the
   fulfillment-service uses the tenant's default VirtualNetwork and Subnet;
-  any ACL explicitly associated with the Subnet refines the deployment default policy; otherwise the deployment default action applies. When disabled, the VN → Subnet
+  the default Subnet has no ACL association, so the deployment default action
+  applies to unmatched traffic. When disabled, the VN → Subnet
   picker cascade is shown for custom network selection. This matches the bare metal wizard
   pattern and will also be added to the VM wizard.
 

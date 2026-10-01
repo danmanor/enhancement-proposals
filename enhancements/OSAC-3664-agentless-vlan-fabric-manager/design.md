@@ -441,11 +441,13 @@ not alter the NATGateway configuration. [Locked: D14]
    default action and any explicitly associated NetworkACL rules to every
    source Subnet before forwarding traffic. The NATGateway role does not own
    that policy evaluation. The external endpoint observes the allocated
-   ExternalIP as the source address, and established return traffic follows
-   conntrack back through the namespace to the original source. NATGateway
-   readiness depends on the explicit SNAT rules and BGP route being observed as
-   installed; each source Subnet must independently be Ready under its
-   effective policy. [PRD: FR-6] [Locked: D14]
+   ExternalIP as the source address. Each return packet is evaluated
+   independently at its destination Subnet under that Subnet's effective
+   policy; conntrack reverses SNAT but does not authorize the packet. With a
+   `DENY` fallback, the destination Subnet's associated NetworkACL must allow
+   return ingress. NATGateway readiness depends on the explicit SNAT rules and
+   BGP route being observed as installed; each source Subnet must be Ready
+   under its effective policy. [PRD: FR-6] [Locked: D14]
 
 NATGateway is outbound only. It does not create an inbound DNAT mapping.
 
@@ -459,15 +461,18 @@ The external packet paths are:
   supported API path first requires the effective Subnet policy to permit the
   packet; the raw `FORWARD` baseline alone does not authorize it. After policy
   permits it, the Subnet interface delivers it to the target. The target's
-  reply returns through its Subnet gateway, conntrack reverses the translation
-  to the ExternalIP, and the namespace sends it over the transit link and
-  external uplink.
+  reply is evaluated independently as egress at the target Subnet; conntrack
+  reverses the DNAT but does not authorize the reply. With a `DENY` fallback,
+  the target Subnet's associated NetworkACL must allow that egress reply before
+  the namespace sends it over the transit link and external uplink.
 - Outbound: the target sends to its Subnet gateway; the namespace routes the
   packet through the transit veth, and `POSTROUTING` changes its source to the
   NATGateway ExternalIP with explicit SNAT. The host forwards it without a
   second MASQUERADE rule. The reply arrives using the advertised ExternalIP
-  `/32`, reaches the same namespace through the saved next hop, and conntrack
-  reverses the SNAT to the target's private address.
+  `/32` and is evaluated independently as ingress at the destination Subnet.
+  Conntrack reverses the SNAT to the target's private address but does not
+  authorize the packet; with a `DENY` fallback, the destination Subnet's
+  associated NetworkACL must permit the ingress reply.
 
 The ExternalIP is not assigned as a floating address to an arbitrary host
 interface. The BGP `/32`, the persisted transit next hop, and the namespace NAT
@@ -1948,7 +1953,9 @@ workload E2E is supported in this milestone.
   physical fabric manager variable or display name.
 - Verify the upstream BGP peer learns the ExternalIP `/32`, inbound traffic
   follows it to the VN namespace, reaches the target through whole-address
-  DNAT, and returns through conntrack.
+  DNAT, and returns through conntrack only when both directions pass the
+  target Subnet's effective policy. Under a `DENY` fallback, explicit ACL rules
+  must allow the inbound traffic and reply egress.
 - Verify outbound traffic is explicitly SNATed and the external endpoint
   observes the NATGateway ExternalIP as the source address.
 - Verify ExternalIPAttachment and Subnet/VirtualNetwork deletion order and

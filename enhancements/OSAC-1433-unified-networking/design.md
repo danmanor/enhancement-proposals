@@ -640,6 +640,11 @@ wait until `NetworkACL.status.phase == "Ready"`, then pass
 `my-net`. Since the association cannot be updated, create and wait for the ACL
 before creating the Subnet.
 
+If the deployment fallback is `DENY`, unmatched traffic on an unassociated
+Subnet is denied, including outbound traffic. Workloads that require specific
+outbound access must use another Subnet created with an associated NetworkACL
+that allows the required egress and return traffic.
+
 The fabric manager creates the network segment and enforces any explicitly
 associated Subnet ACL policy. If the NetworkClass has a K8s manager, it also
 creates an overlay on each hosting cluster and bridges it to the segment. VMs
