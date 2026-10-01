@@ -112,14 +112,16 @@ and `Get`. NetworkACL rules and a Subnet's optional `spec.network_acl`
 association are immutable after creation. When the association is omitted,
 it remains unset; the deployment-wide default ACL policy applies wherever no
 NetworkACL rule matches. Creating a Subnet with an ACL requires that ACL to
-exist first. Changing policy or association requires recreating the affected
-resources. NetworkACL identity, VirtualNetwork scope, metadata, and other
-networking resource fields remain immutable after creation. VirtualNetwork and
-Subnet address configuration and workload network attachments are
-create-time-only. Controllers may update status, conditions, readiness, and
-IP-discovery fields during reconciliation; these internal writes are not
-additional tenant API operations. This is the normative contract for the
-VMaaS, CaaS, and BMaaS designs that reference this document.
+exist first. A NetworkACL or Subnet may be created only after its parent
+VirtualNetwork is READY; the Subnet gate also applies when no ACL is selected.
+Changing policy or association requires recreating the affected resources.
+NetworkACL identity, VirtualNetwork scope, metadata, and other networking
+resource fields remain immutable after creation. VirtualNetwork and Subnet
+address configuration and workload network attachments are create-time-only.
+Controllers may update status, conditions, readiness, and IP-discovery fields
+during reconciliation; these internal writes are not additional tenant API
+operations. This is the normative contract for the VMaaS, CaaS, and BMaaS
+designs that reference this document.
 
 ## Proposal
 
@@ -477,8 +479,9 @@ recreating the affected networking resources.
 The public `NetworkACLs` service provides `List`, `Get`, `Create`, and `Delete`
 at `/api/fulfillment/v1/network_acls`. The public `Subnets` service provides
 `List`, `Get`, `Create`, and `Delete`. Neither service exposes `Update`. A
-NetworkACL can be created only after its parent VirtualNetwork is READY. A
-Subnet create request may omit `network_acl`; if supplied, the reference must
+NetworkACL or Subnet can be created only after its parent VirtualNetwork is
+READY. A Subnet create request may omit `network_acl`; this readiness gate
+still applies when the association is omitted. If supplied, the reference must
 identify one READY ACL in the same VirtualNetwork. Multiple ACL references,
 cross-VirtualNetwork references, and non-READY ACL references are rejected
 before persistence or provisioning. The deployment default ACL policy is
@@ -571,7 +574,6 @@ K8s manager the provider has deployed.
 
 ```bash
 osac admin create externalippool \
-  --network-class moc-region-1 \
   --cidrs 203.0.113.0/24 \
   --ip-family ipv4 \
   --name external-pool-1
@@ -593,6 +595,11 @@ osac create virtualnetwork --network-class moc-region-1 --cidr 10.0.0.0/16 \
 ```
 
 The fabric manager creates an isolated tenant segment on the fabric.
+
+Wait until `VirtualNetwork.status.phase == "Ready"` before creating a
+NetworkACL or Subnet. The API rejects either create request while the parent
+VirtualNetwork is not READY. This gate applies to Subnet creation both with
+and without a `--network-acl` association.
 
 **Create NetworkACL:**
 
@@ -617,6 +624,9 @@ deployment fallback is `DENY`; with `PERMIT`, unmatched replies pass unless a
 matching reverse-direction `DENY` rule applies.
 
 **Create Subnet using the deployment default policy:**
+
+The VirtualNetwork must be READY before this request, even though the Subnet
+does not select a NetworkACL.
 
 ```bash
 osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 --name my-subnet

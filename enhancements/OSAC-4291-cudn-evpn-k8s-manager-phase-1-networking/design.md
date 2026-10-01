@@ -205,8 +205,8 @@ sequenceDiagram
     Tenant->>API: Create Subnet (IPv4 CIDR, optional NetworkACL reference)
     API->>API: Acquire VirtualNetwork admission lock; reject if deletion reservation is Requested or Admitted
     API->>API: If ACL is supplied, validate it is READY and same-VirtualNetwork<br/>if omitted, keep the association unset
-    API->>API: Check active/in-progress VM placement admissions and VM objects before another Subnet
-    Note over API: Reject creates during either deletion reservation state;<br/>reject a second Subnet while placements or VMs exist; otherwise allow fabric-only Subnets, with VM placement blocked when count > 1
+    API->>API: For cudn_evpn, check active/in-progress VM placement admissions and VM objects before another Subnet
+    Note over API: Reject creates during either deletion reservation state;<br/>for cudn_evpn, reject a second Subnet while placements or VMs exist; VM placement is blocked when Subnet count > 1. Other managers are not subject to this CUDN-specific topology check.
     API-->>Tenant: 201 Created
 
     Controller->>Controller: Dispatch to fabric + k8s managers
@@ -732,6 +732,18 @@ capabilities:
 
 **tasks/create_subnet.yaml:**
 
+This task follows the shared [OSAC-1433 NetworkACL API and validation
+contract](/enhancements/OSAC-1433-unified-networking/design.md#networkacl-api-and-validation)
+and [NetworkACL reconciliation and readiness
+contract](/enhancements/OSAC-1433-unified-networking/design.md#networkacl-reconciliation-and-readiness).
+Its Subnet input carries the optional `Subnet.spec.network_acl` association.
+When set, the configured fabric manager owns applying the referenced ACL rules
+and reports the per-Subnet activation result. Both `NetworkACL.status.phase ==
+"Ready"` and
+`Subnet.status.conditions[type=NetworkACLAssociationReady] == True` are
+required before that Subnet becomes READY. When the association is omitted, it
+remains unset and the deployment default action applies to unmatched traffic.
+
 ```yaml
 ---
 - name: Extract Subnet and VirtualNetwork details
@@ -739,6 +751,8 @@ capabilities:
     subnet_cidr: "{{ osac_job_vars.resource.spec.ipv4CIDR }}"
     vnet_name: "{{ osac_job_vars.resource.spec.virtualNetwork }}"
     tenant_id: "{{ osac_job_vars.resource.metadata.annotations['osac.openshift.io/tenant'] }}"
+    # Fulfillment validates and passes the optional NetworkACL association
+    # under the shared OSAC-1433 contract above.
 
 - name: Create or get fabric manager VPC for VirtualNetwork
   fabric_manager.controller.vpc:
@@ -938,6 +952,19 @@ capabilities:
     name: "{{ vnet_name }}"
   register: cudn_status
   until: cudn_status.resources[0].status.conditions | selectattr('type', 'equalto', 'Ready') | selectattr('status', 'equalto', 'True') | list | length > 0
+  retries: 30
+  delay: 10
+
+- name: Wait for target Namespace to be Active and not terminating
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Namespace
+    name: "{{ namespace_name }}"
+  register: namespace_status
+  until: >-
+    namespace_status.resources | length == 1 and
+    namespace_status.resources[0].status.phase == "Active" and
+    namespace_status.resources[0].metadata.deletionTimestamp | default('', true) == ''
   retries: 30
   delay: 10
 

@@ -94,6 +94,7 @@ ComputeInstance already participates in the networking API. Today's flow:
    - fulfillment-service → creates VirtualNetwork CR
    - osac-operator VirtualNetwork controller → dispatcher resolves NetworkClass → calls `osac.templates.{{ fabric_manager }}.create_virtual_network`
    - Fabric manager creates isolated tenant segment on the fabric
+   - Wait until `VirtualNetwork.status.phase == "Ready"` before creating a NetworkACL or Subnet. This gate also applies when creating a Subnet without an ACL association.
 
 2. **Tenant creates NetworkACL:**
    ```bash

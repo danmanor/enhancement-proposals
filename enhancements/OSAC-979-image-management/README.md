@@ -524,6 +524,8 @@ message ComputeInstanceSpec {
   optional string run_strategy = 10;
   optional string user_data = 11;
   reserved 12, 13;
+  // Retained as repeated for compatibility; the service accepts at most one
+  // attachment and rejects requests with additional entries.
   repeated ComputeNetworkAttachment network_attachments = 14;
 }
 

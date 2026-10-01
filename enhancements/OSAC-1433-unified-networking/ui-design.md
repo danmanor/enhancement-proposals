@@ -119,14 +119,17 @@ Pure consumer of the existing private `ExternalIPPools` service
 
 - **Subnet create wizard:** Step 1 (**General**) collects **Project**,
   **Name**, and **Description**. Step 2 (**Configuration**) selects the
-  VirtualNetwork, configures the IPv4 CIDR, and optionally selects an ACL
+  READY VirtualNetwork, configures the IPv4 CIDR, and optionally selects an ACL
   scoped to that VirtualNetwork. Leaving the ACL empty creates an unassociated
   Subnet; the deployment default ACL policy applies when there is no matching
   rule. A selected ACL must already be READY and belong to that VirtualNetwork.
-  Multiple and cross-VirtualNetwork ACL references are rejected.
-- **Subnet list/detail:** show the associated ACL name and status when present;
-  otherwise show that the deployment default ACL policy governs unmatched
-  traffic.
+  Multiple and cross-VirtualNetwork ACL references are rejected. The API
+  rejects Subnet creation while its VirtualNetwork is not READY, whether or not
+  an ACL is selected.
+- **Subnet list/detail:** show the associated ACL name and status when present.
+  In both associated and unassociated cases, show generic guidance that
+  unmatched traffic follows the deployment policy. Do not display the configured
+  provider-only `PERMIT` or `DENY` value.
 - **Association lifecycle:** the optional association is selected during
   Subnet creation and cannot be changed later. Subnet details show the
   association read-only. Create the ACL before the Subnet when using one.
