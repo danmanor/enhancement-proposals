@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-29
+last-updated: 2026-09-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -21,7 +21,7 @@ superseded-by:
 |-------------|--------------------------------------------|
 | Author(s)   | Dan Manor (dmanor@redhat.com)              |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
-| Date        | 2026-09-24                                 |
+| Date        | 2026-09-30                                 |
 
 ## 1. Problem Statement
 
@@ -61,7 +61,7 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 ### 3.1 Functional Requirements
 
 - **FR-1:** Tenants can create isolated VirtualNetworks and Subnets. Resources in different VirtualNetworks cannot communicate, and resources in the same Subnet share a broadcast domain. [Jira: OSAC-1433]
-- **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, protocol, an optional TCP or UDP destination-port range with endpoints from 1 through 65535, and a canonical IPv4 CIDR. In each direction, the effective order is derived from the match fields: longest CIDR prefixes first, then protocol (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port ranges from smallest to largest, with rules matching all ports after port-specific rules. Action and request order do not determine precedence. The first matching rule decides; identical match fields in one direction are rejected. If no ACL rule matches, the deployment's default ACL policy decides the result. [User]
+- **FR-2:** Tenants can create a NetworkACL within a VirtualNetwork and define separate ingress and egress rules. Each rule specifies whether matching traffic is allowed or denied, protocol, an optional TCP or UDP destination-port range with endpoints from 1 through 65535, and a canonical IPv4 CIDR. In each direction, the effective order is derived from the match fields: longest CIDR prefixes first, then protocol (`ICMP`, `UDP`, `TCP`, `ALL`), then port-specific rules before rules matching all ports for that protocol. Explicit TCP/UDP ranges with the same direction, canonical CIDR, and protocol must not overlap, including at shared endpoints; disjoint ranges are ordered by their numeric start and end for stable presentation. Action and request order do not determine precedence. The first matching rule decides; duplicate selectors and overlapping explicit ranges are rejected. If no ACL rule matches, the deployment's default ACL policy decides the result. [User]
 - **FR-3:** NetworkACLs are stateless. Ingress and egress, including return traffic in the reverse direction, are evaluated independently. With a deployment `DENY` fallback, permitting return traffic requires a matching reverse-direction `ALLOW` rule to win precedence; with `PERMIT`, an unmatched return packet passes unless a matching reverse-direction `DENY` rule applies. [User]
 - **FR-4:** A Subnet may have zero or one associated NetworkACL. If the ACL is
   omitted at Subnet creation, the association remains unset; an explicit ACL
@@ -86,13 +86,13 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - **FR-12:** The supported deployment profile is connected networking with one provider-owned hub. ExternalIPPool accepts exactly one canonical IPv4 CIDR. IPv6, dual-stack, disconnected deployment, and multi-hub networking requests are rejected or reported unsupported. [Jira: OSAC-1433]
 - **FR-13:** At tenant onboarding, the system creates a default VirtualNetwork,
   a default Subnet, and a NATGateway from provider-configured defaults. It does
-  not create a tenant default NetworkACL. The default Subnet has no ACL
-  association unless an ACL is explicitly selected; the deployment's default
-  ACL policy applies to unmatched traffic, including all traffic when no ACL
-  is associated. Workload creation can omit network attachment details to use
-  the default Subnet. Tenant readiness waits for the default VirtualNetwork,
-  Subnet, and NATGateway to become READY, with no per-tenant ACL resource or
-  association prerequisite. [User; OSAC-1433]
+  not create a tenant default NetworkACL. The system-created default Subnet
+  always has no ACL association, and no ACL can be associated later; the
+  deployment's default ACL policy applies to its unmatched traffic. Workload
+  creation can omit network attachment details to use the default Subnet.
+  Tenant readiness waits for the default VirtualNetwork, Subnet, and NATGateway
+  to become READY, with no per-tenant ACL resource or association prerequisite.
+  [User; OSAC-1433]
 - **FR-14:** Existing workload traffic policies require tenant-assisted migration where their scope or stateful behavior cannot be represented by a Subnet-level stateless ACL. Tenants can group workloads by intended policy, place each group on a Subnet with the corresponding shared NetworkACL, and add reverse-direction rules when needed to permit return traffic under the selected deployment fallback and matching rules. [User]
 - **FR-15:** The provider must configure a deployment-wide default ACL policy of `PERMIT` or `DENY`. ACL rules are evaluated by match specificity before this policy; the policy is the final catch-all for each direction and applies whether or not a Subnet has an associated NetworkACL. [User]
 - **FR-16:** The fulfillment-service enforces resource dependencies at the API layer. A create request is rejected with `FailedPrecondition` if a referenced resource is missing, not Ready/Allocated, or being deleted. NetworkACL creation requires a Ready VirtualNetwork; Subnet creation requires a Ready VirtualNetwork and, when an ACL is specified, a Ready NetworkACL in that same VirtualNetwork; workload creation requires a Ready Subnet, including readiness of any associated ACL. ExternalIP, ExternalIPAttachment, NATGateway, and FabricDomain creation follow their referenced-resource readiness gates. Internal defaulting and auto-provisioning flows wait for the same gates. Deletes are rejected while active dependents remain; manually created ExternalIPAttachments block deletion of their target workload, while system-created attachments and ExternalIPs are cleaned up in dependency order. [OSAC-1433]
@@ -170,13 +170,15 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 
 ---
 
+---
+
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: respond @ prd 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

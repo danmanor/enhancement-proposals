@@ -3,7 +3,7 @@ title: unified-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-08-12
-last-updated: 2026-09-29
+last-updated: 2026-09-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
   - https://redhat.atlassian.net/browse/OSAC-1433
@@ -85,15 +85,20 @@ Pure consumer of the existing private `ExternalIPPools` service
   not entered in tables.
 - A rule is unique within its direction by its CIDR, protocol, and optional
   destination-port range; action does not make an otherwise identical match
-  unique. Multiple TCP or UDP rules are valid when their match fields differ,
-  such as TCP ports 443 and 8443 for the same CIDR. Multiple ICMP or ALL rules
-  are also valid for different CIDRs. TCP-specific rules may coexist with an
-  ALL rule for the same CIDR; the protocol-specific match is evaluated first.
-  An identical match tuple in one direction is rejected.
+  unique. Explicit TCP/UDP port ranges for the same direction, canonical CIDR,
+  and protocol may not overlap, including shared endpoints, even when their
+  actions match. Disjoint ranges such as TCP ports 443 and 8443 are valid. A
+  port-specific TCP/UDP rule may coexist with a no-range rule for the same
+  CIDR and protocol because the port-specific rule is more specific. Protocol-
+  specific rules may coexist with an ALL rule for the same CIDR; the protocol-
+  specific match is evaluated first. An identical match tuple in one direction
+  is rejected.
 - Rule precedence is derived from match specificity: longest CIDR prefix
-  first, then protocol (`ICMP`, `UDP`, `TCP`, `ALL`), then destination-port
-  range from smallest to largest; no-port rules follow port-specific rules.
-  Action and input order do not affect precedence. For example, for the same
+  first, then protocol (`ICMP`, `UDP`, `TCP`, `ALL`), then port-specific rules
+  before no-port rules that match all ports. Disjoint explicit ranges are
+  displayed by numeric `port_from` then `port_to`; this display order does not
+  break ties for overlapping ranges because those rules are rejected. Action
+  and input order do not affect precedence. For example, for the same
   CIDR, `DENY TCP/22` is evaluated before `ALLOW TCP on any port`, so port 22
   is denied and other TCP ports are allowed regardless of entry order. For
   ingress, `ALLOW TCP/443 from 192.0.2.64/26` is evaluated before `DENY ALL
@@ -180,6 +185,7 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 | Pool create: empty, malformed, multiple, or overlapping CIDRs | Server's `INVALID_ARGUMENT`/`ALREADY_EXISTS` shown as a form-level error. |
 | Pool delete: `status.allocated > 0` | Server's `FAILED_PRECONDITION` shown verbatim; row stays listed. |
 | NetworkACL create has duplicate match fields, an invalid port range, or another invalid rule | Validation error is shown beside the rule form group; no create is submitted. |
+| NetworkACL create has overlapping TCP/UDP ranges for the same direction, CIDR, and protocol | Inline validation identifies the conflicting ranges; no create is submitted. Adjacent disjoint ranges and a no-range rule alongside a port-specific rule are accepted. |
 | Subnet creation omits an ACL | Subnet creation proceeds without an ACL association; unmatched traffic uses the deployment default ACL policy. |
 | Subnet creation references an ACL in another VirtualNetwork or a non-READY ACL | Server's `INVALID_ARGUMENT` or `FAILED_PRECONDITION` is shown in the form; no Subnet is created. |
 | NetworkACL delete while associated with a Subnet | Delete action reports the server's `FAILED_PRECONDITION`; the ACL remains listed. |
@@ -211,13 +217,15 @@ followed by Attach (create) with the new External IP, not an in-place edit.
 
 ---
 
+---
+
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140 (3 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82
 
 > Context changed between revise and revise.
->
+
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":3,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
