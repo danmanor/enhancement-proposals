@@ -186,6 +186,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    osac create virtualnetwork --network-class moc --cidr 10.0.0.0/16 --name my-net
    ```
    Dispatcher → `osac.templates.{{ fabric_manager }}.create_virtual_network`
+   Wait until `VirtualNetwork.status.phase == "Ready"` before creating a NetworkACL or Subnet. This gate also applies when creating a Subnet without an ACL association.
 
 2. **Create NetworkACL:**
    ```bash
@@ -273,7 +274,7 @@ Same as VMaaS/CaaS — the networking API is uniform.
    e. `reconcilePower` (unchanged)
 
 7. **IP discovery and feedback (`reconcileIPDiscovery` — runs after reboot):**
-   - After `reconcileReboot` completes with `NetworkHandoffComplete=True` and the tenant-network DHCP lease is available, the operator queries the fabric manager's DHCP lease API via dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`). The role queries DHCP leases for the tenant subnet and matches the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)) to find the corresponding DHCP-assigned IP on the tenant network.
+   - After `reconcileReboot` sets `NetworkHandoffComplete=True`, the operator starts DHCP lease discovery through the fabric-manager dispatcher (`osac.templates.{{ fabric_manager }}.query_dhcp_lease`), even if the lease has not propagated yet. Discovery retries until the role finds a valid lease for the tenant Subnet and the server's port MAC address (resolved from the BareMetalHost `osac.openshift.io/interface-macs` annotation — see [IP Discovery](#ip-discovery)).
    - Operator writes the discovered IP to `status.networkAttachmentStatuses[].ipAddress` on the BaremetalInstance CR
    - Feedback controller watches CR status changes → fires Signal RPC to fulfillment-service
    - fulfillment-service reconciler syncs the discovered IP to the DB via existing `syncStatus()` pattern

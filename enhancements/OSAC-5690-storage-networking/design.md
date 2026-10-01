@@ -437,9 +437,12 @@ With a deployment `PERMIT` fallback, unmatched packets pass unless a matching
 NetworkACL `DENY` rule applies. With a `DENY` fallback, the Subnet's associated
 NetworkACL must allow egress to the VAST addresses on the required TCP service
 ports (4420 for NVMe-TCP and the configured VMS API port when that endpoint is
-routable from tenant VirtualNetworks) and allow the corresponding return
-traffic in ingress. Since the ACL is stateless, each direction is decided
-independently. File storage and NFS port 2049 are outside this phase's scope.
+routable from tenant VirtualNetworks). It must also allow ingress TCP traffic
+from the configured VAST VIP source CIDRs to the deployment-approved client
+ephemeral destination-port range. The range must match the client hosts' actual
+ephemeral source ports; do not assume a universal numeric range. Since the ACL
+is stateless, each direction is decided independently. File storage and NFS
+port 2049 are outside this phase's scope.
 
 The default Subnet has no NetworkACL association, and that association cannot
 be added after creation. Under a `DENY` fallback, a storage workload must use
@@ -786,8 +789,10 @@ None. All questions resolved during drafting.
   deployment fallback permits unmatched traffic.
 - With a `DENY` fallback, verify storage traffic fails on the default Subnet,
   then succeeds on a separately created Subnet whose associated NetworkACL
-  allows the required storage egress and reply ingress. Verify that a matching
-  deny rule still blocks the flow.
+  allows egress to the required VAST service port and ingress from VAST VIP
+  CIDRs to the approved client ephemeral destination-port range. Verify replies
+  to ports within the range pass, replies to ports outside it are blocked, and
+  a matching deny rule still blocks the flow.
 - VirtualNetwork creation rejection: configure Storage CIDR, attempt
   to create a VN with overlapping CIDR, verify rejection with descriptive
   error message.

@@ -51,7 +51,7 @@
 
 ##### Preconditions
 
-- A VirtualNetwork exists with a NetworkClass configured for the primary fabric manager and `cudn_evpn` k8s manager.
+- A READY VirtualNetwork exists with a NetworkClass configured for the primary fabric manager and `cudn_evpn` k8s manager.
 - A READY NetworkACL is scoped to that VirtualNetwork, and its policy is active.
 - No Subnet exists under the VirtualNetwork.
 
@@ -367,25 +367,27 @@
 
 ##### Steps
 
-1. For each path—Subnet creation, VM placement, and the `Requested` Subnet deletion reservation—have replica A acquire a fencing token and pause immediately before persisting its admission. For the deletion-promotion case, seed a `Requested` reservation after placements have drained and pause before the `Admitted` transition.
-2. Expire A's lease and have replica B acquire a newer token for the same VirtualNetwork.
-3. Resume A's write attempt.
-4. Retry the operation with the current token and re-evaluate the VirtualNetwork state.
-5. Start a Subnet create through replica A. Pause it after reading VirtualNetwork
+1. Using tenant credentials, issue a direct Kubernetes API DELETE for an
+   existing Subnet without calling the fulfillment-service Delete API. Read
+   the Subnet and check `metadata.deletionTimestamp`.
+2. For each path—Subnet creation, VM placement, and the `Requested` Subnet deletion reservation—have replica A acquire a fencing token and pause immediately before persisting its admission. For the deletion-promotion case, seed a `Requested` reservation after placements have drained and pause before the `Admitted` transition.
+3. Expire A's lease and have replica B acquire a newer token for the same VirtualNetwork.
+4. Resume A's write attempt.
+5. Retry the operation with the current token and re-evaluate the VirtualNetwork state.
+6. Start a Subnet create through replica A. Pause it after reading VirtualNetwork
    state while it holds the lock. Start a Delete API request for the existing
    Subnet through replica B; verify it waits and has not set
    `metadata.deletionTimestamp`. Resume the create, then allow the Delete API
    to acquire the lock, re-read state, and persist its `Requested` reservation
    before issuing Kubernetes DELETE.
-6. In a separate ordering, let the Delete API persist the `Requested`
+7. In a separate ordering, let the Delete API persist the `Requested`
    reservation first and pause it before Kubernetes DELETE. Attempt a Subnet
    create through the other replica, then resume deletion.
-7. On the second VirtualNetwork, persist a `Requested` Subnet deletion
+8. On the second VirtualNetwork, persist a `Requested` Subnet deletion
    reservation and pause before Kubernetes DELETE. Attempt VM placement while
    the reservation is active, then resume deletion.
-8. Attempt a direct Kubernetes DELETE as the tenant. Separately, simulate a
-   terminating Subnet with no reservation using an administrator fixture and
-   reconcile it.
+9. Separately, simulate a terminating Subnet with no reservation using an
+   administrator fixture and reconcile it.
 
 ##### Expected Results
 
@@ -398,7 +400,8 @@
   `cudn_evpn` fixture and the fixture using a different k8s manager, before
   manager-specific placement validation runs; the Create request is rejected
   and no ComputeInstance or placement admission is persisted.
-- The tenant's direct Kubernetes DELETE is forbidden. If a Subnet is observed
+- The tenant's direct Kubernetes DELETE returns `403 Forbidden`; the Subnet
+  remains and `metadata.deletionTimestamp` is unset. If a Subnet is observed
   terminating without a reservation, the controller emits `DeletionBlocked`
   and requeues without creating a late reservation or starting cleanup.
 - Deletion reservations continue to block new Subnet creates and VM placements
@@ -525,7 +528,7 @@
 
 ### Subnet Deletion: Ordered cleanup prevents stale VRFs
 
-#### TC-DELETE-01: Subnet deletion with running VMs
+#### TC-DELETE-01: Subnet deletion waits for VM removal
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -536,22 +539,28 @@
 - A single-Subnet VirtualNetwork has a CUDN-backed Subnet explicitly associated with a READY same-VirtualNetwork NetworkACL.
 - The ACL policy is actively enforced before the Subnet reaches READY.
 - A VirtualMachine is running in the CUDN namespace.
-- The Subnet is marked for deletion (finalizer present).
+- No Subnet deletion reservation or `metadata.deletionTimestamp` is present
+  before the test's first Delete request.
 
 ##### Steps
 
-1. Delete Subnet CR
-2. Observe k8s manager delete playbook runs
-3. Verify VMs deleted before CUDN deletion attempted
-4. Verify playbook waits for all VMIs terminated (retries with timeout)
-5. Verify CUDN deleted after VMIs gone
-6. Verify namespace deleted after CUDN deleted
-7. Check for stale VRF on worker nodes (should not exist)
+1. Request Subnet deletion while the VM and its placement are active.
+2. Verify deletion is rejected before a deletion reservation, deletion
+   timestamp, or k8s-manager delete job is created.
+3. Delete the VM through its supported API and wait until its placement and VMI
+   are gone.
+4. Retry Subnet deletion and observe the k8s-manager delete playbook run.
+5. Verify CUDN deletion starts only after no VMIs remain.
+6. Verify the namespace is deleted after the CUDN.
+7. Check for stale VRFs on worker nodes (should not exist).
 
 ##### Expected Results
 
-- Deletion order enforced: VMs → wait VMIs → CUDN → namespace
-- No stuck CUDN finalizer (deletion completes within timeout)
+- While the VM or placement exists, Subnet deletion is rejected and cleanup
+  does not start.
+- After the VM and placement are gone, deletion order is enforced: CUDN →
+  namespace.
+- No stuck CUDN finalizer after deletion is admitted.
 - **Normal case:** No stale VRF devices persist after CUDN deleted
 - **Rare failure case:** Stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)
 - Subnet CR finalizer removed, CR deleted successfully

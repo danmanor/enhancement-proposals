@@ -574,7 +574,12 @@ the resulting `ExternalIP.status.address` for DNAT/SNAT. Existing status and
 condition fields carry observed readiness and diagnostic failures. [Locked: D3,
 D5, D9]
 
-The implementation changes the following existing surfaces:
+The full API integration needed for a supported backend spans the following
+existing surfaces. In this milestone, IC-1 keeps isolated test registration
+available while rejecting supported API selection; IC-2 through IC-6 are
+future API integration work and are not implemented by the raw backend
+primitives described here. That work is gated on enforcement of the required
+Subnet policy.
 
 | ID | Existing surface | Change | Requirements |
 |---|---|---|---|
