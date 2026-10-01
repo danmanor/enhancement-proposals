@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-29
+last-updated: 2026-09-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -21,9 +21,10 @@ superseded-by:
 # Default Networking — Simplified Resource Creation
 
 At tenant onboarding, the system provisions a default IPv4 VirtualNetwork,
-Subnet, and NATGateway. The Subnet has no NetworkACL association unless one
-was explicitly selected at creation; there is no tenant or VirtualNetwork
-default ACL resource. The deployment's required default ACL action, configured
+Subnet, and NATGateway. The system-created default Subnet always has no
+NetworkACL association; tenants cannot select an ACL for it during onboarding
+or associate one later. There is no tenant or VirtualNetwork default ACL
+resource. The deployment's required default ACL action, configured
 on NetworkClass as `PERMIT` or `DENY`, decides traffic when no associated ACL
 rule matches or a Subnet has no ACL. The tenant default Subnet has no ACL, so
 `DENY` blocks unmatched ingress and egress there; NATGateway and ExternalIP
@@ -130,13 +131,17 @@ The design covers three capabilities: default networking (including NATGateway) 
    1. Validate the replacement configuration offline and schedule downtime.
    2. Pause tenant onboarding, default-based creates, and tenant network and
       workload changes across every affected tenant.
-   3. Drain workloads and delete dependent networking resources in their
-      required deletion order, including NATGateways, Subnets, tenant-created
-      NetworkACLs, and VirtualNetworks. Delete the old NetworkClass only after
-      all VirtualNetwork references are gone.
-   4. Create the replacement as the deployment's sole NetworkClass. Recreate
-      tenant VirtualNetworks, Subnets, NATGateways, and workload attachments;
-      recreate workloads that need the replacement network.
+   3. While the prior release is active, drain workloads and delete dependent
+      resources in order: ExternalIPAttachments, workloads, NATGateways,
+      Subnets, tenant-created NetworkACLs, and VirtualNetworks. Delete the old
+      NetworkClass only after all VirtualNetwork references are gone.
+   4. Deploy the ACL-aware API and controllers while writes remain frozen.
+      Create the replacement as the deployment's sole NetworkClass and wait
+      for it to become READY. Recreate tenant VirtualNetworks; after each is
+      READY, create any tenant-selected NetworkACLs and wait for them to be
+      READY before creating Subnets that reference them. Create generated
+      default Subnets without ACL associations. Recreate NATGateways and
+      workloads after their network dependencies are READY.
    5. Resume tenant and default-based creates only after the replacement
       defaults and affected tenant networking resources are READY.
 
@@ -829,10 +834,13 @@ GA criteria:
 The NetworkACL and attachment contract change is a coordinated, breaking
 release; the prior release cannot represent NetworkACL resources or Subnet
 associations. Tenants must not be asked to create ACLs or associations before
-the ACL-aware API is deployed. Before cutover, configure the required
-`PERMIT` or `DENY` deployment fallback action. The cutover follows the
-[unified networking upgrade strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy)
-and adds the default-networking steps below. Existing tenant policy is
+the ACL-aware API is deployed. Before cutover, select the required `PERMIT` or
+`DENY` deployment fallback action and include it in the replacement
+NetworkClass configuration. The prior release's NetworkClass lacks this
+action and is immutable. A deployment can have only one NetworkClass, so it
+must be replaced using the disruptive lifecycle described above and in the
+[unified networking upgrade strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy).
+This design adds the default-networking steps below. Existing tenant policy is
 tenant-mapped; no automatic or lossless conversion is promised.
 
 #### Pre-upgrade inventory and preparation
@@ -853,30 +861,38 @@ tenant-mapped; no automatic or lossless conversion is promised.
 
 1. Freeze tenant network and workload writes that can affect the migration,
    including onboarding, resource creation, deletion, and attachment changes.
-2. Deploy the ACL-aware fulfillment-service, operator, networking controllers,
-   schemas, and compatible clients as one coordinated release. Do not permit
-   old clients to write with the previous attachment contract.
-3. Configure and validate the required deployment fallback action. Do not
-   create or backfill default NetworkACL resources. Through the new API,
-   create tenant-approved NetworkACLs in the same VirtualNetworks as their
-   target Subnets and wait for them to become READY. Create replacement
-   Subnets with an explicit ACL when needed or leave the association unset to
-   use the deployment fallback action. Existing Subnets cannot be
+2. While the prior release is still running, drain workloads and remove the
+   existing tenant networking resources in dependency order. Delete the old
+   NetworkClass only after every VirtualNetwork reference is gone, following
+   the [unified networking upgrade strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy).
+3. Deploy the ACL-aware fulfillment-service, operator, networking controllers,
+   schemas, and compatible clients as one coordinated release. Keep network and
+   workload writes frozen; do not permit old clients to write with the previous
+   attachment contract.
+4. Create the replacement NetworkClass with the selected required fallback
+   action and preserved deployment defaults. Wait for it to become READY before
+   recreating tenant VirtualNetworks. Do not create or backfill default
+   NetworkACL resources. In each recreated tenant VirtualNetwork, create
+   tenant-approved NetworkACLs and wait for them to become READY before
+   creating replacement Subnets that reference them. Leave every generated
+   default Subnet's ACL association unset. Existing Subnets cannot be
    reassociated in place; recreate dependent workloads as required by their
    deletion constraints.
-4. Keep each affected Subnet and workload creation/default resolution gated
+5. Keep each affected Subnet and workload creation/default resolution gated
    until the Subnet is READY. If it has an ACL association, wait for its rules
    to be active; otherwise the deployment default action applies. Recreate
    workloads only after their destination Subnet is READY when policy mapping
    requires a move.
-5. Validate the fallback action, policy mapping, readiness, and representative
+6. Validate the fallback action, policy mapping, readiness, and representative
    connectivity. Reopen network and workload writes only after every affected
    Subnet is READY under its optional ACL and the deployment fallback policy;
    incomplete tenant migrations remain gated.
 
 Existing tenants do not receive a tenant-default VN, Subnet, or NATGateway
-retroactively. No default NetworkACL is created or backfilled. Existing Subnet
-associations are not changed. An existing tenant that wants simplified
+retroactively unless the coordinated NetworkClass replacement procedure
+requires those tenant networking resources to be recreated. No default
+NetworkACL is created or backfilled. Existing Subnet associations are not
+changed in place. An existing tenant that wants simplified
 workload creation must use the new API to create or select its tenant-default
 Subnet. If `spec.network_acl` is omitted, it remains unset and the deployment
 default action decides unmatched traffic. New tenant onboarding creates the
@@ -983,10 +999,15 @@ Consequences:
 
 ---
 
+---
+
 ## Provenance
 
-Authored: respond @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

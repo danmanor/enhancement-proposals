@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-29
+last-updated: 2026-09-30
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -408,20 +408,25 @@ and egress. [PRD: FR-2, FR-4, FR-15]
 
 Rule evaluation is derived from the match fields, not from the order in which
 rules are supplied: CIDR prefixes are sorted longest to shortest; for equal
-prefixes, protocols are ordered `ICMP`, `UDP`, `TCP`, then `ALL`; for equal
-prefixes and protocol, destination-port ranges are sorted from smallest to
-largest, with rules that match all ports after port-specific rules. Action is
-not an ordering field, so a more-specific `ALLOW` can precede a broader
-`DENY`, and a more-specific `DENY` can precede a broader `ALLOW`. Rules with
-identical match fields in one direction are rejected to prevent conflicting
-actions from having equal precedence. The first matching rule in the computed
-order decides the packet. The ACL is stateless: ingress and egress are evaluated
-independently, including reply traffic in the reverse direction. To permit a
-reply with a deployment `DENY` fallback, a matching reverse-direction `ALLOW`
-rule must win precedence. With a `PERMIT` fallback, an unmatched reply passes
-unless a matching reverse-direction `DENY` rule applies. Both actions are
-supported so tenants can permit specific traffic under a deployment `DENY` default or deny
-specific traffic under a deployment `PERMIT` default. [Locked: D2]
+prefixes, protocols are ordered `ICMP`, `UDP`, `TCP`, then `ALL`. For equal
+prefixes and protocol, explicit TCP/UDP port ranges are more specific than a
+rule with no range (which matches all ports), and disjoint ranges are sorted by
+`port_from` and then `port_to` for stable presentation. Within one direction,
+two explicit ranges with the same canonical CIDR and protocol must not
+overlap, including a shared endpoint; overlapping ranges are rejected even if
+their actions match. A port-specific rule may coexist with a no-range rule for
+the same CIDR and protocol because the port-specific rule is more specific.
+Action is not an ordering field, so a more-specific `ALLOW` can precede a
+broader `DENY`, and a more-specific `DENY` can precede a broader `ALLOW`.
+Duplicate match fields in one direction are rejected. The first matching rule
+in the computed order decides the packet. The ACL is stateless: ingress and
+egress are evaluated independently, including reply traffic in the reverse
+direction. To permit a reply with a deployment `DENY` fallback, a matching
+reverse-direction `ALLOW` rule must win precedence. With a `PERMIT` fallback,
+an unmatched reply passes unless a matching reverse-direction `DENY` rule
+applies. Both actions are supported so tenants can permit specific traffic
+under a deployment `DENY` default or deny specific traffic under a deployment
+`PERMIT` default. [Locked: D2]
 
 For ingress rules, `ipv4_cidr` matches the packet source address; for egress
 rules it matches the destination address. A rule may match any supported
@@ -480,12 +485,18 @@ before persistence or provisioning. The deployment default ACL policy is
 configured on the NetworkClass and is required independently of tenant ACL
 resources.
 
-Validation rejects duplicate match fields within a direction, unknown actions
-or protocols, incomplete or reversed port ranges, port endpoints outside
-1–65535, port ranges with non-TCP/UDP protocols, malformed or non-canonical
-IPv4 CIDRs, and references across VirtualNetworks. For TCP/UDP, either both
-port endpoints are supplied or neither is; an omitted range matches all
-destination ports for that protocol.
+Validation rejects duplicate match fields within a direction and any two
+explicit TCP/UDP port ranges that overlap within the same direction, canonical
+IPv4 CIDR, and protocol. Range endpoints are inclusive, so ranges sharing an
+endpoint overlap. A port-specific range may coexist with the no-range rule for
+the same CIDR and protocol; that rule matches all ports and has lower
+specificity. It also rejects unknown actions or protocols, incomplete or
+reversed port ranges, port endpoints outside 1–65535, port ranges with
+non-TCP/UDP protocols, malformed or non-canonical IPv4 CIDRs, and references
+across VirtualNetworks. For TCP/UDP, either both port endpoints are supplied
+or neither is; an omitted range matches all destination ports for that
+protocol. Disjoint explicit ranges are sorted numerically only for stable
+presentation; numeric order does not resolve overlapping ranges.
 Rule input order and action do not determine precedence. When no associated
 ACL rule matches—or no ACL is associated—the deployment default action is
 the final catch-all. Because ACLs are stateless, each direction, including
@@ -493,6 +504,9 @@ return traffic, is evaluated independently.
 
 Boundary tests accept port endpoints 1 and 65535 and reject values below 1 or
 above 65535, as well as incomplete, reversed, and non-TCP/UDP port ranges.
+Validation also rejects partially overlapping and nested explicit ranges for
+the same direction, CIDR, and protocol, accepts adjacent disjoint ranges, and
+allows a no-range rule alongside a port-specific rule.
 
 Creating a custom NetworkACL does not seed default rules. An ACL with empty
 ingress and egress rule lists contributes no matching decisions, so the
@@ -1654,9 +1668,13 @@ attachment contract. The prior release cannot represent `NetworkACL` resources
 or `Subnet.spec.network_acl`; tenants must not create ACL resources or
 associations before the ACL-aware API is deployed. Existing policy is
 tenant-mapped. There is no automatic or lossless conversion from existing
-per-workload policy to a Subnet-wide ACL. Before cutover, the provider must
-configure the deployment-wide `PERMIT` or `DENY` fallback action on the
-NetworkClass.
+per-workload policy to a Subnet-wide ACL. Select the deployment-wide `PERMIT`
+or `DENY` fallback action before cutover and include it in the NetworkClass
+configuration. The prior release's NetworkClass has no `defaultAclAction`, and
+NetworkClass is immutable, so this upgrade must replace it. Because only one
+NetworkClass may exist per deployment, all dependent VirtualNetworks must be
+removed before the replacement is created. Plan a disruptive maintenance
+window for that transition.
 
 #### Pre-upgrade inventory and preparation
 
@@ -1670,7 +1688,8 @@ NetworkClass.
   recreation. Include explicit reverse-direction rules when needed to permit
   required return traffic under the selected fallback and matching rules.
   Agree on the deployment fallback action for flows not matched by an
-  ACL rule.
+  ACL rule. Prepare the replacement NetworkClass configuration, preserving
+  existing defaults and adding the selected `defaultAclAction`.
 - Prepare the NetworkACL rule definitions and Subnet-to-ACL mapping as a
   migration plan only; do not submit ACL resources through the prior release.
   Snapshot API/database state, networking CRs, NetworkClass configuration,
@@ -1682,29 +1701,30 @@ NetworkClass.
 1. Freeze tenant network and workload writes that can affect the cutover,
    including network resource changes, workload creation/deletion, and
    attachment changes. Permit only the designated migration operations while
-   the freeze is in effect.
-2. Deploy the ACL-aware fulfillment-service, API and CRD schemas,
+   the freeze is in effect. Snapshot state and confirm the restore plan.
+2. While the prior release is still running, drain workloads and delete their
+   network-dependent resources in dependency order: ExternalIPAttachments,
+   workloads (which carry immutable Subnet attachments), NATGateways, old
+   Subnets, any tenant NetworkACLs, and VirtualNetworks. Reuse existing Subnet
+   CIDRs after their old Subnets are deleted; replacement Subnets will be
+   created in the recreated VirtualNetworks, so parallel old/new Subnets are
+   not part of this cutover.
+3. Delete the old NetworkClass only after no VirtualNetwork references it.
+4. Deploy the ACL-aware fulfillment-service, API and CRD schemas,
    osac-operator, networking controllers, configured networking manager, and
-   compatible clients as one coordinated release.
-3. Configure and validate the required deployment fallback action. Do not
-   create or backfill default NetworkACL resources. For each Subnet that needs
-   subnet-specific rules, create the tenant-selected NetworkACL and wait for it
-   to become READY before creating a replacement Subnet that explicitly
-   references it. The migration plan must define each replacement Subnet CIDR.
-   Reuse the existing CIDR only after deleting its dependent workloads and old
-   Subnet; if the old and replacement Subnets must coexist in the same
-   VirtualNetwork, assign distinct, non-overlapping CIDRs and plan the workload
-   migration between them. Subnets
-   without an ACL association use the deployment fallback action for unmatched
-   traffic. Existing Subnets cannot be reassociated in place; recreate affected
-   Subnets and workloads in the dependency order required by the selected CIDR.
-4. Keep each affected Subnet and workload creation using it gated until its
-   network segment is READY and, where an ACL is associated, the ACL policy is
-   active on that Subnet. A Subnet without an ACL does not wait for an ACL.
-   If policy mapping requires moving a workload to a different Subnet,
-   recreate it only after the destination Subnet is READY; attachments remain
-   immutable.
-5. Validate the configured deployment fallback action, tenant-approved policy
+   compatible clients as one coordinated release. Keep network and workload
+   writes frozen.
+5. Create the replacement as the deployment's sole NetworkClass, preserving
+   existing defaults and setting the selected `defaultAclAction`; wait for it
+   to become READY before recreating tenant VirtualNetworks.
+6. Recreate tenant VirtualNetworks. In each VirtualNetwork, create any
+   tenant-selected NetworkACLs and wait for them to become READY before
+   creating Subnets that reference them. Create each tenant's generated default
+   Subnet without an ACL association, and recreate other Subnets with their
+   planned optional ACL references. Recreate NATGateways and external-access
+   resources as needed. Wait for every network resource to become READY before
+   recreating workloads and immutable attachments.
+7. Validate the configured deployment fallback action, tenant-approved policy
    mapping, any explicit Subnet associations, and representative connectivity.
    Reopen network and workload writes only after every affected Subnet is
    READY under its optional ACL and the deployment fallback policy. Keep any
@@ -1765,11 +1785,15 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ---
 
+---
+
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
-Phases: respond, revise
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["respond","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
