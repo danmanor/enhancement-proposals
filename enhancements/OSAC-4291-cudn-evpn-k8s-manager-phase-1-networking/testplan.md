@@ -113,27 +113,35 @@
 - The deployment NetworkClass has `spec.defaults.defaultAclAction: DENY`.
 - A VirtualNetwork uses that NetworkClass and has no Subnet.
 - No default NetworkACL resource exists.
+- The test can pause the k8s-manager job after CUDN Ready and before its
+  Namespace readiness check. An administrator can hold a deleted test
+  Namespace in `Terminating` with a temporary finalizer, then remove the
+  finalizer and recreate the Namespace with its normal manager labels.
 
 ##### Steps
 
 1. Create a Subnet without `spec.network_acl`.
 2. Verify the persisted Subnet has no ACL association.
 3. Verify the Subnet controller provisions fabric and, for the first eligible Subnet, the CUDN without waiting for a NetworkACL resource or `NetworkACLAssociationReady` condition.
-4. After the CUDN reports Ready, hold the target Namespace absent or in a
-   non-Active phase. Verify the k8s-manager job remains incomplete and the
-   Subnet does not become READY.
-5. Make the Namespace exist with `status.phase == "Active"` and no
-   `metadata.deletionTimestamp`; verify the k8s-manager job completes and the
-   Subnet becomes READY.
-6. Send traffic that matches no tenant ACL rule and verify the deployment
+4. Confirm the target Namespace is named after the Subnet. After CUDN Ready,
+   pause the job before the Namespace readiness check, add a temporary
+   finalizer to the Namespace, and issue a Kubernetes DELETE. Verify the
+   Namespace is `Terminating` with a `metadata.deletionTimestamp`.
+5. Resume the job and verify it remains incomplete and the Subnet does not
+   become READY while the Namespace is terminating.
+6. Remove the temporary finalizer, wait until the Namespace is absent, and
+   verify the job still remains incomplete. Recreate the same Namespace with
+   its normal manager labels; verify it becomes Active and the k8s-manager job
+   completes, then the Subnet becomes READY.
+7. Send traffic that matches no tenant ACL rule and verify the deployment
    default action denies it.
 
 ##### Expected Results
 
 - The Subnet remains unassociated and becomes READY only after fabric, CUDN,
   and Namespace readiness are independently confirmed.
-- CUDN Ready alone is insufficient: an absent or non-Active Namespace keeps the
-  k8s-manager job incomplete and the Subnet non-READY.
+- CUDN Ready alone is insufficient: a terminating or absent Namespace keeps
+  the k8s-manager job incomplete and the Subnet non-READY.
 - A Namespace with a deletion timestamp is not ready for VM placement.
 - No NetworkACL object or association-ready condition is required.
 - Unmatched traffic follows the deployment-wide `DENY` default action.

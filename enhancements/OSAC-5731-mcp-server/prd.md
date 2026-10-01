@@ -155,7 +155,7 @@ stories below without changing their meaning.
 
 | Journey | In-scope actions |
 |---|---|
-| Networking | Discover, create, and delete VirtualNetworks, Subnets, and NetworkACLs. A Subnet may select at most one NetworkACL at creation; create the ACL first. An unassociated Subnet uses the deployment default ACL action for unmatched traffic. Allocate and attach external addresses, and set NAT egress where OSAC supports it. A change to an existing network resource is a separately reviewed replacement. |
+| Networking | Discover, create, and delete VirtualNetworks, Subnets, and NetworkACLs. A Subnet may select at most one NetworkACL at creation; create the ACL first and wait for it to become READY before creating the Subnet. An unassociated Subnet uses the deployment default ACL action for unmatched traffic. Allocate and attach external addresses, and set NAT egress where OSAC supports it. A change to an existing network resource is a separately reviewed replacement. |
 | ComputeInstances | Discover eligible choices, request, update, and delete an instance, and start, stop, or restart it. Start, stop, and restart count only after their existing behavior is validated end to end. |
 | CaaS clusters | Discover eligible choices, request, update, and delete a cluster, and check its later outcome. |
 | BMaaS instances | Discover eligible choices, request, update, and delete a bare-metal instance, start, stop, or restart it, and check its later outcome. Start, stop, and restart count only after their existing behavior is validated end to end. |
@@ -205,7 +205,7 @@ stories below without changing their meaning.
 - As a Tenant Admin or Tenant User, I want to verify my connection with a read-only request before provisioning, so that I know whether discovery works without changing infrastructure. [Clarify: R13.Q3]
 - As a Tenant Admin or Tenant User, I want to discover eligible catalog offerings and their selectable images, sizes, storage, networking, and other prerequisites, so that I can choose only resources my role may use. [Clarify: R1.Q2, R11.Q3]
 - As a Tenant Admin or Tenant User, I want to create missing VirtualNetworks, Subnets, NetworkACLs, and supported public-address or egress resources when authorized, so that I can satisfy a deployment's networking prerequisites. [Clarify: R1.Q3, R9.Q1]
-- When selecting a NetworkACL for a Subnet, the user creates the ACL first and associates it during Subnet creation. An unassociated Subnet uses the deployment default ACL action for unmatched traffic.
+- When selecting a NetworkACL for a Subnet, the user creates it first, waits for it to become READY, and associates it during Subnet creation. An unassociated Subnet uses the deployment default ACL action for unmatched traffic.
 - As a Tenant Admin or Tenant User, I want to request a ComputeInstance from a published catalog offering with permitted VM size, image, boot storage, and network choices, so that the requested VM matches my needs and catalog limits. [Clarify: R2.Q1, R11.Q3]
 - As a Tenant Admin or Tenant User, I want to request an eligible cluster through MCP, so that I can complete the CaaS provisioning journey using my existing permissions. [Clarify: R2.Q1, R3.Q1]
 - As a Tenant Admin or Tenant User, I want to request an eligible bare-metal instance through MCP, so that I can complete the BMaaS provisioning journey using my existing permissions. [Clarify: R2.Q1, R3.Q1]

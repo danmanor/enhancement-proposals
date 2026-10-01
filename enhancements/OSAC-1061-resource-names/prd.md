@@ -92,6 +92,10 @@ The following fields are immutable after resource creation:
 - **Name** — update requests that specify a name different from the current value are rejected with a validation error
 - **Tenant association** — resources cannot be reassigned to a different tenant
 - **Project membership** — resources cannot be moved between projects
+- **NetworkACL lifecycle** — under OSAC-1433, NetworkACL has no Update
+  operation. Renaming or changing its specification requires dependency-ordered
+  deletion and recreation; the name-on-update rule above applies only to
+  resources that expose Update.
 
 ### Error Behavior
 
@@ -100,7 +104,9 @@ Validation errors follow Kubernetes conventions:
 - Duplicate name: the error states that a resource of the given type with that name already exists (no distinction between active and pending-deletion resources)
 - Missing name: the error states that a name is required
 - Invalid name format: the error states the format violation
-- Name change on update: the error states that the name field is immutable
+- Name change on update: for resources that expose Update, the error states
+  that the name field is immutable; NetworkACL has no Update operation and
+  must be deleted and recreated under its networking dependency rules
 - Tenant/project change: the error states that the field is immutable
 
 The error experience is consistent across all personas. Platform-scoped resource errors omit tenant/project context but are otherwise identical.

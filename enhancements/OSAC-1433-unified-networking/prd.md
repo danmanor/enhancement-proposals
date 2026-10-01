@@ -88,7 +88,10 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
   a default Subnet, and a NATGateway from provider-configured defaults. It does
   not create a tenant default NetworkACL. The system-created default Subnet
   always has no ACL association, and no ACL can be associated later; the
-  deployment's default ACL policy applies to its unmatched traffic. Workload
+  deployment's default ACL policy applies to its unmatched traffic. With a
+  `DENY` fallback, unmatched outbound traffic on this Subnet is denied. A
+  workload that needs specific outbound access must use another Subnet created
+  with a NetworkACL that allows the required egress and return traffic. Workload
   creation can omit network attachment details to use the default Subnet.
   Tenant readiness waits for the default VirtualNetwork, Subnet, and NATGateway
   to become READY, with no per-tenant ACL resource or association prerequisite.
@@ -124,6 +127,10 @@ VMaaS, CaaS, and BMaaS need one networking model so tenants can connect workload
 - [ ] ExternalIPAttachment supports all three service types for inbound traffic, and NATGateway remains optional for outbound traffic.
 - [ ] Default tenant readiness waits for the default VirtualNetwork, Subnet,
   and NATGateway, with no tenant default ACL resource.
+- [ ] The system-created default Subnet remains unassociated and cannot receive
+  an ACL later. Under a `DENY` fallback, unmatched outbound traffic is denied;
+  workloads needing specific outbound access use another Subnet created with
+  an ACL that permits the required egress and return traffic.
 - [ ] The deployment has a configured `PERMIT` or `DENY` default ACL policy.
   More-specific matching ACL rules take precedence over the policy, which is
   the final catch-all; reply traffic follows the same reverse-direction ACL and

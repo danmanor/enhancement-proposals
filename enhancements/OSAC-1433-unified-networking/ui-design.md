@@ -122,7 +122,11 @@ Pure consumer of the existing private `ExternalIPPools` service
   READY VirtualNetwork, configures the IPv4 CIDR, and optionally selects an ACL
   scoped to that VirtualNetwork. Leaving the ACL empty creates an unassociated
   Subnet; the deployment default ACL policy applies when there is no matching
-  rule. A selected ACL must already be READY and belong to that VirtualNetwork.
+  rule. Depending on the deployment policy, required outbound traffic may be
+  denied. To allow specific outbound traffic, associate an ACL with the needed
+  egress and return rules when creating the Subnet; the association cannot be
+  added later. A selected ACL must already be READY and belong to that
+  VirtualNetwork.
   Multiple and cross-VirtualNetwork ACL references are rejected. The API
   rejects Subnet creation while its VirtualNetwork is not READY, whether or not
   an ACL is selected.
