@@ -3,7 +3,7 @@ title: unified-networking-ui
 authors:
   - brotman@redhat.com
 creation-date: 2026-08-12
-last-updated: 2026-09-30
+last-updated: 2026-10-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-2632
   - https://redhat.atlassian.net/browse/OSAC-1433
@@ -76,7 +76,10 @@ Pure consumer of the existing private `ExternalIPPools` service
   ACLs scoped to that VirtualNetwork. Columns: **Name**, **Associated Subnets**,
   **Ingress Rules**, **Egress Rules**, and **Status** (`NetworkACLStatusLabel`).
   There is no system-created or tenant default ACL resource.
-- **Create wizard:** Step 1 (**General**) collects **Project**, **Name**, and
+- **Create wizard:** Open **Create Network ACL** from the Network ACLs card on
+  a VirtualNetwork detail page. The wizard takes that VirtualNetwork as fixed
+  parent context, submits it as `NetworkACLSpec.virtual_network`, and inherits
+  its Project as read-only context. Step 1 (**General**) collects **Name** and
   **Description**. Step 2 (**Configuration**) has separate **Ingress** and
   **Egress** sections. Each section uses repeatable rule form groups, following
   the Cluster node-set form pattern, with **Action** (ALLOW or DENY),

@@ -3,7 +3,7 @@ title: catalog-items-v2-field-governance
 authors:
   - Ilya Skornyakov
 creation-date: 2026-08-20
-last-updated: 2026-09-29
+last-updated: 2026-10-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3538
 prd:
@@ -38,6 +38,13 @@ Key decisions:
 - Resource lists retain their ordinary `repeated` shape.
 - Five scalar fields gain optional presence.
 - Existing Catalog Item services and JSONB persistence are reused; no new provisioning service or database table is introduced.
+- Catalog Item field policies can supply a workload's Subnet reference as
+  part of its network attachment. The optional `spec.network_acl` association
+  belongs to the Subnet and is chosen when the Subnet is created; it is not a
+  workload attachment field. Associated ACL rules refine the deployment
+  default ACL action for attached workloads. If no ACL is associated or no
+  rule matches, the deployment default action applies. Catalog Items do not
+  create or change NetworkACL associations.
 
 See the [PRD](prd.md) for product requirements.
 
@@ -666,8 +673,6 @@ Notes on the fields above:
 
   `ComputeInstanceSpec.run_strategy` and `ComputeInstanceTemplateSpecDefaults.run_strategy` remain optional, and a supplied value must be defined and non-zero. The config-as-code client maps the friendly value in `meta/osac.yaml` to the enum, and the Ansible metadata stays unchanged.
 - `storage_tier` and `additional_disks` stay ordinary resource fields until `storage_tier` becomes a typed reference.
-- A Catalog Item may reference Subnets in its permitted scope. The selected Subnet's optional NetworkACL association supplies traffic policy; the workload attachment does not reference a NetworkACL directly.
-
 ### Cluster
 
 | Field | Policy granularity | Stored OSAC reference |

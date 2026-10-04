@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-30
+last-updated: 2026-10-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -189,10 +189,10 @@ the [Unified Networking attachment contract](/enhancements/OSAC-1433-unified-net
 - An omitted attachment, an empty attachment list, or an empty CaaS attachment
   message requests the tenant defaults.
 - For VMaaS and CaaS, an omitted Subnet resolves to the tenant's default
-  Subnet. That Subnet has no ACL association unless one was specified when it
-  was created, so unmatched traffic uses the deployment default ACL action.
-  If an attachment names a Subnet, the server preserves it and validates that
-  it is READY; it does not substitute the tenant default. Any explicitly
+  Subnet. That system-created default Subnet always has no ACL association,
+  so unmatched traffic uses the deployment default ACL action. If an
+  attachment names a custom Subnet, the server preserves it and validates
+  that it is READY; it does not substitute the tenant default. Any explicitly
   associated ACL must also be READY. For BMaaS, the first `fabric` port from
   `BareMetalInstanceType.network_ports` is defaulted as well.
 - A single supplied attachment is completed field-by-field. A missing Subnet
