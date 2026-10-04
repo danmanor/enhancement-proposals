@@ -107,10 +107,11 @@ If host allocation, host provisioning, network attachment, network handoff, or t
    ```
    DELETE /api/fulfillment/v1/baremetal_instances/{id}
    ```
-2. The fulfillment service deletes the `HostLease` CR; `BareMetalInstance.status.state` transitions to `BARE_METAL_INSTANCE_STATE_DELETING`.
-3. The baremetal-fulfillment-operator reconciles the `HostLease` deletion: triggers `osac-aap` for the host-level deprovisioning template, then unassigns the host from the inventory backend.
-4. The osac-operator watches the `HostLease` CR deletion and pushes final status via the `Signal` RPC.
-5. The `BareMetalInstance` resource is removed once deprovisioning completes.
+2. The fulfillment service changes `BareMetalInstance.status.state` to `BARE_METAL_INSTANCE_STATE_DELETING` and deletes the corresponding Kubernetes `BareMetalInstance` CR and `HostLease` CR.
+3. Deletion of the Kubernetes `BareMetalInstance` CR starts the networking cleanup: the host is powered off before `reconcileNetworking` returns its port from the tenant network to the provisioning network. Its finalizers remain until this cleanup completes; see [BMaaS networking deletion](/enhancements/OSAC-1437-bmaas-networking/design.md#deletion-reverse-order).
+4. The baremetal-fulfillment-operator reconciles `HostLease` deletion: triggers `osac-aap` for the host-level deprovisioning template, then unassigns the host from the inventory backend.
+5. The osac-operator waits for the Kubernetes `BareMetalInstance` cleanup and `HostLease` deletion to complete, then pushes final status via the `Signal` RPC.
+6. The fulfillment service removes the public `BareMetalInstance` resource after cleanup completes.
 
 #### Provisioning Sequence
 

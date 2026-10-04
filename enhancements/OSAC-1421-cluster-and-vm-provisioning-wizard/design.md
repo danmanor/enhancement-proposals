@@ -316,7 +316,7 @@ Component tests are required for merge; add cases when fixing wizard regressions
 
 ### Manual smoke
 
-End-to-end VM and cluster provision via `/vms/create` and `/clusters/create`; cluster wizard with manually added node sets and host type dropdown; submit with optional fields left blank; verify Details page after successful create.
+End-to-end VM and cluster provisioning via `/vms/create` and `/clusters/create`; verify the cluster wizard loads node-set rows from the selected Template, keeps node-set names and host types fixed, and allows size edits only; submit with optional fields left blank; verify the Details page after successful create.
 
 ---
 

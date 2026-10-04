@@ -26,7 +26,8 @@ VirtualNetwork management (shipped under
 [OSAC-1898](https://redhat.atlassian.net/browse/OSAC-1898), per the
 [OSAC-1425](https://redhat.atlassian.net/browse/OSAC-1425) PRD) is summarized below for
 context, since the NAT Gateway field extends its list and detail pages — it is otherwise
-unchanged by this design. NetworkACL management and Subnet association are added below.
+unchanged apart from the detail-page layout and deletion guards described below.
+NetworkACL management and Subnet association are added below.
 Workload network attachments refer to a Subnet only; the Subnet's ACL is shown as
 read-only context during workload creation. NetworkACL rules and Subnet associations
 are fixed at creation; VirtualNetwork/Subnet address configuration and workload
