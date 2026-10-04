@@ -68,7 +68,10 @@ Pure consumer of the existing private `ExternalIPPools` service
 - **Detail page** (`VirtualNetworkDetailPage`) at `/networking/virtual-networks/:id`,
   with stacked cards for **Details**, **Subnets**, and **Network ACLs**.
 - **Delete:** header action, `useDeleteVirtualNetwork()`; blocked if the VN has
-  Subnets, NetworkACLs, or NATGateways.
+  Subnets, NetworkACLs, NATGateways, or active FabricDomains. If the API rejects
+  deletion because a FabricDomain references the VN, show the blocking
+  FabricDomain name from the `FailedPrecondition` response so the tenant knows
+  which domain to remove first.
 
 #### NetworkACL Management
 

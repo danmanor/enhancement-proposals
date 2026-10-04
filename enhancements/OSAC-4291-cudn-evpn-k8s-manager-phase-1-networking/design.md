@@ -142,8 +142,8 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
    - Creates the fabric segment for this Subnet (allocates L2 VNI)
    - If the Subnet references a NetworkACL, applies its rules and reports when the policy is active on that Subnet; otherwise the deployment default ACL action applies to traffic evaluated at the Subnet boundary. One ACL may be reused by multiple Subnets in the VirtualNetwork
    - Extracts VNI and reserved IP ranges
-   - Writes output to ConfigMap: `{l2_vni, l3_vni, fabric_reserved_range}`
-2. **Subnet controller** waits for segment provisioning and, only when a NetworkACL is associated, `NetworkACL.status.phase == "Ready"` plus the Subnet's `NetworkACLAssociationReady=True` condition; it passes VNI data from ConfigMap through the existing CUDN provisioning flow but does not report the first Subnet READY yet
+   - Writes VNI data to `data.extra_vars` in the output ConfigMap and the per-Subnet ACL activation result to `data.network_acl_association_active`
+2. **Subnet controller** reads the activation result after fabric provisioning and, only when a NetworkACL is associated, sets `NetworkACLAssociationReady=True` after both that result is `true` and `NetworkACL.status.phase == "Ready"`; it passes VNI data through the existing CUDN provisioning flow but does not report the first Subnet READY yet
 3. **K8s manager** (cudn_evpn) provisions CUDN (first Subnet only):
    - `spec.network.evpn.macVRF.vni = l2_vni` (from fabric manager VNet)
    - `spec.network.evpn.ipVRF.vni = l3_vni` (from fabric manager VPC)
@@ -742,14 +742,24 @@ This task follows the shared [OSAC-1433 NetworkACL API and validation
 contract](/enhancements/OSAC-1433-unified-networking/design.md#networkacl-api-and-validation)
 and [NetworkACL reconciliation and readiness
 contract](/enhancements/OSAC-1433-unified-networking/design.md#networkacl-reconciliation-and-readiness).
-Its Subnet input carries the optional `Subnet.spec.network_acl` association.
-When set, the configured fabric manager owns applying the referenced ACL rules
-and reports the per-Subnet activation result. Both `NetworkACL.status.phase ==
-"Ready"` and
-`Subnet.status.conditions[type=NetworkACLAssociationReady] == True` are
-required before that Subnet becomes READY. When the association is omitted, it
-remains unset and the deployment default action applies to unmatched traffic
+When a Subnet has `spec.network_acl`, the Subnet controller resolves that
+reference and passes the NetworkACL's ingress and egress rules to the fabric
+job as optional `osac_job_vars.network_acl`. The
+`fabric_manager.controller.vnet` module contract accepts this optional policy,
+applies it to the Subnet's fabric segment, and returns
+`network_acl_association_active: true` only after the manager confirms that the
+rules are active on that Subnet. With no association, the controller omits the
+module input and the deployment default action applies to unmatched traffic
 evaluated at the Subnet boundary.
+
+The task publishes the module's activation result as
+`data.network_acl_association_active` in the fabric output ConfigMap. After the
+fabric job completes, the Subnet controller reads this value and sets
+`Subnet.status.conditions[type=NetworkACLAssociationReady] = True` only when
+it is `true` and the associated `NetworkACL.status.phase == "Ready"`. A missing
+or false result does not satisfy the condition, and the Subnet does not become
+READY until both signals hold. The ConfigMap's VNI fields prove segment/VNI
+provisioning only; they do not prove ACL activation.
 
 ```yaml
 ---
@@ -758,8 +768,8 @@ evaluated at the Subnet boundary.
     subnet_cidr: "{{ osac_job_vars.resource.spec.ipv4CIDR }}"
     vnet_name: "{{ osac_job_vars.resource.spec.virtualNetwork }}"
     tenant_id: "{{ osac_job_vars.resource.metadata.annotations['osac.openshift.io/tenant'] }}"
-    # Fulfillment validates and passes the optional NetworkACL association
-    # under the shared OSAC-1433 contract above.
+    # When associated, the Subnet controller resolves the reference and passes
+    # the ACL ingress/egress rules as osac_job_vars.network_acl, per OSAC-1433.
 
 - name: Create or get fabric manager VPC for VirtualNetwork
   fabric_manager.controller.vpc:
@@ -775,9 +785,12 @@ evaluated at the Subnet boundary.
     vpc: "{{ vpc_result.vpc.name }}"
     cidr: "{{ subnet_cidr }}"
     tenant: "{{ tenant_id }}"
+    network_acl: "{{ osac_job_vars.network_acl | default(omit) }}"
     state: present
   register: vnet_result
   # fabric manager VNet maps to OSAC Subnet (L2 VNI allocated)
+  # The module applies optional ingress/egress rules and sets
+  # network_acl_association_active only after manager activation is confirmed.
   # DHCP enabled by default — coexists safely with OVN DHCP (OVN intercepts inside logical switch)
   # fabric manager SVI owns the gateway IP (e.g. .1) — EVPN CUDNs create no OVN logical router port, fabric routes L3
 
@@ -797,6 +810,7 @@ evaluated at the Subnet boundary.
         name: "{{ osac_job_vars.configmap_name }}"  # Set by controller: subnet-{name}-fabric-output
         namespace: osac
       data:
+        network_acl_association_active: "{{ vnet_result.network_acl_association_active | default(false) | bool | string | lower }}"
         extra_vars: |
           {
             "l2_vni": {{ l2_vni }},
@@ -1580,8 +1594,9 @@ Where is the authoritative MAC value? Does fabric manager VNet gateway MAC come 
 
 - Create NetworkClass with fabric_manager="primary", k8s_manager="cudn_evpn"
 - Create VirtualNetwork and a READY same-VirtualNetwork NetworkACL; create a Subnet with its explicit `network_acl` association and verify the dispatcher plan includes both fabric and k8s targets
-- Mock fabric job completion and a ConfigMap `data.extra_vars` value containing `l2_vni`, `l3_vni`, and `fabric_reserved_range`
+- Mock fabric job completion and a ConfigMap `data.extra_vars` value containing `l2_vni`, `l3_vni`, and `fabric_reserved_range`, plus `data.network_acl_association_active=true` only after explicit manager activation acknowledgement
 - Verify `NetworkACL.status.phase == "Ready"` and `Subnet.status.conditions[type=NetworkACLAssociationReady] == True` only after explicit manager activation acknowledgement
+- Verify missing or false `network_acl_association_active` never sets `NetworkACLAssociationReady=True`; when no ACL is associated, this condition is not a readiness gate
 - Verify fabric job success or ConfigMap VNI data alone does not satisfy the ACL activation condition or make the Subnet READY
 - Verify k8s job created with VNI in extra_vars
 - Verify Subnet.status.phase transitions: Pending → Provisioning → Ready, with Ready reached only after associated policy is active

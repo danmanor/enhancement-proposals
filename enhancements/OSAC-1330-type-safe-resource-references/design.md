@@ -762,7 +762,7 @@ PL/pgSQL triggers serve two purposes:
 **All triggers require JSON path updates** to reflect the new nested
 reference structure. This is a semantic shift: triggers currently match on
 resource IDs (primary keys), but will switch to matching on resource names
-(unique within a tenant). This aligns with the name-based resolution model
+(unique within a tenant and project). This aligns with the name-based resolution model
 introduced by this EP.
 
 **Tenant and project scoping.** Project-scoped resource names are unique within
