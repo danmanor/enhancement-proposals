@@ -136,7 +136,7 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
       - Subnet exists and is READY
       - If the resolved Subnet's `spec.network_acl` is set, the referenced ACL is READY and belongs to the same VirtualNetwork; an omitted association remains unset and uses the deployment default ACL action for unmatched traffic
     - For each node_set: resolves `baremetal_instance_type` → BareMetalInstanceType → picks first port with `role=fabric` from `network_ports[]` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
-    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) in the same DB transaction as the Cluster. Both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachments are **not** created at this point — their dependencies (ExternalIP Allocated + Cluster Ready) are not yet met. The fulfillment-service internal reconciler creates them later once both prerequisites are satisfied (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow.
+    - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) in the same DB transaction as the Cluster. Both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachments are **not** created at this point. The fulfillment-service internal reconciler creates each attachment independently after its corresponding ExternalIP is Allocated, the Cluster is Ready, and that endpoint address is available. A delayed IP allocation or endpoint for one service does not block the other. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioning-lifecycle-auto_external_ip_attachment) for the full stepped flow.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
     - Creates ClusterOrder CR with the resolved singular `networkAttachment` in spec
 
@@ -187,10 +187,10 @@ These steps are identical to VMaaS/BMaaS — the networking API is uniform.
 9. **fulfillment-service** re-reads ClusterOrder CR:
     - Syncs `api_endpoint` and `ingress_endpoint` from ClusterOrder status to the Cluster object
 
-10. **fulfillment-service internal reconciler** creates ExternalIPAttachments once both prerequisites are met:
-    - ExternalIP must be **Allocated** (have an allocated address from the fabric manager)
-    - Cluster must be **Ready** (VIPs populated in Cluster status)
-    - Creates two ExternalIPAttachments (API + ingress), each labeled `osac.openshift.io/auto-created: "true"`. Both start in **Pending** state. Creation readiness gate is satisfied because both ExternalIP (Allocated) and target Cluster (Ready) are in their terminal ready state.
+10. **fulfillment-service internal reconciler** evaluates each endpoint independently and creates its ExternalIPAttachment once its prerequisites are met:
+    - The endpoint's ExternalIP must be **Allocated** (have an allocated address from the fabric manager)
+    - The Cluster must be **Ready**, and the corresponding API or ingress endpoint address must be populated in Cluster status
+    - Creates that endpoint's ExternalIPAttachment, labeled `osac.openshift.io/auto-created: "true"`. Each attachment starts in **Pending** state. Allocation or endpoint readiness for the other service does not block its creation.
 
 11. **ExternalIPAttachment controller** reconciles each attachment (defense in depth — the fulfillment-service already validated prerequisites):
     - API attachment: reads ClusterOrder's `apiEndpoint` → 10.0.1.200, calls fabric manager, creates DNAT: api-ip (203.0.113.10) → 10.0.1.200, transitions to **Ready**
@@ -286,7 +286,7 @@ Roles are conventions, not enforced enums. The CaaS template defaults to role `f
 - `BareMetalWorkerReconciler` creates on-demand BareMetalInstances via BMaaS private gRPC API; BMaaS owns the fabric port move and IP assignment as part of BMI provisioning (OSAC-2135)
 - Template provisions MetalLB VIPs and writes them to ClusterOrder status
 - VIP feedback loop: ClusterOrder → fulfillment-service → Cluster → ExternalIPAttachment controller
-- Deferred ExternalIPAttachment creation: fulfillment-service internal reconciler creates ExternalIPAttachments after ExternalIP is Allocated and Cluster is Ready
+- Deferred ExternalIPAttachment creation: fulfillment-service internal reconciler creates each ExternalIPAttachment after its corresponding ExternalIP is Allocated and the Cluster is Ready with that endpoint address available
 
 #### Kept
 
@@ -565,7 +565,7 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 ### Integration Tests
 
 - E2E: create Cluster with explicit network_attachment, verify cluster provisioned on correct subnet
-- E2E: create Cluster with `--external-ip-attachment`, verify both ExternalIPAttachments are created only after the ExternalIPs are Allocated and the Cluster is READY with API and ingress endpoints, then verify both DNAT rules
+- E2E: create Cluster with `--external-ip-attachment`, verify each ExternalIPAttachment is created after its corresponding ExternalIP is Allocated and the Cluster is READY with that endpoint address, then verify its DNAT rule. Delay one ExternalIP allocation and confirm the other endpoint's attachment and routing are not blocked.
 - E2E: verify full API and ingress connectivity after the readiness gates complete
 - E2E: delete Cluster with auto-provisioned resources, verify ExternalIPAttachments and ExternalIPs cleaned up
 - E2E: create Cluster with omitted network_attachment, verify the default Subnet is populated without an ACL association and unmatched traffic follows the deployment default action

@@ -1573,7 +1573,7 @@ VirtualNetwork at creation time.
 |------|--------|------------|
 | Fabric manager complexity | One Ansible role handles all networking concerns | Clear interface contract per operation; tested independently per manager |
 | K8s-to-fabric bridge failure | VMs unreachable from fabric | k8sManager validates bridge connectivity at subnet creation; subnet stays Pending until bridge is confirmed |
-| CaaS prerequisite ordering | ExternalIP allocation can overlap cluster provisioning, but attachments require both the IP and Cluster to be ready | Create ExternalIP records with the Cluster request; create ExternalIPAttachments only after the ExternalIPs are Allocated and the Cluster is READY with endpoint addresses |
+| CaaS prerequisite ordering | ExternalIP allocation can overlap cluster provisioning, and each endpoint can become reachable independently | Create both ExternalIP records with the Cluster request; create each ExternalIPAttachment after its corresponding IP is Allocated, the Cluster is READY, and that endpoint address is available |
 | ExternalIPAttachment target validation | An attachment must reference an existing READY workload | Reject early creation; auto-provisioning waits for the workload and ExternalIP readiness gates |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
 

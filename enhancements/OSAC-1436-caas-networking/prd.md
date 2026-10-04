@@ -90,7 +90,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 #### Auto External IP
 
-- **FR-3:** Cluster creation supports `--external-ip-attachment`. When enabled, the system reserves capacity for two external IPs, one for the API server and one for ingress, before provisioning begins. The IPs are allocated asynchronously. Their attachments are created only after both IPs are Allocated and the Cluster is Ready with both endpoints available; inbound routing begins after the attachments are provisioned. External IPs and attachments are labeled as auto-provisioned. [User]
+- **FR-3:** Cluster creation supports `--external-ip-attachment`. When enabled, the system reserves capacity for two external IPs, one for the API server and one for ingress, before provisioning begins. The IPs are allocated asynchronously. Each endpoint's attachment is created independently after its corresponding ExternalIP is Allocated, the Cluster is Ready, and that endpoint address is available; inbound routing for that endpoint begins after its attachment is provisioned. One endpoint's readiness does not wait for the other endpoint's IP allocation or address. External IPs and attachments are labeled as auto-provisioned. [User]
 
 #### Endpoint Discovery
 
@@ -139,7 +139,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - [ ] A Tenant User can create a cluster with `--external-ip-attachment` and no explicit network configuration — the cluster is created on the default subnet with auto-provisioned external IPs for both API and ingress; inbound reachability follows the effective Subnet policy, and unmatched inbound traffic is denied when the deployment action is `DENY`
 - [ ] Cluster installation can reach assisted-service and image sources only when its effective Subnet policy permits the required outbound and reply flows; under a `DENY` fallback, the tenant uses an explicitly selected Subnet created with a permitting NetworkACL and a configured egress path, or the deployment uses `PERMIT` for the default Subnet
 - [ ] Cluster status exposes API server and ingress endpoint addresses after provisioning completes
-- [ ] Auto-created external IP attachments are created only after both ExternalIPs are Allocated and the Cluster is Ready with API and ingress endpoint addresses; DNAT is configured afterward
+- [ ] Each auto-created ExternalIPAttachment is created after its corresponding ExternalIP is Allocated, the Cluster is Ready, and its endpoint address is available; DNAT is configured afterward. A delayed allocation or endpoint for one service does not block routing for the other.
 - [ ] The system selects hosts and configures network connectivity before cluster provisioning begins
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
