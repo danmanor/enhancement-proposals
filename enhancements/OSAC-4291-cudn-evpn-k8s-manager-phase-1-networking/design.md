@@ -49,7 +49,7 @@ This design builds on and interacts with several networking designs:
 - **OSAC-1435 VMaaS Networking** — VMs provisioned via `ComputeNetworkAttachment` consume the cudn_evpn namespaces created by this design. VMaaS placement logic must resolve the namespace name (same as Subnet name) when placing VMs in EVPN-bridged Subnets. VMaaS must validate that the target Subnet has a CUDN and that its VirtualNetwork has exactly one Subnet before allowing VM placement.
 - **OSAC-1436 CaaS Networking** — CaaS clusters may run on EVPN-bridged subnets. Port-move primitive compatibility with EVPN transport (VXLAN encap vs VLAN trunking) is TBD (out of scope for Phase 1).
 - **OSAC-1437 BMaaS Networking** — Bare-metal servers provisioned via `BareMetalNetworkAttachment` are L2 peers of EVPN-bridged VMs when attached to the same Subnet. Any cross-Subnet L3 test uses fabric and bare-metal endpoints in a separate multi-Subnet VirtualNetwork with no VMs.
-- **OSAC-1433 Default Networking** — Auto-provisioning of the default VirtualNetwork, Subnet, and NATGateway at tenant onboarding uses a default NetworkClass. No default NetworkACL resource is created; the deployment default ACL action applies to the unassociated default Subnet. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., k8s-only or none).
+- **OSAC-1433 Default Networking** — Auto-provisioning of the default VirtualNetwork, Subnet, and NATGateway at tenant onboarding uses a default NetworkClass. No default NetworkACL resource is created; the deployment default ACL action applies to unmatched traffic evaluated at the unassociated default Subnet boundary. `cudn_evpn` is **not suitable** as the default NetworkClass due to manual prerequisites (VTEP, FRR, BGP underlay). Default networking should use a simpler k8s manager (e.g., k8s-only or none).
 - **OSAC-2135 CaaS BM Worker Provisioning** — System-tenant bare-metal instances reference tenant Subnets. If those Subnets use `cudn_evpn`, the BMI provisioning flow interacts with the EVPN namespace/CUDN. Interaction is TBD (out of scope for Phase 1).
 - **OSAC-1382 Multi-Fabric East-West** — Phase 1 east-west isolation domains will need to work across EVPN-bridged and non-EVPN subnets. Inter-domain routing with EVPN transport is TBD (out of scope for Phase 1).
 
@@ -97,17 +97,20 @@ CUDN-backed Subnet does not promote a remaining fabric-only Subnet. To restore
 VM support, create a new VirtualNetwork with a first Subnet that receives a
 READY CUDN. A Subnet may have zero or one association to a NetworkACL in its
 VirtualNetwork. An omitted reference remains unset; a required deployment-wide
-`PERMIT` or `DENY` default action decides traffic whenever no associated ACL
-rule matches or no ACL is associated. When an ACL is explicitly associated,
+`PERMIT` or `DENY` default action decides traffic evaluated at the Subnet
+boundary whenever no associated ACL rule matches or no ACL is associated.
+Same-Subnet traffic bypasses both ACL rules and the default action because it
+does not cross that boundary. When an ACL is explicitly associated,
 the configured fabric manager provisions and enforces its rules. The ACL
 resource may be reused by multiple Subnets. `NetworkACL.status.phase ==
 "Ready"` reports active ACL rules, and
 `Subnet.status.conditions[type=NetworkACLAssociationReady] == True` reports
 that the associated rules are active on that Subnet. These signals are
 required for a Subnet only when it has an explicit ACL association. A Subnet
-without an association does not wait for an ACL condition and uses the
-configured deployment default action. Fabric readiness, the CUDN, and its
-namespace remain independent prerequisites. The policy is not attached to the
+without an association does not wait for an ACL condition; traffic evaluated
+at its Subnet boundary uses the configured deployment default action. Fabric
+readiness, the CUDN, and its namespace remain independent prerequisites. The
+policy is not attached to the
 VM or CUDN, and the CUDN/K8s manager does not implement ACL behavior. If
 additional Subnets are added, the CUDN persists but VMaaS blocks VMs in all
 Subnets. Multi-subnet VirtualNetworks are fabric-only until secondary
@@ -120,7 +123,7 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
 | OSAC Resource | fabric manager Resource | OVN-K Resource | VM Support |
 |---------------|-----------------|----------------|------------|
 | VirtualNetwork | fabric manager VPC (L3 ipVRF) | — | — |
-| Subnet's optional NetworkACL association | Zero or one ACL reference in the parent VirtualNetwork; omission remains unset and the deployment default ACL action applies to unmatched traffic; one ACL may be shared by multiple Subnets. `NetworkACL.status.phase == "Ready"` and the Subnet's `NetworkACLAssociationReady=True` condition report active enforcement when an association exists | — | Required before the Subnet is READY only when an ACL is associated |
+| Subnet's optional NetworkACL association | Zero or one ACL reference in the parent VirtualNetwork; omission remains unset and the deployment default ACL action applies to unmatched traffic evaluated at the Subnet boundary; one ACL may be shared by multiple Subnets. `NetworkACL.status.phase == "Ready"` and the Subnet's `NetworkACLAssociationReady=True` condition report active enforcement when an association exists | — | Required before the Subnet is READY only when an ACL is associated |
 | First Subnet (alone, CUDN and namespace READY) | fabric manager VNet (L2 macVRF) | CUDN (primary) | ✅ VMs allowed |
 | First Subnet (with second+) | fabric manager VNet (L2 macVRF) | CUDN (persists) | ❌ VMs blocked |
 | Second+ Subnets | fabric manager VNet (L2 macVRF) | — | ❌ Fabric-only |
@@ -137,7 +140,7 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
 1. **Physical fabric manager** runs when Subnet is created:
    - Creates or gets fabric manager VPC for parent VirtualNetwork (idempotent, allocates L3 VNI if new)
    - Creates the fabric segment for this Subnet (allocates L2 VNI)
-   - If the Subnet references a NetworkACL, applies its rules and reports when the policy is active on that Subnet; otherwise the deployment default ACL action applies. One ACL may be reused by multiple Subnets in the VirtualNetwork
+   - If the Subnet references a NetworkACL, applies its rules and reports when the policy is active on that Subnet; otherwise the deployment default ACL action applies to traffic evaluated at the Subnet boundary. One ACL may be reused by multiple Subnets in the VirtualNetwork
    - Extracts VNI and reserved IP ranges
    - Writes output to ConfigMap: `{l2_vni, l3_vni, fabric_reserved_range}`
 2. **Subnet controller** waits for segment provisioning and, only when a NetworkACL is associated, `NetworkACL.status.phase == "Ready"` plus the Subnet's `NetworkACLAssociationReady=True` condition; it passes VNI data from ConfigMap through the existing CUDN provisioning flow but does not report the first Subnet READY yet
@@ -148,7 +151,7 @@ This design introduces a new k8s manager (`cudn_evpn`) registered via osac-insta
    - Route targets auto-generated by CUDN as "AS:VNI" (Phase 1 - explicit RT control deferred to Phase 2)
    - Gateway IP owned by fabric manager SVI (CUDN has no logical router port - fabric routes L3)
    - OVN-Kubernetes auto-updates FRRConfiguration when CUDN appears
-   - Waits for both the CUDN and namespace to become Ready before completing; the Subnet controller reports the first Subnet READY only after fabric, any explicitly associated ACL, CUDN, and namespace readiness are confirmed. Subnets without an ACL association use the deployment default action and do not wait for ACL readiness. Fabric-only Subnets do not wait for CUDN.
+   - Waits for both the CUDN and namespace to become Ready before completing; the Subnet controller reports the first Subnet READY only after fabric, any explicitly associated ACL, CUDN, and namespace readiness are confirmed. Subnets without an ACL association use the deployment default action for traffic evaluated at the Subnet boundary and do not wait for ACL readiness. Fabric-only Subnets do not wait for CUDN.
 
 **ACL activation and Subnet readiness:** The NetworkACL controller sets
 `NetworkACL.status.phase` to `Ready` only after the configured manager confirms
@@ -158,9 +161,9 @@ the manager's activation result is reflected by
 Subnet controller requires both the ACL READY phase and this association
 condition before setting the Subnet READY. When `spec.network_acl` is unset,
 these ACL signals are not required; the deployment default ACL action decides
-unmatched traffic. Fabric job success and VNI data in the output ConfigMap
-prove segment/VNI provisioning only; neither is evidence that an explicitly
-associated ACL policy is active.
+unmatched traffic evaluated at the Subnet boundary. Fabric job success and VNI
+data in the output ConfigMap prove segment/VNI provisioning only; neither is
+evidence that an explicitly associated ACL policy is active.
 
 For VM placement, `cudnNamespaceReady` returns true only when the target
 Subnet's CUDN is ready and its target Namespace exists with
@@ -214,7 +217,7 @@ sequenceDiagram
 
     Controller->>AAP: Create fabric Job (fabric_manager role)
     AAP->>AAP: Create/get fabric manager VPC (L3 VNI)<br/>Create fabric manager VNet (L2 VNI)
-    Note over AAP: VPC created idempotently<br/>(first Subnet creates, later Subnets reuse)<br/>Configured fabric manager enforces an associated ACL when present; otherwise deployment default action applies
+    Note over AAP: VPC created idempotently<br/>(first Subnet creates, later Subnets reuse)<br/>Configured fabric manager enforces an associated ACL when present; otherwise deployment default action applies at the Subnet boundary
     AAP-->>Controller: Job Complete (ConfigMap with both VNIs)
 
     Controller->>Controller: Wait for segment data and, when an ACL is associated, active ACL policy
@@ -237,7 +240,7 @@ sequenceDiagram
 
 - **Second Subnet creation during a placement or with VMs present:** API returns 400 Bad Request. An active or in-progress VM placement or existing VM prevents adding Subnets (Phase 1 limitation). Tenant must let placements finish and delete VMs before adding Subnets, or create a new VirtualNetwork for bare-metal workloads.
 - **VM creation when multiple subnets exist:** VMaaS blocks VM placement with error. Only single-subnet VirtualNetworks support VMs. Multiple subnets → VMs blocked in ALL subnets (first subnet's CUDN persists but VM creation blocked by validation). Tenant must delete extra subnets or create new VirtualNetwork for VMs.
-- **Subnet ACL association:** An omitted ACL remains unset and the deployment default ACL action applies; it is valid without a default ACL resource. An explicit ACL must be READY and belong to the same VirtualNetwork. A Subnet with an explicit ACL remains non-READY until the configured fabric manager reports that policy active; a Subnet without an ACL does not wait for ACL activation.
+- **Subnet ACL association:** An omitted ACL remains unset and the deployment default ACL action applies to unmatched traffic evaluated at the Subnet boundary; it is valid without a default ACL resource. An explicit ACL must be READY and belong to the same VirtualNetwork. A Subnet with an explicit ACL remains non-READY until the configured fabric manager reports that policy active; a Subnet without an ACL does not wait for ACL activation.
 - **Subnet deletion with active or in-progress VM placements:** The Delete API persists a `Requested` reservation under the VirtualNetwork lock before accepting deletion, blocking new Subnet creates and VM placements. The controller emits a `DeletionBlocked` event and requeues even if no Kubernetes VM object exists yet. It starts deprovisioning only after no placement admission or VM remains and the reservation is `Admitted`.
 - **Fabric job failure:** Controller requeues, does not start k8s job until fabric succeeds
 - **VNI missing in fabric output:** Controller marks Subnet as Failed, user must check fabric manager logs
@@ -745,7 +748,8 @@ and reports the per-Subnet activation result. Both `NetworkACL.status.phase ==
 "Ready"` and
 `Subnet.status.conditions[type=NetworkACLAssociationReady] == True` are
 required before that Subnet becomes READY. When the association is omitted, it
-remains unset and the deployment default action applies to unmatched traffic.
+remains unset and the deployment default action applies to unmatched traffic
+evaluated at the Subnet boundary.
 
 ```yaml
 ---
@@ -1521,7 +1525,7 @@ Where is the authoritative MAC value? Does fabric manager VNet gateway MAC come 
   - Error message identifies active VM placements and says to delete VMs first or create a new VirtualNetwork
   - Subnet creation without an ACL leaves the association unset and succeeds without a default ACL resource
   - Subnet creation fails when an explicit NetworkACL is not READY or is scoped to another VirtualNetwork
-  - Subnet creation with no ACL association succeeds and remains unset; the deployment default ACL action applies
+  - Subnet creation with no ACL association succeeds and remains unset; the deployment default ACL action applies to unmatched traffic evaluated at the Subnet boundary
   - Subnet creation succeeds with skip-k8s-manager annotation
 
 **osac-operator (Go + Ginkgo):**
@@ -1692,7 +1696,7 @@ This is a new API — no existing resources to migrate. Upgrade steps:
 4. Upgrade fulfillment-service (adds second-Subnet-with-VMs and VM placement topology validation)
 5. Complete installation prerequisites (VTEP, FRRConfiguration, RouteAdvertisements)
 6. Create NetworkClass with fabric_manager="primary", k8s_manager="cudn_evpn"
-7. Verify the deployment-wide default ACL action is configured. No default NetworkACL resource is created or backfilled. Tenants may create NetworkACLs before their Subnets and associate them explicitly; an omitted association remains unset and uses the deployment default action. Fabric manager VNet + CUDN are then provisioned as applicable
+7. Verify the deployment-wide default ACL action is configured. No default NetworkACL resource is created or backfilled. Tenants may create NetworkACLs before their Subnets and associate them explicitly; an omitted association remains unset and the deployment default action applies to traffic evaluated at the Subnet boundary. Fabric manager VNet + CUDN are then provisioned as applicable
 
 **Downgrade (0.3 → 0.2):**
 

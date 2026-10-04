@@ -108,6 +108,10 @@ normalized-outcome JSON examples in the same section.
 - **Tier / owner:** E2E / [QE].
 - **Execution:** proposed `tests/e2e/mcp/test_networking_journey.py`.
 - **Boundary:** MCP, OAuth, Fulfillment, networking controllers, and the configured network manager run for real.
+- **Fixture:** A provider-managed `ExternalIPPool` is READY with capacity for at
+  least two IPv4 addresses.
+- **Fixture:** A tenant-owned `ComputeInstance` is READY with a primary IPv4
+  address and is available as the `ExternalIPAttachment` target.
 
 ##### Steps
 
@@ -115,12 +119,16 @@ normalized-outcome JSON examples in the same section.
    until both are READY. In the first, create a NetworkACL through
    `create_network_resource`, wait for it to become READY, and create a Subnet
    that references it. In the second, create a Subnet without an ACL to
-   exercise the optional association and deployment-default path. Create
-   ExternalIP, ExternalIPAttachment, and NATGateway through
-   `expose_network_resource`.
-2. Poll each public resource through `get_resource_outcome`.
-3. Delete in dependency-safe order using `delete_network_resource`.
-4. Reject IPv6 and dual-stack network inputs, and extra attachments on the
+   exercise the optional association and deployment-default path.
+2. Create two ExternalIPs from the provider-managed pool. Create an
+   ExternalIPAttachment targeting the READY ComputeInstance fixture with one
+   ExternalIP, and create a NATGateway in the second VirtualNetwork using the
+   other ExternalIP.
+3. Poll each public resource through `get_resource_outcome`.
+4. Delete the ExternalIPAttachment and NATGateway, then their ExternalIPs;
+   delete the Subnets, NetworkACL, and VirtualNetworks in dependency order
+   using `delete_network_resource`.
+5. Reject IPv6 and dual-stack network inputs, and extra attachments on the
    workload create tools, before a public resource RPC, including values still
    expressible in legacy public fields. Keep NetworkClass and ExternalIPPool
    out of tenant write tools.

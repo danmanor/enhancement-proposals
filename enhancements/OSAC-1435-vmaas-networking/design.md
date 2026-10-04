@@ -44,7 +44,7 @@ ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhanc
 
 ComputeInstance already participates in the networking API. Today's flow:
 
-1. Tenant creates VirtualNetwork and Subnet, and associates a NetworkACL with the Subnet via API
+1. Tenant creates VirtualNetwork, Subnet, and SecurityGroup via API
 2. osac-operator's networking controllers reconcile each resource as a standalone AAP job, using `implementation_strategy` to select the Ansible role (e.g., `osac.templates.cudn_net.create_subnet`)
 3. Tenant creates ComputeInstance with `network_attachments` (`ComputeNetworkAttachment`, no `primary` field, single-NIC only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job

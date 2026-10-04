@@ -90,7 +90,16 @@ The following are out of scope for Phase 1:
 
 - A NetworkClass exists with both fabric and k8s managers configured, enabling dual-dispatch provisioning.
 
-- A Subnet may have zero or one NetworkACL association scoped to its VirtualNetwork. An omitted reference remains unset; unmatched traffic uses the required deployment-wide default ACL action. An explicit ACL must be READY before it is associated. The configured fabric manager owns NetworkACL provisioning and enforcement, and a Subnet becomes READY only after its explicitly associated policy is active. This CUDN/K8s integration consumes the Subnet's network-segment data and does not create an ACL per Subnet or implement ACL behavior in the K8s manager.
+- A Subnet may have zero or one NetworkACL association scoped to its
+  VirtualNetwork. An omitted reference remains unset; unmatched traffic
+  evaluated at the Subnet boundary uses the required deployment-wide default
+  ACL action. Same-Subnet traffic bypasses both ACL rules and the deployment
+  default action because it does not cross that boundary. An explicit ACL must
+  be READY before it is associated. The configured fabric manager owns
+  NetworkACL provisioning and enforcement, and a Subnet becomes READY only
+  after its explicitly associated policy is active. This CUDN/K8s integration
+  consumes the Subnet's network-segment data and does not create an ACL per
+  Subnet or implement ACL behavior in the K8s manager.
 
 - A VirtualNetwork with a single Subnet may host VMs. Once VMs exist, adding a second Subnet is rejected. If a second Subnet is added while no VMs exist, the VirtualNetwork becomes fabric-only and VM placement is rejected in all its Subnets.
 
@@ -99,7 +108,7 @@ The following are out of scope for Phase 1:
 ## Acceptance Criteria
 
 - [ ] A NetworkClass with `fabric_manager: "primary"` and `k8s_manager: "cudn_evpn"` can be created and transitions to READY state
-- [ ] A Subnet may be unassociated or reference one READY ACL in its VirtualNetwork. Omission leaves the reference unset and unmatched traffic uses the deployment default ACL action; a Subnet with an explicit association becomes READY only after that policy is active
+- [ ] A Subnet may be unassociated or reference one READY ACL in its VirtualNetwork. Omission leaves the reference unset and unmatched traffic evaluated at the Subnet boundary uses the deployment default ACL action; same-Subnet traffic bypasses ACL and default-action evaluation. A Subnet with an explicit association becomes READY only after that policy is active
 - [ ] Creating a VirtualNetwork, a READY same-VirtualNetwork NetworkACL, and a single Subnet explicitly associated with that ACL provisions both fabric manager VNet and overlay network on OCP
 - [ ] VMs deployed on the subnet receive IP addresses that do not conflict with fabric manager DHCP allocations
 - [ ] VMs are discoverable and directly reachable from bare-metal servers on the same Subnet at L2
@@ -118,7 +127,7 @@ The following are out of scope for Phase 1:
 
 - **OSAC-1440 (Dispatcher Core):** Provides dispatcher infrastructure for routing networking operations to fabric and k8s managers based on NetworkClass configuration.
 
-- **Fabric manager:** Must support VirtualNetwork and Subnet provisioning with network segment identifiers, enforce the deployment default ACL action, and satisfy the shared optional NetworkACL association and readiness contract. Physical infrastructure configuration is manual.
+- **Fabric manager:** Must support VirtualNetwork and Subnet provisioning with network segment identifiers, enforce the deployment default ACL action for traffic evaluated at the Subnet boundary, and satisfy the shared optional NetworkACL association and readiness contract. Physical infrastructure configuration is manual.
 
 - **OVN-Kubernetes:** Must support overlay network provisioning with fabric bridging. Constraint: does not currently route between separate overlay networks on the same cluster (Connectors feature pending). [Clarify: R1.Q4]
 

@@ -10,7 +10,14 @@
 - **Interface changes covered:** 6 of 6 (IC-1 through IC-6)
 - **Additional operational tests:** 2 deletion lifecycle tests
 
-**Subnet policy precondition:** The deployment has a required default ACL action (`PERMIT` or `DENY`). A Subnet may have no ACL association or one READY ACL from its VirtualNetwork. When `network_acl` is omitted, the association remains unset and the deployment default action decides unmatched traffic; the Subnet does not wait for ACL readiness. When an ACL is explicitly associated, that ACL's rules must be active before the Subnet becomes READY. No default ACL resource is expected.
+**Subnet policy precondition:** The deployment has a required default ACL
+action (`PERMIT` or `DENY`). A Subnet may have no ACL association or one READY
+ACL from its VirtualNetwork. When `network_acl` is omitted, the association
+remains unset and the deployment default action decides unmatched traffic
+evaluated at the Subnet boundary; the Subnet does not wait for ACL readiness.
+Same-Subnet traffic bypasses both ACL and default-action evaluation. When an
+ACL is explicitly associated, its rules must be active before the Subnet
+becomes READY. No default ACL resource is expected.
 
 ## Test Cases
 
@@ -133,8 +140,8 @@
    recreate it with its normal manager labels before the job's readiness
    retries expire. Verify it becomes Active and the k8s-manager job completes,
    then the Subnet becomes READY.
-7. Send traffic that matches no tenant ACL rule and verify the deployment
-   default action denies it.
+7. Send traffic across the Subnet boundary that matches no tenant ACL rule and
+   verify the deployment default action denies it.
 
 ##### Expected Results
 
@@ -144,7 +151,8 @@
   k8s-manager job incomplete and the Subnet non-READY.
 - A Namespace with a deletion timestamp is not ready for VM placement.
 - No NetworkACL object or association-ready condition is required.
-- Unmatched traffic follows the deployment-wide `DENY` default action.
+- Unmatched traffic evaluated at the Subnet boundary follows the deployment-wide
+  `DENY` default action.
 
 ### R3: Automatic overlay network provisioning on hosting clusters
 
@@ -192,7 +200,7 @@
 
 - The VirtualNetwork has exactly one Subnet and uses the cudn_evpn k8s manager.
 - The Subnet explicitly references a READY NetworkACL scoped to the same VirtualNetwork; policy enforcement completes before the Subnet becomes READY.
-- The deployment default ACL action is `PERMIT`. The associated NetworkACL has more-specific `DENY ALL` rules in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. Their selectors would match the endpoint addresses if evaluated, but both endpoints are in one Subnet, so the flow bypasses Subnet ACL evaluation.
+- The deployment default ACL action is `DENY`. The associated NetworkACL has more-specific `DENY ALL` rules in both directions: ingress from `200.200.1.0/24` and egress to `200.200.1.0/24`. Their selectors would match the endpoint addresses if evaluated, but both endpoints are in one Subnet, so the flow bypasses both ACL and default-action evaluation at the Subnet boundary.
 - The CUDN is provisioned for the single Subnet.
 - A VirtualMachine runs in the CUDN namespace with IP 200.200.1.3.
 - A bare-metal endpoint is attached to the configured fabric in the same Subnet with IP 200.200.1.10.
@@ -201,7 +209,7 @@
 ##### Steps
 
 1. Verify the VM is running: `oc get vmi -n <namespace>`.
-2. Inspect the associated ACL and confirm it is Ready with the ingress and egress `DENY ALL` rules for `200.200.1.0/24`; these selectors would match the endpoints if evaluated, but same-Subnet traffic bypasses the ACL.
+2. Inspect the associated ACL and confirm it is Ready with the ingress and egress `DENY ALL` rules for `200.200.1.0/24`; these selectors would match the endpoints if evaluated, but same-Subnet traffic bypasses ACL and default-action evaluation.
 3. Connect to the VM console: `virtctl console <vm-name>`.
 4. Ping the bare-metal endpoint: `ping 200.200.1.10`.
 5. Verify FRR shows a Type-2 route for the VM MAC: `vtysh -c "show bgp l2vpn evpn" | grep <vm-mac>`.
@@ -210,7 +218,7 @@
 ##### Expected Results
 
 - Ping succeeds (RTT <10ms).
-- The same-Subnet ping succeeds because traffic between resources on the same Subnet bypasses the associated ACL, even though its rule selectors would otherwise match the endpoints.
+- The same-Subnet ping succeeds because traffic between resources on the same Subnet bypasses both the associated ACL and deployment default action, even though their deny selectors would otherwise match the endpoints.
 - FRR advertises a Type-2 EVPN route with the VM MAC and IP.
 - The configured fabric EVPN table shows the VM MAC through the OCP VTEP.
 - The Subnet is in a one-Subnet VirtualNetwork; this test does not place VMs in a multi-Subnet VirtualNetwork.
