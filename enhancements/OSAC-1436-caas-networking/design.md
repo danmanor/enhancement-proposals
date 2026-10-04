@@ -39,6 +39,11 @@ explicitly specifies them.
 
 Cluster provisioning uses the OSAC Networking API for all networking lifecycle — tenants place clusters on their VirtualNetworks via `network_attachment`, the `BareMetalWorkerReconciler` creates on-demand `BareMetalInstance` objects via the BMaaS private gRPC API (BMaaS owns the fabric port move and IP assignment as part of BMI provisioning), and a VIP feedback loop enables auto-provisioned external access for cluster API and ingress endpoints. See [PRD](prd.md) for detailed requirements and [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md) for the full provisioning design.
 
+The manager-backed resource flows and provider IP-discovery/readiness behavior
+in this document describe the enabled mode. The disabled branch below preserves
+Networking API validation and current SecurityGroup semantics while completing
+ordinary workload provisioning with networking explicitly skipped. [User]
+
 ## Motivation
 
 Clusters require tenant-controlled networking to enable:
@@ -79,6 +84,44 @@ The `BareMetalWorkerReconciler` reads the private `ClusterOrder.spec.networkAtta
 - Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
 
 ## Proposal
+
+### Provider Networking Disabled
+
+This service consumes the shared `global.networking.provisioningEnabled`
+Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
+environment value at startup; changes require rollout. The checkbox is available during installation/
+upgrade and is not an OSAC console live toggle. The Networking API,
+authorization, validation/defaulting, fulfillment reconcilers, and operator
+networking reconcilers stay active, as specified in
+[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+[PRD: FR-12] [User]
+
+1. ClusterOrder and normal cluster AAP workflows remain active, as do worker
+   BMI creation, inventory, OS provisioning, and host teardown. Worker BMIs
+   follow the BMaaS disabled branch: no tenant port move, handoff reboot, or
+   tenant DHCP query, and networking conditions explicitly report Skipped.
+2. Cluster installation requires working baseline platform/provisioning
+   connectivity to assisted-service, control-plane endpoints, DNS/address
+   services, and image/install dependencies. No OSAC tenant segment, routing,
+   or OSAC-managed tenant VIP pool is provisioned. Endpoint/VIP services must
+   be available through that baseline environment for installation to succeed;
+   skipped Subnet provisioning does not supply them.
+3. Real baseline API/ingress endpoint feedback remains available. It does not
+   imply public ExternalIP routing. ExternalIP allocation and DNAT/SNAT jobs
+   are skipped; an unallocated ExternalIP cannot unlock attachment creation.
+4. Cluster and worker deletion remain active. Logical child deletion waits
+   for tracked network jobs to terminate and keeps dependency order, then
+   removes provider-related finalizers without launching network cleanup.
+   Existing tenant port placements may need manual restoration before host
+   cleaning can use provisioning connectivity.
+
+Default SecurityGroup resolution and semantics, API readiness,
+interface/cardinality/immutability, and deletion guards remain
+in force. Automatic ExternalIP requests retain existing pool/capacity checks;
+an IP that stays unallocated exposes no fabricated address and does not satisfy
+the Allocated prerequisite. Fulfillment creates an automatic attachment only
+after Allocated + workload Ready, so the disabled branch does not fabricate or
+early-create an attachment to bypass those gates. [User]
 
 ### Workflow Description
 
@@ -537,6 +580,20 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 
 ## Test Plan
 
+### Provider Networking Control (FR-12)
+
+- Verify normal cluster provision/delete jobs still run with the shared setting
+  disabled and sufficient baseline connectivity; no network provider job runs.
+- Verify active network jobs are cancelled and awaited before skipped status
+  or network-finalizer release, including deletion and retryable AAP failures.
+- Verify status reports Skipped/ProvisioningDisabled and never invents a tenant
+  IP or allocated ExternalIP. Enabled mode retains normal provider behavior.
+- Verify invalid API/defaulting/dependency requests remain rejected,
+  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  attachments still wait for Allocated + workload Ready.
+- Verify the service-specific disabled flow above through the appropriate DEV
+  controller/template coverage and QE deployed user journey. [User]
+
 ### Unit Tests
 
 - fulfillment-service: network_attachment validation (subnet exists, Ready, same VN)
@@ -685,6 +742,16 @@ Consequences:
 - Manual ExternalIP workflows remain functional
 - No impact on existing running clusters
 
+### Provider networking intentionally skipped
+
+Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
+installation/upgrade value map and complete both operator rollouts. Inspect
+ProvisioningDisabled/Skipped conditions and tracked network job states. Ordinary
+workload provisioning remains active with the baseline connectivity described
+above. Networking APIs remain available; no provider allocation, routing,
+port movement, DHCP discovery, or cleanup is supplied by the skipped path.
+Existing provider resources may require manual/provider-side cleanup. [User]
+
 ## Infrastructure Needed
 
 - AAP execution environment with `osac.templates.ocp_4_17_small` role updated (remove cluster_infra/external_access, add MetalLB VIP provisioning)
@@ -721,3 +788,13 @@ Consequences:
 | Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
 | Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |
 | fulfillment-service: resolve interface from BareMetalInstanceType (fabric_interface) | Not tracked | **GAP** |
+
+---
+
+## Provenance
+
+Committed: commit @ design 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

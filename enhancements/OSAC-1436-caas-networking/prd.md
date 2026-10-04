@@ -20,6 +20,12 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
+Provider-dependent connectivity, allocation, and cleanup in this document
+describe the enabled mode. FR-12 defines the shared installation/upgrade
+setting and disabled experience. Networking APIs retain the published default
+SecurityGroup selection, immutability, validation, and dependency rules in
+both modes. [User]
+
 ## 1. Problem Statement
 
 Cluster provisioning has no networking configuration. Tenants cannot choose which subnet their cluster nodes use, cannot place two clusters in the same virtual network, and cannot isolate them in separate networks. All clusters are placed on a single deployment-wide networking backend with zero tenant control. Cluster networking is completely divergent from VM and bare-metal server workflows, requiring separate knowledge and tools.
@@ -122,9 +128,18 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 - **FR-11:** Auto-provisioned networking resources (external IPs, external IP attachments) are labeled as auto-provisioned. When a cluster is deleted, the system cleans up auto-provisioned resources in reverse order: external IP attachments first, then external IPs. Manually created resources are not cleaned up. Default networking resources (virtual networks, subnets, security groups, NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
+#### Provider Networking Disabled
+
+- **FR-12:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary cluster provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. Cluster and worker-host provisioning/deletion remain available when baseline platform/provisioning connectivity supports control-plane and assisted-service access, DNS/address services, and required installation/image dependencies. Bare-metal workers remain on provisioning connectivity; OSAC supplies neither tenant port movement/routing nor public ExternalIP routing, and does not discover a tenant DHCP address for them. Endpoint addresses are reported only when actually supplied by the working baseline environment. Networking status explicitly identifies skipped work with `ProvisioningDisabled`/`Skipped`; no unallocated ExternalIP reports an address. Existing network operations are cancelled and awaited before skipped/deleted completion; logical cleanup preserves dependency order and may leave provider resources for manual/provider-side cleanup. [User]
+
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Automatic external IP allocation and endpoint discovery complete synchronously within the cluster creation flow. Endpoint addresses are available in cluster status during provisioning, not minutes later.
+
+Connectivity, allocation, provider policy enforcement/cleanup, and related
+provider-work timing requirements described here apply when provider networking is
+enabled. Disabled mode retains API prerequisites and explicitly identifies
+skipped provider work; it does not claim those provider outcomes. [User]
 
 ## 5. Acceptance Criteria
 
@@ -137,6 +152,13 @@ attachments. Multi-NIC cluster-node networking is future scope.
 - [ ] Auto-created external IPs and external IP attachments are labeled as auto-provisioned and visible in list views
 - [ ] Deleting a cluster with auto-provisioned resources causes the auto-created external IPs and external IP attachments to be cleaned up
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
+
+- [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
+- [ ] Status explicitly identifies provider work as ProvisioningDisabled/Skipped and does not claim tenant/public routing, allocation, or provider cleanup
+- [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
+- [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
+- [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active
+- [ ] Unallocated ExternalIPs expose no fabricated address and do not bypass Allocated + workload Ready gates for automatic attachment creation [User]
 
 ## 6. Assumptions
 
@@ -184,3 +206,13 @@ Resolved: DHCP handles all host-side networking. The host receives IP, gateway, 
 ### ~~9.3 How are IP address pools for cluster endpoints configured?~~ — Resolved
 
 Resolved: The system creates IP address pools for cluster endpoint allocation at subnet creation time, reserving a sub-range of the subnet CIDR. The DHCP assignment range excludes this sub-range to prevent overlap.
+
+---
+
+## Provenance
+
+Committed: commit @ prd 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

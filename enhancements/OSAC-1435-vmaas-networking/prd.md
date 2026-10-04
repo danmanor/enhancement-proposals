@@ -20,6 +20,12 @@ the networking area and does not define hub behavior for other OSAC areas.
 Multiple hosting/workload clusters remain supported where a networking feature
 explicitly specifies them.
 
+Provider-dependent connectivity, allocation, and cleanup in this document
+describe the enabled mode. FR-8 defines the shared installation/upgrade
+setting and disabled experience. Networking APIs retain the published default
+SecurityGroup selection, immutability, validation, and dependency rules in
+both modes. [User]
+
 ## 1. Problem Statement
 
 Creating a VM with external access requires manual IP allocation and NAT configuration, forcing tenants to understand inbound and outbound routing before provisioning their first reachable VM. The default networking experience varies across resource types — some resources have simplified creation flows while VMs require explicit networking details on every create. VMaaS currently supports at most one network attachment per VM; the plural API field is retained for compatibility.
@@ -90,9 +96,24 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 - **FR-7:** The existing repeated `network_attachments` field remains the only VM network-configuration field. No singular replacement field, parallel legacy field, or dual-field conversion period is introduced. [User]
 
+#### Provider Networking Disabled
+
+- **FR-8:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary VM provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. VM provisioning and deletion remain available on platform default networking. OSAC does not provide the selected tenant network, tenant policy, routing, or public ExternalIP routing in this mode. Platform-reported VM addresses do not imply that a tenant Subnet or an ExternalIP was provisioned. Networking status explicitly identifies skipped work with `ProvisioningDisabled`/`Skipped`; no unallocated ExternalIP reports an address. Existing network operations are cancelled and awaited before skipped/deleted completion; logical cleanup preserves dependency order and may leave provider resources for manual/provider-side cleanup. [User]
+
+An API-valid VM without tenant network attachments still provisions using
+the platform default network. Disabling provider integration adds no tenant-
+attachment requirement to ordinary VM provisioning. Supplied attachment fields
+retain their API validation and reference checks while provider network work
+is skipped. Existing API defaulting and precondition rules still apply. [User]
+
 ### 4.2 Non-Functional Requirements
 
 - **NFR-1:** Auto external IP allocation completes synchronously within the create request. If no pool has available capacity, the create request fails with a clear error. [User]
+
+Connectivity, allocation, provider policy enforcement/cleanup, and related
+provider-work timing requirements described here apply when provider networking is
+enabled. Disabled mode retains API prerequisites and explicitly identifies
+skipped provider work; it does not claim those provider outcomes. [User]
 
 ## 5. Acceptance Criteria
 
@@ -106,6 +127,13 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 - [ ] Deleting a VM with auto-provisioned external IP causes the auto-created IP and attachment to be cleaned up automatically
 - [ ] Creating a VM with an omitted or empty attachment list receives the tenant defaults
 - [ ] Creating a VM with a partial single attachment defaults only its missing subnet or security-group fields
+
+- [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
+- [ ] Status explicitly identifies provider work as ProvisioningDisabled/Skipped and does not claim tenant/public routing, allocation, or provider cleanup
+- [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
+- [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
+- [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active
+- [ ] Unallocated ExternalIPs expose no fabricated address and do not bypass Allocated + workload Ready gates for automatic attachment creation [User]
 
 ## 6. Assumptions
 
@@ -143,3 +171,13 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 ### ~~9.1 Should capacity exhaustion return an API error or create a failed resource?~~ — Resolved
 
 Resolved: Return error, no resource persisted.
+
+---
+
+## Provenance
+
+Committed: commit @ prd 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

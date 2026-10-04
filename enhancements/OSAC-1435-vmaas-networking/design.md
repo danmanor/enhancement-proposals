@@ -40,6 +40,11 @@ explicitly specifies them.
 
 ComputeInstance currently uses a `ComputeNetworkAttachment` message. This enhancement keeps the existing repeated attachment field optional (populating it with tenant defaults when omitted), enforces a maximum of one entry, and adds `auto_external_ip_attachment` to enable fully connected VMs in a single API call. VMaaS has no primary field: the sole attachment is implicitly the default route. See [PRD](prd.md) for detailed requirements.
 
+The manager-backed resource flows and provider IP-discovery/readiness behavior
+in this document describe the enabled mode. The disabled branch below preserves
+Networking API validation and current SecurityGroup semantics while completing
+ordinary workload provisioning with networking explicitly skipped. [User]
+
 ## Motivation
 
 ComputeInstance already participates in the networking API. Today's flow:
@@ -82,6 +87,51 @@ ComputeInstance already participates in the networking API. Today's flow:
 - Kubernetes manager implementation (CUDN or EVPN fabric integration via k8s_manager roles)
 
 ## Proposal
+
+### Provider Networking Disabled
+
+This service consumes the shared `global.networking.provisioningEnabled`
+Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
+environment value at startup; changes require rollout. The checkbox is available during installation/
+upgrade and is not an OSAC console live toggle. The Networking API,
+authorization, validation/defaulting, fulfillment reconcilers, and operator
+networking reconcilers stay active, as specified in
+[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+[PRD: FR-8] [User]
+
+1. Fulfillment retains tenant attachment defaulting and validation; invalid
+   or non-ready API references are still rejected. The ComputeInstance operator
+   skips provider tenant-network resolution and uses platform default networking
+   for the normal VM template job. It does not require a provider-created CUDN
+   target namespace or stamp one as if it existed.
+   If a ComputeInstance CR legitimately reaches the operator with an omitted
+   or empty `networkAttachments` list, the `ocp_virt_vm` template must accept
+   ordinary compute provisioning without requiring
+   `networkAttachments[0].subnetRef` in `create_validate.yaml`; its VM
+   specification uses the platform pod default network. This does not change
+   fulfillment API behavior: API requests with omitted or empty attachments
+   still receive tenant defaults, and the API still reports the existing
+   missing-default or invalid-reference errors. When provider integration is
+   disabled, the workload controller/template does not use the resolved tenant
+   attachment to place the VM in a provider-created subnet namespace. With
+   provider integration enabled, existing tenant-attachment validation remains
+   in effect. Supplied attachment fields retain their API checks and stored
+   values in either mode, while disabled mode launches no provider networking.
+   [User]
+2. Real VMI addresses may still be discovered through platform feedback, but
+   they do not attest to tenant Subnet provisioning or ExternalIP allocation.
+   No tenant policy, provider routing, or public ExternalIP routing is created.
+3. VM provision/delete AAP jobs remain enabled. Network-resource jobs obey the
+   shared cancellation/skipped/deletion rules, including auto-created children.
+   Ordinary VM provisioning does not wait for an unallocated ExternalIP.
+
+Default SecurityGroup resolution and semantics, API readiness,
+interface/cardinality/immutability, and deletion guards remain
+in force. Automatic ExternalIP requests retain existing pool/capacity checks;
+an IP that stays unallocated exposes no fabricated address and does not satisfy
+the Allocated prerequisite. Fulfillment creates an automatic attachment only
+after Allocated + workload Ready, so the disabled branch does not fabricate or
+early-create an attachment to bypass those gates. [User]
 
 ### Workflow Description
 
@@ -400,6 +450,26 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 ## Test Plan
 
+### Provider Networking Control (FR-8)
+
+- Verify normal VM provision/delete jobs still run with the shared setting
+  disabled and sufficient baseline connectivity; no network provider job runs.
+- Verify active network jobs are cancelled and awaited before skipped status
+  or network-finalizer release, including deletion and retryable AAP failures.
+- Verify status reports Skipped/ProvisioningDisabled and never invents a tenant
+  IP or allocated ExternalIP. Enabled mode retains normal provider behavior.
+- Verify invalid API/defaulting/dependency requests remain rejected,
+  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  attachments still wait for Allocated + workload Ready.
+- Verify the API continues to apply tenant defaults and preserve missing-
+  default/invalid-reference errors for omitted or empty attachments. Separately,
+  verify an operator-level ComputeInstance CR that legitimately has no
+  attachments passes disabled-mode VM template validation and uses the
+  platform pod interface; supplied API attachment references retain their
+  validation, and enabled-mode tenant attachment validation remains in effect.
+- Verify the service-specific disabled flow above through the appropriate DEV
+  controller/template coverage and QE deployed user journey. [User]
+
 ### Unit Tests
 
 - fulfillment-service: max-one validation (accept no attachment or one attachment)
@@ -530,8 +600,28 @@ Consequences:
 - Manual ExternalIP workflows remain functional
 - No impact on existing running VMs
 
+### Provider networking intentionally skipped
+
+Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
+installation/upgrade value map and complete both operator rollouts. Inspect
+ProvisioningDisabled/Skipped conditions and tracked network job states. Ordinary
+workload provisioning remains active with the baseline connectivity described
+above. Networking APIs remain available; no provider allocation, routing,
+port movement, DHCP discovery, or cleanup is supplied by the skipped path.
+Existing provider resources may require manual/provider-side cleanup. [User]
+
 ## Infrastructure Needed
 
 - AAP execution environment with `osac.templates.ocp_virt_vm` role updated for single-NIC support
 - k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
 - Integration test environment with CUDN or EVPN fabric
+
+---
+
+## Provenance
+
+Committed: commit @ design 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

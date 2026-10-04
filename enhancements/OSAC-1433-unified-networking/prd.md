@@ -92,6 +92,12 @@ This section defines key terms used throughout this document.
   connectivity. In this design, VMs also participate in the fabric through
   a K8s manager that bridges the OVN overlay to the physical network.
 
+Provider-dependent connectivity and allocation in this document apply when
+provider networking is enabled. FR-10 defines the installation/upgrade setting,
+including the Enclave Wizard checkbox, and the disabled user experience.
+Networking APIs, SecurityGroup semantics, and validation apply in both modes.
+[User]
+
 ## 1. Problem Statement
 
 The OSAC Networking API must serve as a foundational service across all three
@@ -352,6 +358,8 @@ explicitly specifies them.
   configuration, not code changes
 - As a provider, I want to be able to provision ExternalIP pools for tenants
 
+- As a Cloud Provider Admin, I want to disable OSAC network-provider operations through Helm or an Enclave Wizard checkbox during installation or upgrade while retaining networking APIs and ordinary workload provisioning [User]
+
 ## 4. Requirements
 
 ### 4.1 Functional Requirements
@@ -450,11 +458,46 @@ Default networking resources (labeled `osac.openshift.io/default`) follow the
 same rules — they cannot be deleted while any workload or networking resource
 references them.
 
+#### FR-10: Provider networking control at installation or upgrade
+
+A Cloud Provider Admin can enable or disable OSAC network-provider operations
+with one installation/upgrade setting in Helm or an Enclave Wizard checkbox. The setting
+defaults to enabled and takes effect through rollout; it is not a live console
+control. Networking APIs remain available through API, CLI, and UI, with the
+same authorization, tenant isolation, validation, defaulting, supported
+operations, and dependency constraints. [User]
+
+When disabled, valid networking requests still manage OSAC objects, but no
+provider network configuration, address allocation, routing, or cleanup runs.
+This applies to VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
+ExternalIP, ExternalIPAttachment, and NATGateway. All networking
+specification and metadata updates, including SecurityGroup rule changes,
+remain rejected under the published create/read/delete contract. Existing
+network operations are cancelled and awaited before their status reports
+skipped or object deletion completes. Status explicitly reports
+`ProvisioningDisabled`/`Skipped`; an unallocated ExternalIP exposes no address
+and is not reported as allocated. Deleting an OSAC object may leave provider
+resources requiring manual or provider-side cleanup. [User]
+
+Ordinary VM, cluster, and bare-metal host provisioning remains available when
+its unchanged API prerequisites are met. VMs use platform default networking;
+new bare-metal hosts remain on provisioning connectivity, without tenant port
+moves or tenant IP discovery. CaaS requires baseline platform/provisioning
+connectivity, including access to control-plane services and installation
+dependencies; OSAC provides no tenant routing or public ExternalIP routing in
+this mode. Network-dependent behavior elsewhere in this PRD describes the
+enabled mode. [User]
+
 ### 4.2 Non-Functional Requirements
 
 _No non-functional requirements were specified in the original document._
 
 ## 5. Acceptance Criteria
+
+The connectivity, allocation, and provider cleanup criteria below apply when
+provider networking is enabled. API validation, create/read/delete semantics,
+SecurityGroup immutability, and lifecycle constraints apply in both modes.
+[User]
 
 ### Core Networking
 
@@ -473,6 +516,16 @@ _No non-functional requirements were specified in the original document._
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
 - [ ] Networking resources support only Create, List/Get, and Delete; changing a networking resource or a workload network attachment requires delete and recreate
+
+### Provider Networking Control (FR-10)
+
+- [ ] A Cloud Provider Admin can disable or enable provider networking during installation or upgrade through Helm or the Enclave Wizard checkbox, with the same setting applying across services after rollout
+- [ ] With provider networking disabled, API, CLI, and UI networking operations retain their existing authorization, validation, defaulting, immutability, and dependency errors
+- [ ] Valid creates and deletes for all seven network resource kinds complete their OSAC object lifecycle without configuring or cleaning up provider networking; specification and metadata updates remain rejected, including SecurityGroup rule changes
+- [ ] Status distinguishes skipped provider work with `ProvisioningDisabled`/`Skipped`; an ExternalIP without an allocated address remains unallocated and exposes no fabricated address
+- [ ] Previously active network operations are cancelled and awaited before skipped status or deletion completion; provider resources may remain for manual or provider-side cleanup
+- [ ] Ordinary VM, cluster, and bare-metal host provisioning remains available with the stated platform/provisioning connectivity limitations and unchanged API prerequisites
+- [ ] Enabling provider networking preserves the manager-profile behavior described by FR-1 through FR-9
 
 ### Resource Lifecycle Enforcement
 
@@ -530,3 +583,13 @@ _No non-functional requirements were specified in the original document._
 - **Default Networking**: [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) — Related enhancement for resource ordering workflow
 - **BareMetal Instance API**: [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) — Defines BaremetalInstance resource
 - **Three-Layer Networking Model**: [Google Doc](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM) — Architectural reference
+
+---
+
+## Provenance
+
+Committed: commit @ prd 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->

@@ -40,6 +40,11 @@ explicitly specifies them.
 
 BaremetalInstance supports a repeated `BareMetalNetworkAttachment` field for API compatibility, but accepts at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the switch port via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
 
+The manager-backed resource flows and provider IP-discovery/readiness behavior
+in this document describe the enabled mode. The disabled branch below preserves
+Networking API validation and current SecurityGroup semantics while completing
+ordinary workload provisioning with networking explicitly skipped. [User]
+
 ## Motivation
 
 Bare-metal servers require explicit switch port configuration to participate in the OSAC Networking API. Unlike VMs (which live inside an OVN overlay bridged to the fabric), BM servers connect directly to the physical fabric — each NIC's switch port must be moved between network segments during the provisioning lifecycle.
@@ -173,6 +178,43 @@ The [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types)
 | `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) |
 
 Roles are conventions, not enforced enums. BMaaS uses them for display/documentation; the tenant selects by port name, not role. Ports with role `lifecycle` are used by the provisioning system (Ironic, Metal3) for PXE boot and BMC operations — they are NOT tenant-attachable and should not appear in `network_attachments`.
+
+### Provider Networking Disabled
+
+This service consumes the shared `global.networking.provisioningEnabled`
+Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
+environment value at startup; changes require rollout. The checkbox is available during installation/
+upgrade and is not an OSAC console live toggle. The Networking API,
+authorization, validation/defaulting, fulfillment reconcilers, and operator
+networking reconcilers stay active, as specified in
+[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+[PRD: FR-13] [User]
+
+1. Inventory allocation, hardware management, power management, and ordinary
+   host TemplateID provision/deprovision AAP jobs remain active. New hosts keep
+   their baseline provisioning connectivity throughout host provisioning.
+2. The networking phase cancels and awaits tracked network-move and DHCP-query
+   jobs, then reports the networking, handoff, and IP-discovery conditions as
+   Skipped. It dispatches no port move, no handoff reboot, no tenant DHCP query,
+   and no substitute job. Host provisioning can reach Ready without a tenant
+   IP; that Ready state describes OS provisioning with networking skipped.
+3. No provisioning-network address is relabeled as a tenant-network address;
+   no tenant IP is fabricated or discovered through the skipped path, and no
+   public ExternalIP routing is configured.
+4. Deletion preserves normal host shutdown/teardown/inventory release and
+   logical auto-created child deletion order. Network finalizers wait for
+   active network jobs to become terminal, then release without tenant-to-
+   provisioning port movement or other provider cleanup. Existing tenant port
+   placements are not restored by disabling the setting; provider/manual
+   restoration may be required before host cleaning has baseline connectivity.
+
+Default SecurityGroup resolution and semantics, API readiness,
+interface/cardinality/immutability, and deletion guards remain
+in force. Automatic ExternalIP requests retain existing pool/capacity checks;
+an IP that stays unallocated exposes no fabricated address and does not satisfy
+the Allocated prerequisite. Fulfillment creates an automatic attachment only
+after Allocated + workload Ready, so the disabled branch does not fabricate or
+early-create an attachment to bypass those gates. [User]
 
 ### Workflow Description
 
@@ -748,6 +790,20 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 
 ## Test Plan
 
+### Provider Networking Control (FR-13)
+
+- Verify normal bare-metal server provision/delete jobs still run with the shared setting
+  disabled and sufficient baseline connectivity; no network provider job runs.
+- Verify active network jobs are cancelled and awaited before skipped status
+  or network-finalizer release, including deletion and retryable AAP failures.
+- Verify status reports Skipped/ProvisioningDisabled and never invents a tenant
+  IP or allocated ExternalIP. Enabled mode retains normal provider behavior.
+- Verify invalid API/defaulting/dependency requests remain rejected,
+  SecurityGroup defaulting/immutability remains unchanged, and automatic
+  attachments still wait for Allocated + workload Ready.
+- Verify the service-specific disabled flow above through the appropriate DEV
+  controller/template coverage and QE deployed user journey. [User]
+
 ### Unit Tests
 
 - fulfillment-service: max-one attachment and primary validation (accept single implicit primary, accept explicit primary)
@@ -932,6 +988,16 @@ Consequences:
 - Manual ExternalIP workflows remain functional
 - No impact on existing running BM servers
 
+### Provider networking intentionally skipped
+
+Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
+installation/upgrade value map and complete both operator rollouts. Inspect
+ProvisioningDisabled/Skipped conditions and tracked network job states. Ordinary
+workload provisioning remains active with the baseline connectivity described
+above. Networking APIs remain available; no provider allocation, routing,
+port movement, DHCP discovery, or cleanup is supplied by the skipped path.
+Existing provider resources may require manual/provider-side cleanup. [User]
+
 ## Infrastructure Needed
 
 - AAP execution environment with the fabric manager `move_network_attachment` role
@@ -963,3 +1029,13 @@ Consequences:
 | bare-metal-fulfillment-operator dispatcher capability + RBAC for Subnet/NetworkClass CRs | Not tracked | **GAP** |
 | Remove unused BareMetalInstance spec.networkClass field | Not tracked | **GAP** |
 | BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed | Not tracked | **GAP** |
+
+---
+
+## Provenance
+
+Committed: commit @ design 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+
+> Authoring phases not recorded this session (commit-time snapshot only).
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
