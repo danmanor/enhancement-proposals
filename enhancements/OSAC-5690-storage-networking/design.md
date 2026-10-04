@@ -3,7 +3,7 @@ title: storage-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-09-27
-last-updated: 2026-09-27
+last-updated: 2026-10-04
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-5690
 prd:
@@ -24,41 +24,43 @@ superseded-by:
 ## Summary
 
 Provide network connectivity from OSAC tenant workloads (VMaaS, CaaS, BMaaS)
-to the VAST storage cluster — located outside the managed network fabric
-gateway — using SNAT via the existing NATGateway primitive. Introduce a
-platform-level Storage CIDR reservation that prevents tenant
-VirtualNetwork CIDRs from overlapping with VAST VIP addresses, ensuring
-storage-bound traffic always routes externally rather than being trapped in
-the fabric.
+to VAST and NetApp ONTAP block-storage data endpoints outside the managed
+network fabric gateway, using SNAT via the existing NATGateway primitive.
+Introduce platform-level Storage CIDR reservations that prevent tenant
+VirtualNetwork CIDRs from overlapping with VAST VIPs or NetApp ONTAP data
+endpoints, ensuring storage-bound traffic routes externally rather than being
+trapped in the fabric.
 
-This design covers the **VAST backend only**. Other storage backends (Pure
-Storage FlashBlade, Ceph, etc.) are not in scope. See [PRD](prd.md) for
-detailed requirements.
+This design covers the VAST backend and NetApp ONTAP block storage through
+Trident. NetApp connectivity in this IP-networking design uses iSCSI or
+NVMe/TCP; Fibre Channel and other storage backends (such as Pure Storage and
+Ceph) are out of scope. See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
 
 The storage subsystem (OSAC-1332, OSAC-1111) assumes "CaaS cluster nodes have
 network reachability to the storage backend" without defining how that
 reachability is achieved. Tenant workloads run inside isolated VirtualNetworks
-on the OSAC fabric. The VAST cluster sits outside the managed network fabric
-gateway. Without an explicit networking path, three problems arise:
+on the OSAC fabric. VAST and NetApp ONTAP block data endpoints sit outside the
+managed network fabric gateway. Without an explicit networking path, three
+problems arise:
 
 1. **No route to storage.** Tenant VirtualNetworks are fabric-isolated. Traffic
-   destined for VAST VIPs has no defined exit path.
+   destined for VAST VIPs or ONTAP data endpoints has no defined exit path.
 
-2. **Silent IP overlap.** If a tenant's VN CIDR overlaps with the VAST VIP
-   range, the fabric routes those packets internally instead of externally.
-   Storage access fails with no clear error.
+2. **Silent IP overlap.** If a tenant's VN CIDR overlaps with a VAST VIP or
+   ONTAP data endpoint range, the fabric routes those packets internally
+   instead of externally. Storage access fails with no clear error.
 
 3. **NAT capacity.** Block storage generates concurrent NVMe-TCP sessions and
    CSI operations through the NATGateway. There is no validation that the NAT
    pool supports this load.
 
-The approach proposed here — treating VAST as a service outside the managed
-fabric gateway, consumed via SNAT — is the simplest viable path for the first
-phase. It reuses existing networking primitives (VirtualNetwork, NATGateway,
-ExternalIP) and avoids per-tenant VLAN configuration on the VAST side. Storage
-tenant isolation is not required for the first phase.
+The approach proposed here treats VAST and NetApp ONTAP block endpoints as
+external services consumed via SNAT. It reuses existing networking primitives
+(VirtualNetwork, NATGateway, ExternalIP) and avoids per-tenant VLAN
+configuration on the storage arrays. Storage tenant isolation is not required
+for the first phase.
 
 ### Goals
 
@@ -67,7 +69,8 @@ tenant isolation is not required for the first phase.
 - Enforce Storage CIDR reservation via validation in the fulfillment-service,
   preventing VirtualNetwork CIDR overlap at creation time.
 - Ensure the default tenant onboarding flow produces a storage-ready network
-  configuration (NATGateway with external connectivity to VAST).
+  configuration (NATGateway with external connectivity to VAST and NetApp
+  ONTAP block data endpoints).
 - Support all three consumer types: VMaaS (automatic via CSI), CaaS (automatic
   via CSI), and BMaaS (network path only, manual storage configuration).
 
@@ -76,6 +79,8 @@ tenant isolation is not required for the first phase.
 - Storage tenant isolation at the network level (deferred to OSAC-5073).
   Per-tenant VAST VIP pools exist but are not network-isolated from each
   other in the first phase.
+- Storage backends other than VAST and NetApp ONTAP, including Pure Storage
+  and Ceph.
 - Direct-attach, VLAN-based, SR-IOV, or RDMA storage networking paths.
 - NFS or file storage — block storage only for the first phase.
 - Per-subnet NAT granularity (NATGateway is per-VirtualNetwork).
@@ -89,24 +94,39 @@ and storage protocol, and what each path requires from the network.
 Understanding the baseline motivates why the changes proposed in this design
 are necessary — and why they are sufficient for the first phase.
 
-This design covers the **VAST backend only**. The OSAC CSI meta-driver
-supports multiple vendors (VAST, Pure Storage, Trident), but VAST is the
-only backend deployed in production. Other backends may require different
-networking considerations in the future.
+This design covers VAST and NetApp ONTAP block storage. VAST-specific
+examples below use the VAST CSI driver and VIP pools; NetApp ONTAP uses Trident
+and its IP-based SAN data endpoints. The shared networking change reserves
+and routes the data-plane destination ranges for both providers. Other
+backends may require different networking considerations and remain out of
+scope.
 
 ### Storage Protocols
 
-VAST exposes two storage protocols:
+VAST exposes block and file protocols. This design's connectivity scope is
+block storage. NetApp ONTAP block storage uses Trident with an IP-based SAN
+protocol:
 
-| Protocol | VAST CSI Provisioner | Transport | StorageClass Binding Mode |
-|----------|---------------------|-----------|---------------------------|
-| **Block** | `block.csi.vastdata.com` | NVMe-TCP (TCP port 4420) | `WaitForFirstConsumer` |
-| **File (NFS)** | `csi.vastdata.com` | NFS (TCP port 2049) | `Immediate` |
+| Provider | Protocol | CSI driver | Data transport | StorageClass Binding Mode |
+|----------|----------|------------|---------------|---------------------------|
+| VAST | **Block** | `block.csi.vastdata.com` | NVMe/TCP (TCP port 4420) | `WaitForFirstConsumer` |
+| VAST | File (NFS) | `csi.vastdata.com` | NFS (TCP port 2049) | `Immediate` |
+| NetApp ONTAP | **Block** | Trident `ontap-san` | iSCSI or NVMe/TCP | Configured by StorageClass |
 
-Both protocols connect to VAST VIP addresses managed by the VAST cluster.
+VAST block volumes connect to VAST VIP addresses managed by the VAST cluster.
 Each tenant receives a dedicated VAST VIP pool (e.g.,
-`osac-<tenant>-vippool`); the VIP addresses are drawn from the Storage VIP
-CIDR defined in this design.
+`osac-<tenant>-vippool`). NetApp ONTAP block volumes connect to ONTAP data
+endpoints through Trident. The Storage CIDRs defined in this design cover
+both providers' block data-plane destination addresses. Trident documents
+iSCSI and NVMe/TCP as block protocols for its ONTAP SAN driver; Fibre Channel
+does not use this IP/SNAT path and is excluded ([NetApp Trident 25.10 ONTAP
+SAN driver overview](https://docs.netapp.com/us-en/trident-2510/trident-use/ontap-san.html)).
+
+For ONTAP, the Storage CIDR covers the data endpoints used by the node-side
+initiator (including iSCSI LIFs discovered by Trident or configured NVMe/TCP
+data LIFs). The ONTAP management LIF used by Trident's controller is a
+separate control-plane endpoint; its reachability is configured separately
+from this tenant data-plane path ([NetApp Trident 25.10 SAN configuration](https://docs.netapp.com/us-en/trident-2510/trident-use/ontap-san-examples.html)).
 
 LVMS (node-local block storage via topolvm) is available for single-node
 development VMaaS deployments. It uses local disks and has no network
@@ -127,8 +147,9 @@ correct vendor plugin based on `volume_context["osac.backend"]`:
   vip_pool_name).
 - **Node plugin** (DaemonSet on target cluster): NodeStageVolume and
   NodePublishVolume route to vendor node plugins via `--vendor-sockets`
-  mapping. The VAST node plugin initiates the NVMe-TCP connection (block)
-  or NFS mount (file) on the node where kubelet runs.
+  mapping. The VAST node plugin initiates NVMe/TCP connections for block
+  volumes; the NetApp Trident node plugin initiates iSCSI or NVMe/TCP
+  connections to ONTAP data endpoints on the node where kubelet runs.
 
 **Storage data-plane traffic always originates from the node running the CSI
 node plugin** — not from inside a VM guest. This distinction is critical for
@@ -166,16 +187,16 @@ The trigger for each stage differs by service:
 VMaaS VMs run as KubeVirt pods on a shared VMaaS target cluster (the hub
 cluster or a dedicated management cluster). Both storage stages run during
 tenant onboarding. After onboarding, the VMaaS target cluster has the OSAC
-CSI meta-driver, VAST CSI backends, per-tenant credentials, and per-tenant
-StorageClasses for both block and NFS.
+CSI meta-driver, provider-specific CSI backends and credentials, and per-tenant
+StorageClasses. VAST uses its CSI backend; NetApp ONTAP uses Trident.
 
-**Block (NVMe-TCP):** When a VM's PVC uses a block StorageClass, the OSAC
-CSI meta-driver routes CreateVolume through the fulfillment-service to the
-VAST CSI controller on the hub. At mount time, kubelet calls NodeStageVolume
-on the **OCP node** where the VM pod is scheduled. The VAST node plugin
-initiates an NVMe-TCP connection to the tenant's VAST VIP from the OCP
-node, discovers the NVMe subsystem, and presents the block device to the VM
-via virtio.
+**Block:** When a VM's PVC uses a block StorageClass, the OSAC CSI meta-driver
+routes CreateVolume through the fulfillment-service to the selected backend
+controller. At mount time, kubelet calls NodeStageVolume on the **OCP node**
+where the VM pod is scheduled. The VAST node plugin connects to the tenant's
+VAST VIP over NVMe/TCP; the NetApp Trident node plugin connects to ONTAP data
+endpoints over iSCSI or NVMe/TCP. The resulting block device is presented to
+the VM via virtio.
 
 **File (NFS via CSI):** The flow is identical through volume creation. At
 mount time on the OCP node, the VAST node plugin performs an NFS mount to
@@ -189,14 +210,16 @@ OCP node.
 #### Networking Requirements
 
 VMaaS has **two distinct data-plane paths** depending on whether storage I/O
-originates from the OCP node (CSI) or the VM guest (direct mount):
+originates from the OCP node (CSI) or the VM guest (direct mount). For block
+storage, the endpoint and IP protocol depend on whether VAST or NetApp ONTAP
+is selected:
 
 ```
 Block / NFS via CSI:
   OCP node (CSI node plugin)
-    → NVMe-TCP or NFS to VAST VIP
+    → backend block protocol to VAST VIP or ONTAP data endpoint
     → exits management cluster network via management SNAT
-    → routes to VAST (outside fabric gateway)
+    → routes to storage backend (outside fabric gateway)
 
 NFS via VM guest mount:
   VM guest (tenant VN NIC)
@@ -209,12 +232,12 @@ NFS via VM guest mount:
 |-------------|--------------------------|--------------------------------|
 | **Traffic origin** | OCP node (management network) | VM guest (tenant VirtualNetwork) |
 | **SNAT provider** | Management cluster's own NAT or direct routing | Tenant VN's NATGateway + ExternalIP |
-| **Outbound TCP** | NVMe-TCP port 4420 or NFS port 2049 | NFS port 2049 |
-| **No inbound from VAST** | Yes — all connections client-initiated | Yes |
-| **CIDR overlap risk** | Management network CIDR vs. VAST VIPs (admin responsibility) | Tenant VN CIDR vs. VAST VIPs (this design prevents it) |
+| **Outbound TCP** | VAST NVMe/TCP, NetApp iSCSI or NVMe/TCP; NFS is existing architecture context only | NFS port 2049 (out of scope) |
+| **No inbound from storage** | Yes — all connections client-initiated | Yes |
+| **CIDR overlap risk** | Management network CIDR vs. backend data endpoints (admin responsibility) | Tenant VN CIDR vs. backend data endpoints (this design prevents it) |
 
-The CSI path (used for all PVC-based storage) depends on the management
-cluster's network having a route to VAST. This is an infrastructure
+The CSI path (used for PVC-based block storage) depends on the management
+cluster's network having a route to the selected backend's data endpoints. This is an infrastructure
 prerequisite configured at deployment time — the management cluster's
 network is admin-controlled, not tenant-controlled.
 
@@ -234,7 +257,9 @@ to install the OSAC CSI meta-driver and per-tenant StorageClasses on the
 CaaS cluster. A `ClusterStorageReady` condition on the ClusterOrder tracks
 completion.
 
-CaaS clusters use the same StorageClass properties as VMaaS:
+CaaS clusters use provider-specific StorageClass properties. The table shows
+the existing VAST classes; NetApp ONTAP uses Trident with iSCSI or NVMe/TCP
+for block volumes.
 
 | Property | File (NFS) | Block |
 |----------|------------|-------|
@@ -242,11 +267,11 @@ CaaS clusters use the same StorageClass properties as VMaaS:
 | Binding mode | `Immediate` | `WaitForFirstConsumer` |
 | Reclaim policy | `Delete` | `Delete` |
 
-**Block (NVMe-TCP):** Same OSAC CSI meta-driver architecture. The CSI
-controller operations (create, delete, publish, unpublish) are routed
-through the fulfillment-service on the hub. At mount time on the CaaS
-**bare-metal worker node**, the VAST node plugin initiates an NVMe-TCP
-connection to the tenant's VAST VIP.
+**Block:** The OSAC CSI meta-driver routes CSI controller operations through
+the fulfillment-service on the hub. At mount time on the CaaS **bare-metal
+worker node**, the selected node plugin initiates the configured block
+protocol (VAST NVMe/TCP or NetApp ONTAP iSCSI/NVMe-TCP) to the backend data
+endpoint.
 
 **File (NFS):** Same flow, with NFS mount instead of NVMe-TCP at the worker
 node level.
@@ -262,17 +287,17 @@ node, which is on the tenant VN.
 
 ```
 CaaS worker node (CSI node plugin, on tenant VN)
-  → NVMe-TCP or NFS to VAST VIP
+  → VAST NVMe/TCP or NetApp iSCSI/NVMe-TCP to backend data endpoint
   → exits tenant VirtualNetwork via NATGateway (SNAT)
-  → routes to VAST (outside fabric gateway)
+  → routes to storage backend (outside fabric gateway)
 ```
 
 | Requirement | Detail |
 |-------------|--------|
-| **Outbound TCP to VAST VIP** | NVMe-TCP (port 4420) for block, NFS (port 2049) for file |
-| **NATGateway on VirtualNetwork** | Worker nodes use the VN's NATGateway for egress. VAST VIPs are outside the fabric gateway. |
-| **No inbound from VAST** | All storage connections are client-initiated. |
-| **No VN CIDR overlap with VAST VIPs** | If the VN CIDR overlaps, the fabric routes storage traffic internally — storage silently fails. |
+| **Outbound block traffic** | VAST NVMe/TCP or NetApp ONTAP iSCSI/NVMe/TCP to configured data endpoints |
+| **NATGateway on VirtualNetwork** | Worker nodes use the VN's NATGateway for egress. Storage data endpoints are outside the fabric gateway. |
+| **No inbound from storage** | All storage connections are client-initiated. |
+| **No VN CIDR overlap with storage endpoints** | If the VN CIDR overlaps, the fabric routes storage traffic internally — storage silently fails. |
 
 ### BMaaS Storage
 
@@ -282,10 +307,10 @@ BMaaS provides bare-metal hosts to tenants. No automated storage onboarding
 runs for BMaaS — there is no Stage 1 or Stage 2. BMaaS tenants are
 responsible for all storage configuration on their hosts.
 
-**Block (NVMe-TCP):** The tenant configures an NVMe-TCP initiator on the
-host, discovers the VAST subsystem (VIP pool FQDN or IP), and manages
-credentials. The NVMe-TCP session is established directly from the host to
-the VAST VIP.
+**Block:** The tenant configures the applicable initiator on the host. For
+VAST this is NVMe/TCP to the tenant's VIP pool; for NetApp ONTAP it is iSCSI
+or NVMe/TCP to the ONTAP data endpoints. The tenant manages storage credentials
+and configuration.
 
 **File (NFS):** The tenant mounts VAST NFS exports directly using standard
 NFS client tools, pointing to the VAST VIP.
@@ -300,40 +325,43 @@ for external connectivity.
 
 ```
 BM host (tenant VN)
-  → NVMe-TCP or NFS to VAST VIP
+  → VAST NVMe/TCP or NetApp iSCSI/NVMe-TCP to backend data endpoint
   → exits tenant VirtualNetwork via NATGateway (SNAT)
-  → routes to VAST (outside fabric gateway)
+  → routes to storage backend (outside fabric gateway)
 ```
 
 | Requirement | Detail |
 |-------------|--------|
-| **Outbound TCP to VAST VIP** | NVMe-TCP (port 4420) for block, NFS (port 2049) for file |
+| **Outbound block traffic** | VAST NVMe/TCP or NetApp ONTAP iSCSI/NVMe-TCP to configured data endpoints |
 | **NATGateway on VirtualNetwork** | Same SNAT path as CaaS |
-| **No inbound from VAST** | All storage connections are client-initiated |
-| **No VN CIDR overlap with VAST VIPs** | Same risk as CaaS |
+| **No inbound from storage** | All storage connections are client-initiated |
+| **No VN CIDR overlap with storage endpoints** | Same risk as CaaS |
 | **Tenant-managed configuration** | Unlike VMaaS/CaaS, the tenant installs and configures storage software. The platform provides the network path only. |
 
-### Summary: Data-Plane Paths to VAST
+### Summary: Data-Plane Paths to Block Storage
+
+File-protocol rows below describe existing architecture only; file storage is
+out of scope for this phase.
 
 | Service | Protocol | Traffic Origin | Network Path | SNAT Provider |
 |---------|----------|----------------|--------------|---------------|
-| **VMaaS** | Block (NVMe-TCP) | OCP node (CSI) | Management network | Management cluster NAT / direct routing |
+| **VMaaS** | Block (VAST NVMe/TCP or NetApp iSCSI/NVMe/TCP) | OCP node (CSI) | Management network | Management cluster NAT / direct routing |
 | **VMaaS** | File (NFS via CSI) | OCP node (CSI) | Management network | Management cluster NAT / direct routing |
 | **VMaaS** | File (NFS guest mount) | VM guest | Tenant VirtualNetwork | Tenant NATGateway |
-| **CaaS** | Block (NVMe-TCP) | BM worker node (CSI) | Tenant VirtualNetwork | Tenant NATGateway |
+| **CaaS** | Block (VAST NVMe/TCP or NetApp iSCSI/NVMe/TCP) | BM worker node (CSI) | Tenant VirtualNetwork | Tenant NATGateway |
 | **CaaS** | File (NFS) | BM worker node (CSI) | Tenant VirtualNetwork | Tenant NATGateway |
-| **BMaaS** | Block (NVMe-TCP) | BM host | Tenant VirtualNetwork | Tenant NATGateway |
+| **BMaaS** | Block (VAST NVMe/TCP or NetApp iSCSI/NVMe/TCP) | BM host | Tenant VirtualNetwork | Tenant NATGateway |
 | **BMaaS** | File (NFS) | BM host | Tenant VirtualNetwork | Tenant NATGateway |
 
-CaaS, BMaaS, and VMaaS guest-mount paths all share the same data-plane
-pattern: tenant VirtualNetwork → NATGateway (SNAT) → upstream routing →
-VAST. The Storage CIDR reservation in this design prevents tenant VN
-CIDRs from overlapping with VAST VIPs, ensuring this path works by
-construction.
+CaaS, BMaaS, and VMaaS guest-mount paths share the same data-plane pattern:
+tenant VirtualNetwork → NATGateway (SNAT) → upstream routing → backend block
+data endpoint. The Storage CIDR reservation prevents tenant VN CIDRs from
+overlapping with VAST VIPs or NetApp ONTAP data endpoints, ensuring this path
+works by construction.
 
-VMaaS CSI-based storage (block and NFS via CSI) takes a different path
-through the management cluster's network. The management cluster's route to
-VAST is an infrastructure prerequisite — the admin ensures this during
+VMaaS CSI-based storage takes a different path through the management
+cluster's network. The management cluster's route to the selected backend's
+block data endpoint is an infrastructure prerequisite — the admin ensures this during
 deployment, and the management network's CIDR is admin-controlled (not
 subject to tenant VN creation). The Storage CIDR reservation does not
 directly protect this path, but since the management network is not
@@ -345,9 +373,9 @@ tenant-managed, there is no risk of accidental overlap.
 
 The design introduces three changes to the existing platform:
 
-1. **Storage CIDR on NetworkClass** — a new field on the NetworkClass
-   configuration that declares the IP range reserved for VAST VIP addresses.
-   This is set once at installation time.
+1. **Storage CIDRs on NetworkClass** — a new field on the NetworkClass
+   configuration that declares the IP ranges reserved for VAST VIPs and
+   NetApp ONTAP block data endpoints. These are set once at installation time.
 
 2. **VirtualNetwork CIDR validation** — the fulfillment-service rejects
    VirtualNetwork creation requests whose IPv4 CIDR overlaps with the Storage
@@ -360,7 +388,8 @@ The design introduces three changes to the existing platform:
 
 No new controllers, CRDs, or networking resources are introduced. The existing
 NATGateway (one per VirtualNetwork, auto-provisioned during tenant onboarding)
-provides the SNAT path from tenant workloads to the VAST cluster.
+provides the SNAT path from tenant workloads to VAST and NetApp ONTAP block
+data endpoints.
 
 ### Changes Per Component
 
@@ -371,12 +400,12 @@ All components live in the `osac` monorepo.
 | **fulfillment-service** | Add `storage_cidrs` field to NetworkClass. Add CIDR overlap validation to VirtualNetwork creation. Validate NetworkClass default VN CIDR against storage CIDRs. |
 | **proto** | Add `storage_cidrs` to the NetworkClass proto definition. |
 | **osac-operator** | No changes. NATGateway already provides SNAT for all egress from a VirtualNetwork. |
-| **osac-aap** | No changes. Storage provisioning playbooks already configure VAST CSI with VIP pool information from the tenant hub Secret. |
+| **osac-aap** | No changes. This proposal changes network reachability and CIDR validation; provider-specific CSI provisioning remains with the existing storage integrations. |
 | **osac-installer** | Update NetworkClass manifests to include the Storage CIDR for the deployment. |
 
 ### Workflow Description
 
-#### Network Path: Tenant Workload → VAST
+#### Network Path: Tenant Workload → Block Storage Endpoint
 
 ```mermaid
 flowchart LR
@@ -387,46 +416,51 @@ flowchart LR
         NG[NATGateway<br/>SNAT: VN CIDR → ExternalIP]
     end
     subgraph Outside Fabric Gateway
-        VAST[VAST Cluster<br/>Per-Tenant VIP Pools]
+        Storage[Storage endpoint<br/>VAST VIP or ONTAP data LIF]
     end
-    W -->|NVMe-TCP to VAST VIP| NG
-    NG -->|SNATed traffic| VAST
+    W -->|iSCSI or NVMe/TCP| NG
+    NG -->|SNATed traffic| Storage
 ```
 
 This diagram shows the data-plane path for block storage access. A workload
-inside a tenant VirtualNetwork initiates an NVMe-TCP connection to a VAST VIP
-address. Because the VAST VIP falls outside the VN CIDR (enforced by the
-overlap validation), the fabric routes the packet externally through the
-NATGateway. The NATGateway performs SNAT, replacing the workload's private
-source IP with the NATGateway's ExternalIP. The VAST cluster sees the
-ExternalIP as the source and responds to it. Return traffic follows the
-reverse NAT path back to the workload.
+inside a tenant VirtualNetwork initiates an IP-based block connection to a
+VAST VIP or NetApp ONTAP data endpoint. Because the destination falls outside
+the VN CIDR (enforced by the overlap validation), the fabric routes the packet
+externally through the NATGateway. The NATGateway performs SNAT, replacing the
+workload's private source IP with the NATGateway's ExternalIP. The storage
+system sees the ExternalIP as the source and responds to it. Return traffic
+follows the reverse NAT path back to the workload.
 
 #### Personas
 
-- **Cloud Infrastructure Admin:** Configures the Storage CIDR on
+- **Cloud Infrastructure Admin:** Configures Storage CIDRs on
   NetworkClass at installation time. Provisions ExternalIPPools and
   ExternalIPs for NATGateways.
 - **Cloud Provider Admin:** Validates that the deployment's default VN CIDR
-  does not conflict with the Storage CIDR. Coordinates with the VAST
-  administrator to ensure VIP pool addresses fall within the Storage CIDR.
+  does not conflict with the Storage CIDRs. Coordinates with VAST and NetApp
+  administrators to ensure block data endpoint addresses fall within the
+  configured ranges.
 - **Tenant Admin / Tenant User:** Creates VirtualNetworks (or uses defaults).
   Receives a clear error if the chosen CIDR overlaps with the storage range.
-  CaaS and VMaaS storage works automatically via VAST CSI once the network is
-  provisioned.
-- **BMaaS Tenant:** Has network connectivity to VAST through the fabric's
-  external path. Configures storage on bare-metal hosts manually.
+  CaaS and VMaaS block storage works through the selected VAST or NetApp ONTAP
+  CSI integration once the network is provisioned.
+- **BMaaS Tenant:** Has network connectivity to VAST or NetApp ONTAP through
+  the fabric's external path. Configures storage on bare-metal hosts manually.
 
 #### Prerequisites
 
-1. NetworkClass is configured with the Storage CIDR. The value must cover
-   all VAST IP addresses that tenant workloads or CSI node plugins may
+1. NetworkClass is configured with Storage CIDRs. The ranges must cover the
+   block data-plane IP addresses that tenant workloads or CSI node plugins may
    connect to:
-   - The **data-plane VIP pool range** — this is the
+   - The **VAST data-plane VIP pool range** — this is the
      `VAST_VIP_POOL_SUPERNET` configured on the storage-operations
      InstanceGroup (e.g., `10.100.0.0/22`). If VIP pools are pre-created
      by the cloud admin rather than carved from the supernet,
      `storage_cidrs` must cover those pool ranges as well.
+   - The **NetApp ONTAP block data endpoints** — include the IP addresses of
+     the iSCSI or NVMe/TCP data LIFs used by Trident. The ONTAP management LIF
+     is a separate controller endpoint and is not part of this tenant
+     data-plane range unless tenant nodes also connect to it.
    - The **VAST management endpoint** (VMS API) — if its IP is routable
      from tenant networks. The CSI node plugin on each target cluster
      contacts the VMS API (`X_CSI_VMS_HOST`) for volume publish/unpublish
@@ -436,24 +470,25 @@ reverse NAT path back to the workload.
      need to be included.
 2. Tenant onboarding has completed, creating a default VirtualNetwork,
    Subnet, and NATGateway with an ExternalIP.
-3. The ExternalIP used by the NATGateway is routable to the VAST addresses
-   covered by the Storage CIDR (via the datacenter's upstream routing).
+3. The ExternalIP used by the NATGateway is routable to the VAST and NetApp
+   ONTAP block data endpoints covered by the Storage CIDRs (via upstream
+   routing).
 
 #### VMaaS and CaaS Storage Access
 
 No additional steps beyond standard tenant onboarding and storage onboarding
-(OSAC-1332). When the storage controller provisions the VAST CSI driver and
-StorageClasses on the tenant's cluster, the CSI driver connects to the
-tenant's VAST VIP pool. The storage traffic exits the VirtualNetwork through the
-NATGateway and reaches VAST. PersistentVolumeClaims work without tenant
-intervention.
+(OSAC-1332). When the selected storage integration provisions its CSI driver
+and StorageClasses on the tenant's cluster, block traffic connects to the
+configured VAST VIP pool or NetApp ONTAP data endpoints. The storage traffic
+exits the VirtualNetwork through the NATGateway and reaches the selected
+backend. PersistentVolumeClaims work without tenant intervention.
 
 #### BMaaS Storage Access
 
 BMaaS hosts are provisioned on a tenant Subnet within a VirtualNetwork.
-The NATGateway provides outbound connectivity. The network path to VAST
-is available, but the tenant must install and configure the VAST CSI driver
-(or configure NVMe-TCP / NFS directly) on the bare-metal host manually.
+The NATGateway provides outbound connectivity to VAST and NetApp ONTAP block
+data endpoints. The tenant must install and configure the applicable storage
+client manually on the bare-metal host.
 
 ### API Extensions
 
@@ -474,8 +509,8 @@ message NetworkClassConfig {
 ```
 
 The field is a list of CIDR strings (e.g., `["198.51.100.0/24"]`). Using a
-list rather than a single CIDR accommodates deployments where VAST VIPs span
-multiple non-contiguous ranges.
+list rather than a single CIDR accommodates deployments where VAST VIPs and
+NetApp ONTAP data endpoints span multiple non-contiguous ranges.
 
 Validation rules:
 - Each entry must be a valid IPv4 CIDR in canonical form.
@@ -524,19 +559,20 @@ no UI surface in the first phase.
 The overlap check is a standard prefix containment test: two CIDRs overlap if
 either contains the other's first address or last address. Go's `net.IPNet`
 provides `Contains()` for this. The check is O(n) in the number of
-`storage_cidrs` entries, which is expected to be 1–3.
+`storage_cidrs` entries, which is expected to be small.
 
 #### Routing Guarantee
 
 The Storage CIDR reservation ensures correctness by construction:
 
-1. The VAST VIP addresses are within the Storage CIDR.
+1. VAST VIPs and NetApp ONTAP block data endpoints are within the Storage CIDRs.
 2. No tenant VirtualNetwork CIDR overlaps with the Storage CIDR.
-3. Therefore, when a workload sends a packet to a VAST VIP, the destination
-   does not match the VN's local CIDR.
+3. Therefore, when a workload sends a packet to a storage data endpoint, the
+   destination does not match the VN's local CIDR.
 4. The fabric treats it as external traffic and routes it through the
    NATGateway (SNAT) to the upstream network.
-5. The upstream network routes to VAST (standard IP routing).
+5. The upstream network routes to the selected storage backend (standard IP
+   routing).
 
 This avoids any fabric-level routing table changes or special storage-aware
 routing rules. The fabric's default behavior — route non-local traffic
@@ -544,15 +580,16 @@ externally — is sufficient.
 
 #### NAT Capacity Considerations
 
-Each NVMe-TCP session from a workload to VAST uses one TCP connection through the
-NATGateway. The NATGateway performs source NAT using its ExternalIP. A single
-ExternalIP supports approximately 64k concurrent connections (limited by the
-ephemeral port range).
+Each IP-based block-storage session to VAST or NetApp ONTAP uses TCP
+connections through the NATGateway. The exact number depends on backend,
+protocol, and multipathing configuration. The NATGateway performs source NAT
+using its ExternalIP. A single ExternalIP supports approximately 64k concurrent
+connections (limited by the ephemeral port range).
 
 For the first phase, the expected scale is:
 - Single-digit tenants, each with a small number of clusters or VMs.
 - Each cluster or VM mounts a small number of PersistentVolumes.
-- Each PV produces one NVMe-TCP session.
+- Each PV produces one or more protocol-specific storage sessions.
 
 A single ExternalIP per NATGateway is sufficient for this scale. If future
 scale exceeds this, the NATGateway can be extended to support multiple
@@ -562,25 +599,21 @@ ExternalIPs (out of scope for the first phase).
 
 BMaaS hosts are provisioned on a tenant Subnet and have access to the
 NATGateway for external connectivity. The same SNAT path that provides
-internet access also provides access to VAST. No BMaaS-specific networking
-changes are needed.
+internet access also provides access to VAST and NetApp ONTAP block endpoints.
+No BMaaS-specific networking changes are needed.
 
-The BMaaS tenant is responsible for:
-- Installing the VAST CSI driver or configuring NVMe-TCP / NFS on their hosts.
-- Configuring the VAST endpoint (VIP pool FQDN or IP).
-- Managing VAST credentials for their workloads.
+The BMaaS tenant is responsible for installing and configuring the chosen
+storage client, identifying the VAST VIP or NetApp ONTAP data endpoint, and
+managing storage credentials for their workloads.
 
 #### Interaction with Storage Onboarding
 
-The storage onboarding flow (OSAC-1332) installs the VAST CSI driver on
-tenant clusters with connection parameters from the hub Secret
-(`vast-tenant-config-<tenant>`). The hub Secret contains `vip_pool_name`
-or `vip_pool_fqdn` — these point to the tenant's VIP pool whose addresses
-are within the Storage CIDR.
-
-No changes to the storage onboarding flow are required. The CSI driver
-connects to the VAST VIP, and the network path (NATGateway → external
-routing → VAST) is transparently available.
+The storage onboarding flow (OSAC-1332) installs provider-specific CSI
+components and connection parameters on tenant clusters. VAST uses a tenant
+VIP pool; NetApp ONTAP uses Trident with its configured data endpoints. This
+design does not change either provider's CSI provisioning or credentials. It
+ensures the block data-plane network path (NATGateway → external routing →
+backend endpoint) is available.
 
 ### Security Considerations
 
@@ -588,10 +621,11 @@ This design inherits the existing security model without changes:
 
 - **Network isolation.** VirtualNetworks remain fabric-isolated. The
   NATGateway provides controlled egress. No new ingress paths are created.
-- **VAST credentials.** VAST CSI credentials are stored in hub Secrets
-  and projected to tenant clusters via AAP. This flow is unchanged.
-- **No DNAT.** VAST does not initiate connections to tenant workloads. All
-  storage connections are outbound (client-to-server), using SNAT only.
+- **Storage credentials.** Provider-specific credentials and CSI setup remain
+  unchanged by this network design.
+- **No DNAT.** Storage backends do not initiate connections to tenant
+  workloads. All block data connections are outbound (client-to-server), using
+  SNAT only.
 - **Storage CIDR.** The CIDR is configured by the Cloud Infrastructure
   Admin at installation time and is immutable. Tenants cannot modify or
   bypass it.
@@ -601,10 +635,10 @@ This design inherits the existing security model without changes:
 | Failure Mode | Behavior | Recovery | User Observes |
 |---|---|---|---|
 | NATGateway not provisioned on VN | No external connectivity from VN. Storage unreachable. | Default tenant onboarding creates NATGateway. If missing, admin provisions one manually. | Connection timeouts on PVC mount. |
-| NATGateway ExternalIP not routable to VAST | SNAT succeeds but packets don't reach VAST. | Admin fixes upstream routing to ensure ExternalIP pool can reach the Storage CIDR. | Connection timeouts on PVC mount. |
-| Storage CIDR not configured on NetworkClass | No overlap validation. Tenants can create VNs that conflict with VAST VIPs. | Admin configures the field before tenant onboarding. VNs created before configuration are not retroactively validated. | Storage may or may not work depending on whether the tenant VN CIDR happens to overlap. |
+| NATGateway ExternalIP not routable to storage endpoints | SNAT succeeds but packets do not reach VAST or NetApp ONTAP. | Admin fixes upstream routing to ensure ExternalIP pool can reach the Storage CIDRs. | Connection timeouts on PVC mount. |
+| Storage CIDRs not configured on NetworkClass | No overlap validation. Tenants can create VNs that conflict with VAST VIPs or ONTAP data endpoints. | Admin configures the field before tenant onboarding. VNs created before configuration are not retroactively validated. | Storage may or may not work depending on whether the tenant VN CIDR happens to overlap. |
 | NAT port exhaustion | New NVMe-TCP / NFS sessions fail. Existing sessions continue. | Reduce concurrent PV count, or (future) expand NAT pool. | PVC mount hangs for new volumes. Existing volumes continue working. |
-| VAST cluster unreachable | Storage connections time out. CSI operations fail. | Restore VAST cluster or upstream network path. | PVC provisioning fails. Existing mounted volumes may hang. |
+| VAST or NetApp ONTAP data endpoint unreachable | Storage connections time out. CSI operations fail. | Restore the storage endpoint or upstream network path. | PVC provisioning fails. Existing mounted volumes may hang. |
 
 ### RBAC / Tenancy
 
@@ -625,7 +659,7 @@ Operators debugging storage connectivity issues should check:
 1. VirtualNetwork has a NATGateway in Ready state.
 2. NATGateway's ExternalIP is Allocated and routable.
 3. Upstream routing allows ExternalIP → Storage CIDR.
-4. VAST cluster is healthy and VIP pool is serving.
+4. VAST VIP pools or NetApp ONTAP data endpoints are healthy and reachable.
 
 ### Risks and Mitigations
 
@@ -634,13 +668,14 @@ Operators debugging storage connectivity issues should check:
 | Admin forgets to configure Storage CIDR before tenant onboarding | Document as a required installation step. Future: add a preflight check that warns if storage backends are registered but no Storage CIDR is configured. |
 | Existing VNs (created before Storage CIDR is configured) have overlapping CIDRs | The validation applies only to new VN creation. Existing VNs are not retroactively checked. Document that the Storage CIDR must be configured before the first tenant is onboarded. |
 | VAST VIP addresses change after deployment | The Storage CIDR is a superset range, not the exact VIP list. As long as new VIPs are allocated within the same CIDR, no platform changes are needed. If the range changes entirely, a new NetworkClass with updated storage_cidrs is required. |
+| NetApp ONTAP data endpoint addresses change | Keep ONTAP data LIF addresses within the configured Storage CIDRs and update upstream routing when endpoints change. |
 | Single ExternalIP per NATGateway limits NAT capacity | Sufficient for the first phase scale. Monitor connection counts. Future: extend NATGateway to support multiple ExternalIPs. |
 
 ### Drawbacks
 
-The approach assumes VAST is always external and reachable via SNAT. This adds
-latency compared to direct-attach or VLAN-based storage paths, and NAT adds a
-throughput constraint. For the first phase this is acceptable — performance-critical
+The approach assumes VAST and NetApp ONTAP block endpoints are external and
+reachable via SNAT. This adds latency compared to direct-attach or VLAN-based
+storage paths, and NAT adds a throughput constraint. For the first phase this is acceptable — performance-critical
 storage networking (GPU-to-storage, RDMA) is explicitly deferred.
 
 The Storage CIDR is a blunt instrument: it reserves an entire range from
@@ -650,13 +685,14 @@ be needed at scale.
 
 ## Alternatives (Not Implemented)
 
-### 1. Per-Tenant VLAN to VAST
+### 1. Per-Tenant VLAN to Storage
 
-Provision a dedicated VLAN per tenant on the VAST cluster, giving each tenant
-direct L2 connectivity to their VAST VIP pool.
+Provision a dedicated VLAN per tenant on each storage array, giving each
+tenant direct L2 connectivity to its block data endpoints.
 
 **Pros:** No NAT overhead. True network isolation per tenant.
-**Cons:** Requires VLAN configuration on the VAST cluster for each tenant.
+**Cons:** Requires VLAN configuration on the VAST or NetApp ONTAP storage array
+for each tenant.
 Significantly more complex operationally. Does not scale within the first
 phase timeframe.
 **Rejected:** The JIRA feature description explicitly calls for "the simplest
@@ -734,6 +770,9 @@ None. All questions resolved during drafting.
 - Same for VMaaS: provision a VM, verify VAST CSI PVC mounts.
 - BMaaS: provision a bare-metal host, verify network path to VAST VIP is
   reachable (ping or TCP connect test).
+- Repeat the CaaS, VMaaS, and BMaaS block connectivity checks with NetApp
+  ONTAP through Trident, using the configured iSCSI or NVMe/TCP data endpoint
+  and verifying the expected network egress path.
 
 ## Graduation Criteria
 
@@ -744,16 +783,17 @@ N/A. OSAC is in active development and has not been released to customers.
 Pre-GA change. The `storage_cidrs` field is additive to NetworkClass.
 Existing deployments upgrading to this version have no `storage_cidrs`
 configured, which means no overlap validation is enforced — the behavior is
-identical to before the change. The admin configures the field as part of
-the first phase deployment.
+identical to before the change. The admin configures the field with the VAST
+VIP and NetApp ONTAP data endpoint ranges as part of the first phase
+deployment.
 
 ## Version Skew Strategy
 
 The `storage_cidrs` validation is entirely within the fulfillment-service.
 No operator or AAP changes are required. The fulfillment-service can be
-deployed independently. If the field is configured in the fulfillment-service
-but the VAST cluster is not yet set up, the only effect is that tenants
-cannot create VNs overlapping with the reserved range — a safe precondition.
+deployed independently. If the field is configured before either storage
+backend is set up, the only effect is that tenants cannot create VNs
+overlapping with the reserved ranges — a safe precondition.
 
 ## Support Procedures
 
@@ -772,13 +812,23 @@ To diagnose storage connectivity issues:
    `kubectl get externalip -n <tenant-ns>` — check State=Allocated.
 
 5. Verify upstream routing:
-   from a host with the ExternalIP, verify TCP connectivity to a VAST VIP on
-   the NVMe-TCP port (4420).
+   from a host with the ExternalIP, verify TCP connectivity to the configured
+   VAST NVMe/TCP VIP or NetApp ONTAP iSCSI/NVMe/TCP data endpoint.
 
-6. Check CSI driver logs on the tenant cluster:
-   `kubectl logs -n vast-csi daemonset/vast-csi-node` for NVMe-TCP or NFS
-   connection errors.
+6. Check the selected CSI node driver's logs on the tenant cluster for
+   backend-specific block connection errors (VAST NVMe/TCP or NetApp Trident
+   iSCSI/NVMe/TCP).
 
 ## Infrastructure Needed
 
 None.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":52,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
