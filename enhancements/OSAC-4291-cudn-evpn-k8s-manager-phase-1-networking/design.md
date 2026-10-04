@@ -209,8 +209,8 @@ sequenceDiagram
     Note over API: Reject creates during either deletion reservation state;<br/>for cudn_evpn, reject a second Subnet while placements or VMs exist; VM placement is blocked when Subnet count > 1. Other managers are not subject to this CUDN-specific topology check.
     API-->>Tenant: 201 Created
 
-    Controller->>Controller: Dispatch to fabric + k8s managers
-    Note over Controller: Sequential: fabric → k8s
+    Controller->>Controller: Dispatch to fabric manager
+    Note over Controller: k8s manager runs only for the first eligible Subnet
 
     Controller->>AAP: Create fabric Job (fabric_manager role)
     AAP->>AAP: Create/get fabric manager VPC (L3 VNI)<br/>Create fabric manager VNet (L2 VNI)
@@ -218,16 +218,19 @@ sequenceDiagram
     AAP-->>Controller: Job Complete (ConfigMap with both VNIs)
 
     Controller->>Controller: Wait for segment data and, when an ACL is associated, active ACL policy
-    Controller->>Controller: Extract L2 VNI, L3 VNI from ConfigMap
-    Controller->>K8s: Create k8s Job (cudn_evpn role)<br/>extra_vars: {l2_vni, l3_vni, ...}
-
-    K8s->>OVN: Create CUDN (EVPN transport, VNI)
-    OVN->>FRR: Auto-update FRRConfiguration (advertiseVNIs)
-    OVN-->>K8s: CUDN Ready
-    FRR-->>K8s: Routes advertised
-    K8s-->>Controller: Job Complete (CUDN and namespace Ready)
-
-    Controller-->>Tenant: Subnet Ready (fabric, optional ACL, CUDN, and namespace Ready)
+    alt First eligible Subnet uses the cudn_evpn manager
+        Controller->>Controller: Extract L2 VNI, L3 VNI from ConfigMap
+        Controller->>K8s: Create k8s Job (cudn_evpn role)<br/>extra_vars: {l2_vni, l3_vni, ...}
+        K8s->>OVN: Create CUDN (EVPN transport, VNI)
+        OVN->>FRR: Auto-update FRRConfiguration (advertiseVNIs)
+        OVN-->>K8s: CUDN Ready
+        FRR-->>K8s: Routes advertised
+        K8s-->>Controller: Job Complete (CUDN and namespace Ready)
+        Controller-->>Tenant: First Subnet Ready (fabric, optional ACL, CUDN, and namespace)
+    else Fabric-only Subnet
+        Note over Controller: Skip k8s job; CUDN and namespace are not readiness gates
+        Controller-->>Tenant: Subnet Ready (fabric and optional ACL)
+    end
 ```
 
 **Error Paths:**
@@ -1797,7 +1800,6 @@ Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behin
 Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 2293f9140
 
 > Context changed between revise and revise.
-
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
 <!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"2293f9140","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

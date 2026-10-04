@@ -393,12 +393,12 @@ All components live in the `osac` monorepo.
 
 ### Workflow Description
 
-#### Network Path: Tenant Workload → VAST
+#### Network Path: CaaS or BMaaS Workload → VAST
 
 ```mermaid
 flowchart LR
     subgraph Tenant VirtualNetwork
-        W[Workload<br/>VM / CaaS Pod / BM Host]
+        W[CaaS Worker / BM Host]
         P[Subnet policy<br/>optional NetworkACL + deployment fallback]
     end
     subgraph Fabric
@@ -415,15 +415,17 @@ flowchart LR
     P --> W
 ```
 
-This diagram shows the data-plane path for block storage access. A workload
-inside a tenant VirtualNetwork initiates an NVMe-TCP connection to a VAST VIP
-address. Because the VAST VIP falls outside the VN CIDR (enforced by the
-overlap validation), the fabric routes permitted packets externally through
-the NATGateway. The NATGateway performs SNAT, replacing the workload's private
-source IP with the NATGateway's ExternalIP. The VAST cluster sees the
-ExternalIP as the source and responds to it. Return traffic follows the
-reverse NAT path back through the Subnet's ingress policy, which is evaluated
-independently from egress.
+This diagram shows the tenant-Subnet data-plane path for CaaS workers and
+BMaaS hosts. A workload inside a tenant VirtualNetwork initiates an NVMe-TCP
+connection to a VAST VIP address. Because the VAST VIP falls outside the VN
+CIDR (as enforced by the overlap validation), the fabric routes permitted
+packets externally through the NATGateway. The NATGateway performs SNAT,
+replacing the workload's private source IP with the NATGateway's ExternalIP.
+The VAST cluster sees the ExternalIP as the source and responds to it. Return
+traffic follows the reverse NAT path back through the Subnet's ingress policy,
+which is evaluated independently from egress.
+VMaaS CSI traffic follows the management-network path described in VMaaS
+Storage, not this tenant-Subnet path.
 
 #### Effective Subnet Policy
 
@@ -439,10 +441,13 @@ NetworkACL must allow egress to the VAST addresses on the required TCP service
 ports (4420 for NVMe-TCP and the configured VMS API port when that endpoint is
 routable from tenant VirtualNetworks). It must also allow ingress TCP traffic
 from the configured VAST VIP source CIDRs to the deployment-approved client
-ephemeral destination-port range. The range must match the client hosts' actual
-ephemeral source ports; do not assume a universal numeric range. Since the ACL
-is stateless, each direction is decided independently. File storage and NFS
-port 2049 are outside this phase's scope.
+ephemeral destination-port range. If a separately routable VMS API endpoint is
+outside those VIP CIDRs, add an ingress rule for its CIDR to the same client
+ephemeral destination-port range so API replies are permitted. The range must
+match the client hosts' actual ephemeral source ports; do not assume a
+universal numeric range. Since the ACL is stateless, each direction is
+decided independently. File storage and NFS port 2049 are outside this phase's
+scope.
 
 The default Subnet has no NetworkACL association, and that association cannot
 be added after creation. Under a `DENY` fallback, a storage workload must use
@@ -787,12 +792,14 @@ None. All questions resolved during drafting.
   default VN is created with non-overlapping CIDR, NATGateway is provisioned,
   and the network path to an external endpoint is functional when the
   deployment fallback permits unmatched traffic.
-- With a `DENY` fallback, verify storage traffic fails on the default Subnet,
-  then succeeds on a separately created Subnet whose associated NetworkACL
+- With a `DENY` fallback, verify CaaS or BMaaS storage traffic fails on the
+  default Subnet, then succeeds on a separately created Subnet whose ACL
   allows egress to the required VAST service port and ingress from VAST VIP
-  CIDRs to the approved client ephemeral destination-port range. Verify replies
-  to ports within the range pass, replies to ports outside it are blocked, and
-  a matching deny rule still blocks the flow.
+  CIDRs to the approved client ephemeral destination-port range. When the VMS
+  API endpoint has a separate tenant-routable CIDR, verify the ACL also allows
+  egress to its API port and ingress replies from that endpoint CIDR. Verify
+  replies to ports within the range pass, replies to ports outside it are
+  blocked, and a matching deny rule still blocks the flow.
 - VirtualNetwork creation rejection: configure Storage CIDR, attempt
   to create a VN with overlapping CIDR, verify rejection with descriptive
   error message.
@@ -802,7 +809,8 @@ None. All questions resolved during drafting.
 - Provision a CaaS cluster on a tenant Subnet whose effective policy permits
   VAST traffic, install VAST CSI via storage onboarding, create a PVC, and
   verify the PV mounts and storage traffic reaches VAST through the NATGateway.
-- Same for VMaaS: provision a VM, verify VAST CSI PVC mounts.
+- For VMaaS, provision a VM and verify the VAST CSI PVC mounts through the
+  management-network path; this does not exercise tenant-Subnet ACL policy.
 - BMaaS: provision a bare-metal host on a Subnet whose effective policy
   permits the VAST TCP service port and return traffic, then verify a TCP
   connection to the VAST VIP succeeds.

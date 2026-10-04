@@ -43,7 +43,7 @@
 
 ### R2: Fabric-to-k8s manager data dependency
 
-#### TC-R2-01: Sequential provisioning from fabric manager to k8s manager
+#### TC-R2-01: Provision the first eligible Subnet through fabric and k8s managers
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -553,21 +553,26 @@
 ##### Steps
 
 1. Request Subnet deletion while the VM and its placement are active.
-2. Verify deletion is rejected before a deletion reservation, deletion
-   timestamp, or k8s-manager delete job is created.
-3. Delete the VM through its supported API and wait until its placement and VMI
+2. Verify the Delete API persists a fenced `Requested` reservation before it
+   issues Kubernetes DELETE and sets `metadata.deletionTimestamp`.
+3. While the VM or placement remains, verify a `DeletionBlocked` event is
+   emitted and no networking cleanup job starts.
+4. Delete the VM through its supported API and wait until its placement and VMI
    are gone.
-4. Retry Subnet deletion and observe the k8s-manager delete playbook run.
-5. Verify CUDN deletion starts only after no VMIs remain.
-6. Verify the namespace is deleted after the CUDN.
+5. Verify the controller admits the existing reservation and starts the
+   k8s-manager delete playbook without another Delete request.
+6. Verify CUDN deletion starts only after no VMIs remain, then the namespace is
+   deleted after the CUDN.
 7. Check for stale VRFs on worker nodes (should not exist).
 
 ##### Expected Results
 
-- While the VM or placement exists, Subnet deletion is rejected and cleanup
-  does not start.
-- After the VM and placement are gone, deletion order is enforced: CUDN →
-  namespace.
+- The Delete API persists the `Requested` reservation before setting the
+  deletion timestamp.
+- While the VM or placement exists, the Subnet remains blocked from cleanup
+  and the controller requeues; no cleanup job starts.
+- After the VM and placement are gone, the controller admits the existing
+  reservation and enforces deletion order: CUDN → namespace.
 - No stuck CUDN finalizer after deletion is admitted.
 - **Normal case:** No stale VRF devices persist after CUDN deleted
 - **Rare failure case:** Stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)

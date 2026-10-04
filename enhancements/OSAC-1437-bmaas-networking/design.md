@@ -318,9 +318,11 @@ Same as VMaaS/CaaS — the networking API is uniform.
     - osac-operator feedback controller: waits for other finalizers, removes feedback finalizer, fires final Signal
 
 11. **Tenant deletes networking resources** (independently):
-    - Delete ExternalIPAttachments and ExternalIPs via their dispatcher-triggered delete jobs
-    - Delete every Subnet that references a NetworkACL via its dispatcher-triggered delete job
-    - Delete the NetworkACL, then the VirtualNetwork, via their dispatcher-triggered delete jobs
+    - Delete ExternalIPAttachments via their dispatcher-triggered delete jobs
+    - Delete all Subnets, including Subnets without a NetworkACL association, via their dispatcher-triggered delete jobs
+    - After all Subnets are deleted, delete the NetworkACLs via their dispatcher-triggered delete jobs
+    - Delete NATGateways, then delete ExternalIPs after no attachment or NATGateway references them
+    - Delete the VirtualNetwork after its Subnets, NetworkACLs, and NATGateways are gone
 
 **BMaaS-specific deletion dependency guard:**
 
