@@ -469,12 +469,12 @@ GA criteria:
 ### Upgrade
 
 Micro version upgrades (`x.y.N → x.y.N+2`):
-- The repeated `network_attachments` field remains wire-compatible for the Subnet-only attachment shape. Existing network policies must be mapped to NetworkACL rules on READY Subnets, including reverse-direction rules when needed to permit replies under the selected deployment fallback and matching rules.
-- Tenants may need to recreate workloads when different policies require separate Subnets. Existing single-attachment resources remain usable after their Subnets have READY NetworkACL associations.
+- The repeated `network_attachments` field remains wire-compatible for the Subnet-only attachment shape.
 
 Minor version upgrades (`x.N → x.N+1`):
 - The CLI and API continue using the existing `--network-attachment` flag and `network_attachments` field
-- The single-attachment shape remains compatible after each workload's Subnet has a READY NetworkACL association. Workloads that need policy separation across Subnets require recreation.
+- The NetworkACL policy migration is part of the coordinated, disruptive [Unified Networking upgrade procedure](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy) and requires a maintenance window. Follow that procedure to map existing policies to rules on READY Subnets, including reverse-direction rules required for replies under the selected fallback and rule-specificity model.
+- The cutover drains and recreates network-dependent ComputeInstances because Subnets and workload attachments are immutable. Workloads that need distinct policies must use separate Subnets and be recreated with the intended Subnet attachment.
 
 ### Downgrade
 

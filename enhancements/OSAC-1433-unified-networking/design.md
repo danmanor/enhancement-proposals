@@ -1704,7 +1704,10 @@ window for that transition.
   required return traffic under the selected fallback and matching rules.
   Agree on the deployment fallback action for flows not matched by an
   ACL rule. Prepare the replacement NetworkClass configuration, preserving
-  existing defaults and adding the selected `defaultAclAction`.
+  existing defaults and any configured `storage_cidrs`, and adding the
+  selected `defaultAclAction`. If `storage_cidrs` is not configured, leave it
+  unset so storage CIDR overlap validation remains disabled, as described in
+  [Storage Networking](/enhancements/OSAC-5690-storage-networking/design.md).
 - Prepare the NetworkACL rule definitions and Subnet-to-ACL mapping as a
   migration plan only; do not submit ACL resources through the prior release.
   Snapshot API/database state, networking CRs, NetworkClass configuration,
@@ -1729,9 +1732,10 @@ window for that transition.
    osac-operator, networking controllers, configured networking manager, and
    compatible clients as one coordinated release. Keep network and workload
    writes frozen.
-5. Create the replacement as the deployment's sole NetworkClass, preserving
-   existing defaults and setting the selected `defaultAclAction`; wait for it
-   to become READY before recreating tenant VirtualNetworks.
+5. Create the prepared replacement as the deployment's sole NetworkClass,
+   preserving existing defaults and any configured `storage_cidrs`, and
+   setting the selected `defaultAclAction`; wait for it to become READY before
+   recreating tenant VirtualNetworks.
 6. Recreate tenant VirtualNetworks. In each VirtualNetwork, create any
    tenant-selected NetworkACLs and wait for them to become READY before
    creating Subnets that reference them. Create each tenant's generated default

@@ -136,9 +136,12 @@ The design covers three capabilities: default networking (including NATGateway) 
       Subnets, tenant-created NetworkACLs, and VirtualNetworks. Delete the old
       NetworkClass only after all VirtualNetwork references are gone.
    4. Deploy the ACL-aware API and controllers while writes remain frozen.
-      Create the replacement as the deployment's sole NetworkClass and wait
-      for it to become READY. Recreate tenant VirtualNetworks; after each is
-      READY, create any tenant-selected NetworkACLs and wait for them to be
+      Create the replacement as the deployment's sole NetworkClass, preserving
+      existing defaults and any configured `storage_cidrs`, and setting the
+      selected `defaultAclAction`. If `storage_cidrs` was not configured, leave
+      it unset. Wait for the replacement to become READY.
+      Recreate tenant VirtualNetworks and wait for each to become READY. In
+      each, create any tenant-selected NetworkACLs and wait for them to be
       READY before creating Subnets that reference them. Create generated
       default Subnets without ACL associations. Recreate NATGateways and
       workloads after their network dependencies are READY.
