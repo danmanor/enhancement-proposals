@@ -614,23 +614,43 @@ Micro version upgrades (`x.y.N → x.y.N+2`):
 - No user action required
 
 Minor version upgrades (`x.N → x.N+1`):
-- Template changes deployed (cluster_infra/external_access removed, MetalLB VIP provisioning added)
-- Existing clusters (created before upgrade) continue to work with old flow
-- New clusters (created after upgrade) use new flow (OSAC Networking API)
-- No breaking changes
+- The transition to API-managed Subnet and NetworkACL policy follows the
+  coordinated, disruptive [Unified Networking upgrade
+  procedure](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy);
+  it is not a mixed-mode or no-action upgrade.
+- Legacy `cluster_infra` and `external_access` create/delete dispatches are
+  removed and are not retained for pre-upgrade Clusters. Before deploying the
+  release that removes them, use the old release to drain and delete Clusters
+  that depend on the legacy flow, then remove their legacy network and
+  external-access resources as required by the coordinated cutover. There is
+  no automatic conversion of legacy per-workload policy to a Subnet
+  NetworkACL.
+- Keep network and workload writes frozen while replacing the NetworkClass
+  and networking resources. Create the NetworkClass and VirtualNetworks, then
+  any tenant-selected NetworkACLs before the Subnets that reference them. Wait
+  for each Subnet and any explicit ACL association to be Ready before creating
+  CaaS Clusters with the new `network_attachment`. Validate representative
+  cluster and endpoint connectivity before reopening writes.
+- This cutover requires a maintenance window. Existing Clusters are recreated
+  after the ACL-aware release; they do not continue through the removed legacy
+  flow.
 
 ### Downgrade
 
-If `N+1` upgrade fails or cluster is misbehaving:
-- Manual rollback: update fulfillment-service, osac-operator, and osac-aap images to `N`
-- Existing Cluster resources with new `network_attachment` field will be unrecognized by `N` server
-- Manual cleanup required: delete Cluster resources created with new field, re-create with old flow
-- Auto-provisioned ExternalIP resources remain (manual cleanup required if not needed)
-
-Acceptable downgrade steps:
-- Delete Clusters using new field
-- Re-create using old flow (no network_attachment field)
-- Manually delete orphaned auto-provisioned resources (ExternalIP, ExternalIPAttachment labeled `osac.openshift.io/auto-created: "true"`)
+The prior release cannot interpret NetworkACLs, Subnet associations, or the new
+`network_attachment` contract. A binary-only rollback is unsupported. Follow
+the coordinated restore procedure in the [Unified Networking upgrade
+strategy](/enhancements/OSAC-1433-unified-networking/design.md#upgrade--downgrade-strategy):
+freeze writes, restore the pre-upgrade database, CRs, NetworkClass, and
+workload state from the migration snapshot, remove or reverse new ACL-only
+state, and roll back the fulfillment service, schemas, operator, networking
+controllers, templates, and clients together. The restore must also return
+CaaS Clusters and their external-access resources to the pre-upgrade state. If
+new auto-created ExternalIPs or ExternalIPAttachments were persisted after the
+snapshot, remove them in dependency order or include them in the tested
+restore. Automatic conversion of NetworkACL policy back to per-workload policy
+is not provided. If the coordinated pre-upgrade state cannot be restored, keep
+the ACL-aware release and fix forward.
 
 ## Version Skew Strategy
 

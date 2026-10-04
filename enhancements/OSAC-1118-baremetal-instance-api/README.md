@@ -91,7 +91,7 @@ Provisioning is driven by a chain of components. The fulfillment service materia
 4. The fulfillment service applies the Catalog Item's typed `fields` and `template_parameters` policies, resolves the Template, and stores the effective `BareMetalInstance.spec`. It copies `network_attachments` onto the Kubernetes `BareMetalInstance` CR; `reconcileNetworking` reads the attachments there and follows the BMaaS networking contract. Separately, it creates a `HostLease` CR with host-allocation and host-provisioning inputs; `HostLease` does not carry `network_attachments`. `BareMetalInstance.status.state` is set to `BARE_METAL_INSTANCE_STATE_PROVISIONING`.
 5. The baremetal-fulfillment-operator picks up the `HostLease` and queries the inventory backend to find and assign a free host matching the requested host type and selector.
 6. The baremetal-fulfillment-operator triggers `osac-aap` to run the host-level provisioning template (OS image, SSH key, user data) and updates the `HostLease` status on completion. The OS image is resolved from the tenant's spec or the template default.
-7. The osac-operator watches the `HostLease` CR and pushes status updates to the fulfillment service via the `Signal` RPC; the fulfillment service reflects this in `BareMetalInstance.status`.
+7. The `HostLease` status reports host allocation and provisioning progress, but `HostLease` Ready alone does not transition the public instance to `RUNNING`. The osac-operator also watches the Kubernetes `BareMetalInstance` networking lifecycle. It sends public `RUNNING` through `Signal` only after host provisioning is complete and the Kubernetes `BareMetalInstance` reaches `status.phase == "Ready"`; the fulfillment service then updates the public status. The networking phase requires `NetworkAttachmentsReady`, `NetworkHandoffComplete`, and `IPDiscoveryComplete` for the resolved attachment.
 8. The Tenant User polls until `status.state` is `BARE_METAL_INSTANCE_STATE_RUNNING`:
    ```
    GET /api/fulfillment/v1/baremetal_instances/{id}
@@ -99,7 +99,7 @@ Provisioning is driven by a chain of components. The fulfillment service materia
 
 #### Failure Handling
 
-If any step in the provisioning chain fails (playbook error, BCM API failure, `HostLease` stuck), the osac-operator sets `BareMetalInstance.status.state` to `BARE_METAL_INSTANCE_STATE_FAILED` via the `Signal` RPC. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BareMetalInstance`; note that recreating may result in a different physical host being assigned from the inventory.
+If host allocation, host provisioning, network attachment, network handoff, or tenant-network IP discovery fails, the failure is sent to the fulfillment service through `Signal`, and the public `BareMetalInstance.status.state` becomes `BARE_METAL_INSTANCE_STATE_FAILED`. A HostLease provisioning failure or a Kubernetes `BareMetalInstance` networking phase of `Failed` must not leave the public resource in `PROVISIONING` or report it as `RUNNING`. The tenant can inspect the `conditions` field for details. To retry, the tenant deletes and recreates the `BareMetalInstance`; note that recreating may result in a different physical host being assigned from the inventory.
 
 #### Deprovisioning
 
@@ -147,7 +147,9 @@ sequenceDiagram
     BMF->>MC: update HostLease status (phase: Ready)
 
     MC-->>OP: watch: HostLease CR Ready
-    OP->>FS: Signal RPC (state: RUNNING)
+    Note over MC,OP: Public state remains PROVISIONING until the Kubernetes BareMetalInstance networking phase is Ready
+    MC-->>OP: watch: BareMetalInstance phase Ready after NetworkAttachmentsReady, NetworkHandoffComplete, IPDiscoveryComplete
+    OP->>FS: Signal RPC (state: RUNNING after host and networking readiness)
 
     TU->>FS: GET /baremetal_instances/{id}
     FS-->>TU: {state: RUNNING}
@@ -432,7 +434,7 @@ None identified.
 Test plan will be finalized during the implementation phase. Expected coverage:
 
 - **Unit tests:** Proto field validation, state machine transitions, provider interface mocking.
-- **Integration tests:** `BareMetalInstance` CRUD via gRPC, catalog item CRUD (public and private), publication and metadata-based scope enforcement, typed resource-field and Template-parameter policy application, `network_attachments` propagation to the Kubernetes `BareMetalInstance` CR and consumption by `reconcileNetworking`, Signal RPC feedback loop, OPA authorization enforcement, PATCH immutability enforcement.
+- **Integration tests:** `BareMetalInstance` CRUD via gRPC, catalog item CRUD (public and private), publication and metadata-based scope enforcement, typed resource-field and Template-parameter policy application, `network_attachments` propagation to the Kubernetes `BareMetalInstance` CR and consumption by `reconcileNetworking`, Signal RPC feedback loop, public `RUNNING` gated on both HostLease provisioning and Kubernetes networking Ready, network failure propagated as public `FAILED`, OPA authorization enforcement, PATCH immutability enforcement.
 - **E2E tests:** Full provisioning and deprovisioning workflow against BCM; CI pipeline configured to run E2E tests on merge.
 
 Tricky areas: asynchronous provisioning lifecycle (tests must handle delays or mock the provider), `catalog_item` immutability enforcement after create, `published`/`tenant` visibility boundary checks, tenant isolation boundary checks, and failure-path recovery (FAILED state → delete → recreate).
