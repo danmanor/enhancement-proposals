@@ -166,7 +166,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 
 8. **ExternalIP reconciliation:**
    - ExternalIP (created at step 4) is pushed to the hub cluster by the fulfillment-service reconciler
-   - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager returns its durable UID-owned address reservation; OSAC validates the result, writes the address annotation and status, and transitions the ExternalIP to **Allocated**. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
+   - osac-operator dispatches `external_ip.allocate` to the manager selected by the NetworkClass profile. The manager writes its durable UID-owned address reservation to the ExternalIP annotation; OSAC validates the job result and annotation, writes status, and transitions the ExternalIP to **Allocated**. See [Unified Networking — ExternalIP Address Selection and Ownership](/enhancements/OSAC-1433-unified-networking/design.md#externalip-address-selection-and-ownership).
    - ExternalIP labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <compute-instance-id>`
 
 9. **Deferred ExternalIPAttachment creation (fulfillment-service internal reconciler):**

@@ -454,26 +454,32 @@ must be unique, and retrying the same UID must return the same reservation.
 The selection order is implementation-specific; the contract does not require
 first-fit or any other particular algorithm.
 
-After confirming the reservation, the manager returns the address in
-`osac_result.data.externalIP.address`. The manager must not patch the
-ExternalIP or write OSAC annotations or status. OSAC validates the result
-envelope, operation, ExternalIP UID and generation, canonical IPv4 address,
-and pool membership. Only then does OSAC write the
-`osac.openshift.io/allocated-address` annotation and
-`ExternalIP.status.address`, and report the ExternalIP as **Allocated**.
-Until that succeeds, the ExternalIP remains non-ready and has no accepted
-address. A retry uses the same UID-owned manager reservation. If the pool has
-no free address, the manager returns a failure with a diagnostic and no
-success result.
+After confirming the reservation, the manager writes the address to the
+`osac.openshift.io/allocated-address` annotation on the same ExternalIP CR.
+The patch must be guarded by the supplied resource UID and generation, and
+must not change the spec, status, or other annotations. The manager reports
+success only after the provider reservation and annotation write succeed. The
+common `osac_result` envelope identifies the operation, resource UID, and
+generation; it carries no address payload.
+
+After AAP reports success, OSAC validates the result envelope against the
+current ExternalIP, reads the annotation, and validates canonical IPv4 form
+and membership in the selected pool. Only then does OSAC write
+`ExternalIP.status.address` and report the ExternalIP as **Allocated**. OSAC
+does not write the allocated-address annotation. A missing or invalid
+annotation leaves the ExternalIP non-ready with no accepted address. A retry
+for the same UID reuses the provider reservation and retries the annotation
+write. If the pool has no free address, the manager returns a failure with a
+diagnostic and no success result.
 
 The fulfillment-service reserves API-side pool capacity in the transaction
 that creates the ExternalIP. On deletion, OSAC first requires dependent
 ExternalIPAttachments and NATGateways to be removed, then invokes
 `external_ip.release`. The manager removes the UID-owned provider reservation
-and reports `RELEASED` only after the address is absent. OSAC validates that
-result before returning API-side pool capacity. A failed allocation or
-release remains eligible for reconciliation and does not prematurely free
-that capacity.
+and reports success only after the address is absent. OSAC validates the
+common result envelope before returning API-side pool capacity. A failed
+allocation or release remains eligible for reconciliation and does not
+prematurely free that capacity.
 
 ### End-to-End Flows
 
@@ -622,9 +628,10 @@ osac create externalip --pool external-pool-1 --name my-ip
 ```
 
 The manager selected by the NetworkClass profile reserves a free address from
-the selected pool and returns it to OSAC (e.g., 203.0.113.45). OSAC validates
-the result and writes the allocated-address annotation and status as defined
-in [ExternalIP Address Selection and Ownership](#externalip-address-selection-and-ownership).
+the selected pool and writes it to the ExternalIP annotation. OSAC validates
+that annotation and writes status as defined in [ExternalIP Address Selection
+and Ownership](#externalip-address-selection-and-ownership) (e.g.,
+203.0.113.45).
 
 **Attach for inbound access (DNAT):**
 
@@ -709,11 +716,11 @@ dependencies (ExternalIP Allocated + target Ready) are not yet met.
 The fulfillment-service reconciler pushes ExternalIP CRs to the hub
 cluster. The osac-operator dispatches `external_ip.allocate` to the manager
 selected by the NetworkClass profile. The manager durably reserves an address
-and returns it through `osac_result`; OSAC validates the result and writes the
-address annotation and status under [ExternalIP Address Selection and
-Ownership](#externalip-address-selection-and-ownership). The ExternalIP then
-transitions to **Allocated**, and the fulfillment-service receives the status
-update via Signal RPC.
+and writes the standard allocated-address annotation. OSAC validates the job
+result and annotation, then writes status under [ExternalIP Address Selection
+and Ownership](#externalip-address-selection-and-ownership). The ExternalIP
+then transitions to **Allocated**, and the fulfillment-service receives the
+status update via Signal RPC.
 
 *Step 3 — asynchronous (deferred ExternalIPAttachment creation):*
 
