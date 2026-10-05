@@ -1511,11 +1511,18 @@ While provider networking is disabled, VirtualNetwork, Subnet, SecurityGroup,
 ExternalIPPool, ExternalIPAttachment, and NATGateway report `Ready=True`, reason
 `ProvisioningDisabled`, and a message identifying the unavailable provider
 operation, but only after the existing logical
-preconditions are satisfied. If a referenced IP, target, or parent is not
-ready, the resource remains in its ordinary waiting state. This is logical
-OSAC readiness only; it does not claim provider connectivity, policy
-enforcement, or routing. `Skipped` describes the message/result and is not a
-Kubernetes condition status.
+preconditions are satisfied. Dependency checks remain specific to the
+existing API gates: an ExternalIPAttachment or NATGateway requires ExternalIP
+`state=Allocated`; references such as VirtualNetwork, ExternalIPPool, and
+workload targets require `Ready`. A backend-confirmed ExternalIP that remains
+`Allocated` during disablement satisfies an `Allocated` reference gate even
+though its own condition is `Ready=False`/`ProvisioningDisabled`; its last-known
+address does not imply provider reachability. If an existing resource's logical
+prerequisite is unmet, it remains in its ordinary waiting state, and new create
+requests retain their existing API precondition errors. This is logical OSAC
+readiness only; it does not claim provider connectivity, policy enforcement, or
+routing. `Skipped` describes the message/result and is not a Kubernetes
+condition status.
 
 If a legacy ExternalIPAttachment points to an ExternalIP whose fake
 `0.0.0.0` address is cleared during migration, it remains
@@ -1556,10 +1563,12 @@ Once in-progress provider work is terminal, live resources report provider
 work skipped. Live resources with unmet logical prerequisites remain waiting as
 specified above. Deletes still respect dependency guards and auto-created child
 deletion order, then complete OSAC object deletion without provider cleanup.
-Logical cascade deletion does not imply provider cleanup. Provider addresses,
-segments, rules, overlays, or port placements may remain and require
-manual/provider-side cleanup. Turning the setting off does
-not move existing hosts back to provisioning connectivity. [User]
+Logical cascade deletion does not imply provider cleanup. Turning the setting
+off also does not withdraw existing provider state or public exposure. Existing
+ExternalIPAttachment DNAT and NATGateway SNAT routes, allocated addresses,
+segments, security rules, overlays, and port placements may remain effective
+until manual/provider-side cleanup. Disabled reconciliation does not remove
+them. Existing hosts are not moved back to provisioning connectivity. [User]
 
 When the setting is enabled again after rollout, Pending ExternalIPs may proceed
 to provider allocation. An automatic attachment is created only after a real
@@ -1772,4 +1781,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

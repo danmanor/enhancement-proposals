@@ -415,9 +415,15 @@ networking is disabled.
 
 Each non-allocating Networking API resource follows the unified status
 contract: after its logical preconditions pass, it reports `Ready=True` with
-reason `ProvisioningDisabled` and a skipped-work message. If a dependency or
-target is not ready, it remains in its normal waiting state. An ExternalIP
-without a confirmed allocation is `Pending`/`Progressing`, has an empty
+reason `ProvisioningDisabled` and a skipped-work message. Dependency checks
+continue to use their existing API gates. An ExternalIPAttachment requires the
+referenced ExternalIP to have `state=Allocated` and its target to be `Ready`. A
+backend-confirmed ExternalIP may remain `Allocated` while it reports
+`Ready=False`/`ProvisioningDisabled`; it still satisfies that allocated-state
+gate, but its last-known address does not imply provider reachability. Resources
+with unmet prerequisites remain in their normal waiting state, and create
+requests retain their existing API precondition errors. An ExternalIP without a
+confirmed allocation is `Pending`/`Progressing`, has an empty
 address, and reports `Ready=False`/`ProvisioningDisabled`. A confirmed real
 allocation retains its backend-returned address and `Allocated` state, but
 reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while disabled;
@@ -640,4 +646,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
