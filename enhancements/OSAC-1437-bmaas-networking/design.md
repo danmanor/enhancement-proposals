@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-09-28
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -786,13 +786,18 @@ retains the existing synchronous pool/capacity checks and reserves one logical
 pool-capacity slot until its ExternalIP is deleted. With networking disabled,
 the request remains Pending without a provider address and creates no
 ExternalIPAttachment. A real allocation confirmed before disablement retains
-its backend-returned address and `Allocated` state, but reports `Progressing`
+its address, confirmed through the manager-written annotation, and `Allocated`
+state, but reports `Progressing`
 and `Ready=False`/`ProvisioningDisabled`; the address is last-known only. The
 complete shared status contract is in
 [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
 Fulfillment creates an automatic attachment only after real allocation and
 workload Ready with a known primary attachment address, so disabled mode does
-not bypass those gates. [User]
+not bypass those gates. Deleting an ExternalIP while disabled releases its
+OSAC capacity slot without a provider release operation; any earlier provider
+reservation may require manual cleanup. See the shared
+[ExternalIP disabled-mode contract](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+[User]
 
 ## Alternatives (Not Implemented)
 
@@ -1079,11 +1084,8 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
-
-> Context changed between revise and revise.
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

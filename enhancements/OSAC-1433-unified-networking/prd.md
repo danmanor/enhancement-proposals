@@ -3,7 +3,7 @@ title: Unified Networking Requirements for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-28
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -490,9 +490,9 @@ This is logical OSAC readiness only; it does not assert provider connectivity,
 policy enforcement, or routing. An object whose dependency or target is not
 ready remains in its ordinary waiting state.
 
-An ExternalIP with no confirmed backend allocation reports
+An ExternalIP with no confirmed provider allocation reports
 `state=Pending`, `phase=Progressing`, an empty address, and `Ready=False`, reason
-`ProvisioningDisabled`. A confirmed allocation retains its real backend-returned
+`ProvisioningDisabled`. A confirmed allocation retains its real assigned
 address and `state=Allocated`, but reports `phase=Progressing` and
 `Ready=False`, reason `ProvisioningDisabled`, with a message that the address
 is last-known and is not being reconciled or guaranteed reachable. OSAC never
@@ -505,9 +505,19 @@ reserves its selected pool capacity in OSAC until that logical ExternalIP is
 deleted; this is not a provider address allocation. No automatic
 ExternalIPAttachment is created until a real allocation and a Ready target are
 both confirmed. Deleting an OSAC object may leave provider resources requiring
-manual or provider-side cleanup. Re-enabling resumes reconciliation for
-resources that still exist; deleted objects do not trigger provider cleanup
-after the fact. [User]
+manual or provider-side cleanup. If an already allocated ExternalIP is deleted
+while provider networking is disabled, OSAC releases its logical pool-capacity
+slot when the object is deleted, while the old provider reservation may remain
+until manual cleanup. Re-enabling resumes reconciliation for resources that
+still exist; deleted objects do not trigger provider cleanup after the fact.
+[User]
+
+During tenant onboarding with provider networking disabled, the default
+VirtualNetwork, Subnet, and SecurityGroup remain available for default
+attachment resolution. The default ExternalIP and NATGateway are omitted until
+provider networking is enabled. Once those logical defaults are ready, the
+tenant becomes READY for workload provisioning without a promise of provider
+connectivity or outbound NAT. [User]
 
 Ordinary VM, cluster, and bare-metal host provisioning remains available when
 its unchanged API prerequisites are met. VMs use platform default networking;
@@ -560,8 +570,10 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] With provider networking disabled, API, CLI, and UI networking operations retain their existing authorization, validation, defaulting, immutability, and dependency errors
 - [ ] Valid creates and deletes for all seven network resource kinds complete their OSAC object lifecycle without configuring or cleaning up provider networking; specification and metadata updates remain rejected, including SecurityGroup rule changes
 - [ ] After logical prerequisites pass, non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled`; resources with unmet dependencies remain waiting
-- [ ] An ExternalIP without a confirmed backend allocation remains `Pending`/`Progressing`, has an empty address, and reports `Ready=False`/`ProvisioningDisabled`; a confirmed real allocation retains its backend-returned address and `Allocated` state but reports `Ready=False`/`ProvisioningDisabled` while the provider is disabled
+- [ ] An ExternalIP without a confirmed provider allocation remains `Pending`/`Progressing`, has an empty address, and reports `Ready=False`/`ProvisioningDisabled`; a confirmed real allocation retains its assigned address and `Allocated` state but reports `Ready=False`/`ProvisioningDisabled` while the provider is disabled
 - [ ] Automatic ExternalIP requests retain synchronous pool/capacity validation and reserve capacity while Pending, without blocking workload provisioning; an attachment is created only after a real allocation and a Ready target are confirmed
+- [ ] Deleting an ExternalIP while disabled releases its OSAC capacity slot with the logical object, submits no provider release, and may leave a prior provider reservation for manual cleanup
+- [ ] Disabled tenant onboarding makes default VirtualNetwork, Subnet, and SecurityGroup available for workload defaulting, omits the provider-dependent ExternalIP and NATGateway, and does not promise outbound NAT
 - [ ] Previously active network operations are cancelled and awaited before skipped status or deletion-finalizer release; a job that completes first remains a real provider outcome and does not trigger disabled-mode rollback; provider resources may remain for manual or provider-side cleanup
 - [ ] Ordinary VM, cluster, and bare-metal host provisioning remains available with the stated platform/provisioning connectivity limitations and unchanged API prerequisites
 - [ ] Core ClusterOrder install/delete jobs remain active while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent when networking is disabled
@@ -629,11 +641,9 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (57 behind origin/main)
-
-> Context changed between revise and revise.
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":57,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->

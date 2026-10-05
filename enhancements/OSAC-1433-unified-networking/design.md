@@ -475,17 +475,26 @@ write. If the pool has no free address, the manager returns a failure with a
 diagnostic and no success result.
 
 The fulfillment-service reserves API-side pool capacity in the transaction
-that creates the ExternalIP. On deletion, OSAC first requires dependent
-ExternalIPAttachments and NATGateways to be removed, then invokes
-`external_ip.release`. The manager removes the UID-owned provider reservation
-and reports success only after the address is absent. OSAC returns API-side
-pool capacity only after successful AAP completion and validation of an
-`osac_result` with `schemaVersion: "v1"`, `operation: external_ip.release`, the
-current ExternalIP UID in `resourceUID`, the dispatched generation in
-`observedGeneration`, and empty `data`. The successful result asserts that the
-UID-owned provider reservation is absent; no separate `RELEASED` data field is
-required. A failed job or missing, malformed, stale, or mismatched envelope
-keeps capacity held for reconciliation.
+that creates the ExternalIP. On deletion while provider networking is enabled,
+OSAC first requires dependent ExternalIPAttachments and NATGateways to be
+removed, then invokes `external_ip.release`. The manager removes the UID-owned
+provider reservation and reports success only after the address is absent.
+OSAC returns API-side pool capacity only after successful AAP completion and
+validation of an `osac_result` with `schemaVersion: "v1"`,
+`operation: external_ip.release`, the current ExternalIP UID in `resourceUID`,
+the dispatched generation in `observedGeneration`, and empty `data`. The
+successful result asserts that the UID-owned provider reservation is absent;
+no separate `RELEASED` data field is required. A failed job or missing,
+malformed, stale, or mismatched envelope keeps capacity held for
+reconciliation.
+
+While provider networking is disabled, deleting an ExternalIP completes its
+OSAC object deletion without dispatching `external_ip.release`, and releases
+its API-side pool-capacity reservation when the logical object is deleted. If
+the manager had confirmed an allocation before disablement, its provider
+reservation may remain after OSAC deletion and require manual or provider-side
+cleanup. Releasing the OSAC capacity slot does not release that address in the
+provider or guarantee that the provider can allocate it again. [User]
 
 ### End-to-End Flows
 
@@ -1502,7 +1511,7 @@ reflect logical lifecycle and unmet prerequisites. [PRD: FR-8, FR-9, FR-10]
 | Subnet | Create/remove the selected managers' subnet/network resources; specification updates rejected | No provider segment, overlay, namespace, or pool is provisioned or removed; specification updates rejected |
 | SecurityGroup | Create/delete the manager policy; specification and metadata updates rejected | OSAC create/delete remains available; no provider policy operation; existing backend rules may remain effective until provider-side cleanup; updates rejected |
 | ExternalIPPool | Create/remove provider pool integration; specification updates rejected | Logical create/delete remains available without creating or removing a provider pool; specification updates rejected |
-| ExternalIP | The provider backend allocates/releases the address and OSAC records the returned address; specification updates rejected | No provider allocation or release occurs. Without a confirmed allocation it remains Pending with an empty address; a previously confirmed allocation retains only its real backend-returned address and Allocated state, marked last-known while disabled. Specification updates rejected |
+| ExternalIP | The selected manager durably reserves an address and writes the allocated-address annotation; OSAC validates the result and annotation before recording the address. On deletion, OSAC returns pool capacity only after confirmed provider release; specification updates rejected | No provider allocation or release occurs. Without a confirmed allocation it remains Pending with an empty address; a previously confirmed allocation retains its real validated address and Allocated state, marked last-known while disabled. Logical deletion releases OSAC capacity but may leave a provider reservation for manual cleanup. Specification updates rejected |
 | ExternalIPAttachment | Create/remove inbound routing for an Allocated IP and Ready target; specification updates rejected | No inbound routing is configured; creation still requires the existing API prerequisites, so a newly unallocated ExternalIP cannot satisfy them; specification updates rejected |
 | NATGateway | Create/remove outbound routing for the supported profile; specification updates rejected | No outbound routing is configured; creation retains the VirtualNetwork Ready and ExternalIP Allocated gates; specification updates rejected |
 
@@ -1531,19 +1540,23 @@ message that routing is waiting for a real allocation. It launches no routing
 job while disabled. This waiting case does not weaken API validation: new
 ExternalIPAttachments still require an Allocated ExternalIP and a Ready target.
 
-ExternalIP is the allocation exception. If no real backend allocation has
-completed, it remains `state=Pending`, `phase=Progressing`, with an empty
+ExternalIP is the allocation exception. If no real manager-confirmed
+allocation has completed, it remains `state=Pending`, `phase=Progressing`, with an empty
 `address` and `Ready=False`, reason `ProvisioningDisabled`; the message says
 allocation is waiting for provider networking to be enabled. The backend remains
 the address allocator when enabled; OSAC does not select an address from the
 pool CIDR. If a real allocation completed before the setting was disabled,
-retain its last backend-confirmed `state=Allocated` and address, set
+retain its last manager-confirmed `state=Allocated` and address from the
+validated allocated-address annotation, set
 `phase=Progressing` while provider networking is disabled, and set
 `Ready=False`, reason `ProvisioningDisabled`. The message identifies the
 address as last-known information that is not being reconciled or guaranteed
-reachable. If allocation finishes as networking is disabled, OSAC records the
-allocation only when success and the real returned address are confirmed. Never
-write `0.0.0.0` or another placeholder. On rollout to this behavior, convert
+reachable. If an allocation already in progress finishes while networking is
+being disabled, OSAC waits for terminal job state and records the allocation
+only after validating the successful result envelope and the real IPv4 address
+in the manager-written annotation. It does not dispatch a new allocation or
+compensating operation. Never write `0.0.0.0` or another placeholder. On rollout
+to this behavior, convert
 existing disabled-mode `0.0.0.0` records to Pending with an empty address;
 attachments that depended on the placeholder remain waiting until a real
 allocation is confirmed. [User]
@@ -1610,6 +1623,18 @@ retain pool/capacity validation; a persisted request whose IP stays unallocated
 does not create an ExternalIPAttachment; one is created only after its ExternalIP
 is Allocated and the workload is Ready. Ordinary workload provisioning does
 not wait for skipped provider work to produce an address. [User]
+
+For default tenant networking, onboarding creates the logical default
+VirtualNetwork, Subnet, and SecurityGroup through their normal API paths. It
+does not create the default ExternalIP or NATGateway while provider networking
+is disabled: no ExternalIP can be allocated, and NATGateway creation retains
+the existing `Allocated` prerequisite. Once those logical defaults are ready,
+`DefaultNetworkingReady` is true with reason `ProvisioningDisabled`, allowing
+VM, BM, and cluster resources to use the same default attachment resolution
+and API validation. This readiness does not assert provider connectivity or
+outbound NAT. When provider networking is enabled again, default networking
+creates the missing ExternalIP and NATGateway through the normal allocation
+and readiness gates. [User]
 
 ## Alternatives (Not Implemented)
 
@@ -1774,11 +1799,8 @@ No additional infrastructure beyond existing OSAC components and managers.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
-
-> Context changed between revise and revise.
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
