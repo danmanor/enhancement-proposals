@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-09-28
+last-updated: 2026-10-05
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -420,8 +420,10 @@ provider creates pools with addresses routable in the provider's connected
 network. The API does not require Internet reachability, but air-gapped and
 disconnected networking deployments are not supported.
 
-ExternalIPPools are provider-managed and deployment-scoped. The fabric
-manager handles ExternalIP allocation — one pool serves all resource types.
+ExternalIPPools are provider-managed and deployment-scoped. The NetworkClass
+profile selects the manager that handles ExternalIP allocation and release;
+the profiles defined in this design assign those operations to the Fabric
+Manager. One pool serves all resource types.
 Each pool uses exactly one canonical IPv4 CIDR. The API's repeated `cidrs`
 field is retained for compatibility, but validation rejects an empty list or
 more than one entry; IPv6 and dual-stack pools are not supported.
@@ -440,6 +442,38 @@ before persistence or backend dispatch.
 All explicit and automatic ExternalIP allocation paths, including per-service
 auto-provisioning, must request `IP_FAMILY_IPV4`; `IP_FAMILY_UNSPECIFIED` is
 not a valid default for this contract.
+
+#### ExternalIP Address Selection and Ownership
+
+The ExternalIPPool defines the eligible range; it does not choose the concrete
+address. For `external_ip.allocate`, OSAC supplies the ExternalIP UID and the
+resolved pool UID and canonical IPv4 CIDR to the manager selected by the
+NetworkClass profile. The manager chooses a free address in that pool and
+durably reserves it under the ExternalIP UID. Allocations from the same pool
+must be unique, and retrying the same UID must return the same reservation.
+The selection order is implementation-specific; the contract does not require
+first-fit or any other particular algorithm.
+
+After confirming the reservation, the manager returns the address in
+`osac_result.data.externalIP.address`. The manager must not patch the
+ExternalIP or write OSAC annotations or status. OSAC validates the result
+envelope, operation, ExternalIP UID and generation, canonical IPv4 address,
+and pool membership. Only then does OSAC write the
+`osac.openshift.io/allocated-address` annotation and
+`ExternalIP.status.address`, and report the ExternalIP as **Allocated**.
+Until that succeeds, the ExternalIP remains non-ready and has no accepted
+address. A retry uses the same UID-owned manager reservation. If the pool has
+no free address, the manager returns a failure with a diagnostic and no
+success result.
+
+The fulfillment-service reserves API-side pool capacity in the transaction
+that creates the ExternalIP. On deletion, OSAC first requires dependent
+ExternalIPAttachments and NATGateways to be removed, then invokes
+`external_ip.release`. The manager removes the UID-owned provider reservation
+and reports `RELEASED` only after the address is absent. OSAC validates that
+result before returning API-side pool capacity. A failed allocation or
+release remains eligible for reconciliation and does not prematurely free
+that capacity.
 
 ### End-to-End Flows
 
@@ -587,7 +621,10 @@ DNAT and SNAT identically for all resource types.
 osac create externalip --pool external-pool-1 --name my-ip
 ```
 
-The fabric manager allocates an IP from its IPAM (e.g., 203.0.113.45).
+The manager selected by the NetworkClass profile reserves a free address from
+the selected pool and returns it to OSAC (e.g., 203.0.113.45). OSAC validates
+the result and writes the allocated-address annotation and status as defined
+in [ExternalIP Address Selection and Ownership](#externalip-address-selection-and-ownership).
 
 **Attach for inbound access (DNAT):**
 
@@ -670,10 +707,13 @@ dependencies (ExternalIP Allocated + target Ready) are not yet met.
 *Step 2 — asynchronous (ExternalIP reconciliation):*
 
 The fulfillment-service reconciler pushes ExternalIP CRs to the hub
-cluster. The osac-operator ExternalIP controller dispatches to AAP →
-fabric manager allocates an IP address → ExternalIP transitions to
-**Allocated**. The fulfillment-service receives the status update via
-Signal RPC.
+cluster. The osac-operator dispatches `external_ip.allocate` to the manager
+selected by the NetworkClass profile. The manager durably reserves an address
+and returns it through `osac_result`; OSAC validates the result and writes the
+address annotation and status under [ExternalIP Address Selection and
+Ownership](#externalip-address-selection-and-ownership). The ExternalIP then
+transitions to **Allocated**, and the fulfillment-service receives the status
+update via Signal RPC.
 
 *Step 3 — asynchronous (deferred ExternalIPAttachment creation):*
 
