@@ -154,7 +154,7 @@ skipped provider work; it does not claim those provider outcomes. [User]
 - [ ] The system determines which physical network interface to use based on each node set's BareMetalInstanceType `network_ports` configuration
 
 - [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
-- [ ] Core ClusterOrder install/delete jobs remain active while provider-network stages (`cluster_infra`, `external_access`, tenant-pool-backed MetalLB VIP allocation, IPAM, public DNS/routing, and provider cleanup) run only as separately gated/drained work and are absent when networking is disabled
+- [ ] Core ClusterOrder install/delete jobs remain active while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent when networking is disabled
 - [ ] Disabled CaaS reports endpoint addresses only when supplied by the baseline environment; it does not create tenant-pool-backed LoadBalancer Services or fabricate VIPs
 - [ ] Non-allocating Networking API resources report `Ready=True`; incomplete worker BMI network phases skipped after disablement report `Unknown`/`ProvisioningDisabled`, while confirmed earlier phases retain `True`; ClusterOrder Ready does not claim tenant/public routing, ExternalIP allocation, or provider cleanup
 - [ ] With networking disabled, automatic ExternalIP requests remain Pending without an address and do not block ClusterOrder provisioning; no ExternalIPAttachment is created until a real allocation and Ready Cluster target exist
@@ -214,8 +214,11 @@ Resolved: The system creates IP address pools for cluster endpoint allocation at
 
 ## Provenance
 
-Committed: commit @ prd 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (57 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":57,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

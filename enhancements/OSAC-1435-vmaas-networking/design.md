@@ -388,40 +388,30 @@ validation.
 
 ### Provider Networking Disabled
 
-This service consumes the shared `global.networking.provisioningEnabled`
-Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
-environment value at startup; changes require rollout. The checkbox is available during installation/
-upgrade and is not an OSAC console live toggle. The Networking API,
-authorization, validation/defaulting, fulfillment reconcilers, and operator
-networking reconcilers stay active, as specified in
-[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+This service follows the shared provider-networking setting and disabled-mode
+contract in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+The setting is changed during installation or upgrade and takes effect after
+the coordinated rollout. Networking APIs, authorization, validation and
+defaulting, and ordinary service provisioning remain available while provider
+networking is disabled.
 [PRD: FR-8] [User]
 
-1. Fulfillment retains tenant attachment defaulting and validation; invalid
-   or non-ready API references are still rejected. The ComputeInstance operator
-   skips provider tenant-network resolution and uses platform default networking
-   for the normal VM template job. It does not require a provider-created CUDN
-   target namespace or stamp one as if it existed.
-   If a ComputeInstance CR legitimately reaches the operator with an omitted
-   or empty `networkAttachments` list, the `ocp_virt_vm` template must accept
-   ordinary compute provisioning without requiring
-   `networkAttachments[0].subnetRef` in `create_validate.yaml`; its VM
-   specification uses the platform pod default network. This does not change
-   fulfillment API behavior: API requests with omitted or empty attachments
-   still receive tenant defaults, and the API still reports the existing
-   missing-default or invalid-reference errors. When provider integration is
-   disabled, the workload controller/template does not use the resolved tenant
-   attachment to place the VM in a provider-created subnet namespace. With
-   provider integration enabled, existing tenant-attachment validation remains
-   in effect. Supplied attachment fields retain their API checks and stored
-   values in either mode, while disabled mode launches no provider networking.
-   [User]
+1. Tenant attachment defaulting, authorization, reference validation, and
+   readiness checks remain unchanged. An API-valid VM continues provisioning
+   on the platform default network while provider networking is disabled. No
+   tenant subnet placement, tenant SecurityGroup enforcement, or public routing
+   is claimed in this mode. Omitted or empty API attachments continue to receive
+   the existing tenant defaults, and invalid or non-ready references continue
+   to be rejected. Supplied attachment values remain stored and validated, but
+   do not cause provider networking to run while disabled. [User]
+
 2. Real VMI addresses may still be discovered through platform feedback, but
    they do not attest to tenant Subnet provisioning or ExternalIP allocation.
    No tenant policy, provider routing, or public ExternalIP routing is created.
-3. VM provision/delete AAP jobs remain enabled. Network-resource jobs obey the
-   shared cancellation/skipped/deletion rules, including auto-created children.
-   Ordinary VM provisioning does not wait for an unallocated ExternalIP.
+3. VM provisioning and deletion remain available. Network resource lifecycle
+   follows the shared status and deletion contract, including auto-created
+   children. Ordinary VM provisioning does not wait for an unallocated
+   ExternalIP.
 
 Each non-allocating Networking API resource follows the unified status
 contract: after its logical preconditions pass, it reports `Ready=True` with
@@ -444,56 +434,12 @@ SecurityGroup rules; rules already programmed in the backend may continue to
 affect traffic until provider-side cleanup. Automatic ExternalIP requests
 retain existing pool/capacity checks;
 an IP that stays unallocated exposes no fabricated address and does not satisfy
-the Allocated prerequisite. Fulfillment creates an automatic attachment only
-after Allocated + workload Ready. Creating the Pending ExternalIP reserves one
+the Allocated prerequisite. An automatic ExternalIPAttachment is created only after the ExternalIP is
+Allocated and the workload is Ready. Creating the Pending ExternalIP reserves one
 pool-capacity slot until the logical ExternalIP is deleted; this is not a
 provider allocation. With networking disabled the VM still provisions, the
 ExternalIP stays Pending, and no ExternalIPAttachment object is created.
 [User]
-
-#### VMaaS implementation path and current code gap
-
-The current `ComputeInstanceReconciler` in
-`osac-operator/internal/controller/computeinstance_controller.go` resolves the
-primary Subnet and writes its target-namespace annotation without checking the
-shared setting. The `ocp_virt_vm` AAP role also requires
-`spec.networkAttachments[0].subnetRef` during validation. These paths must be
-made conditional before this disabled-mode contract is met. In addition,
-`PrivateComputeInstancesServer.autoProvisionExternalIP` currently creates the
-ExternalIP and ExternalIPAttachment records together during the create
-request, before allocation and VM readiness; that must be changed to the
-deferred attachment flow specified here.
-
-1. Pass the same startup setting to ComputeInstance reconciliation and its VM
-   AAP template input. When disabled, do not resolve a Subnet to a CUDN target
-   namespace; create the VM in the normal tenant workload namespace on the
-   platform pod network. Do not apply tenant Subnet placement or
-   SecurityGroup-selection labels in this branch.
-2. Update
-   `osac-aap/collections/ansible_collections/osac/templates/roles/ocp_virt_vm/tasks/create_validate.yaml`,
-   `resolve_target_namespace.yaml`, and `create_build_spec.yaml` so a disabled
-   request does not require a Subnet reference or provider-created namespace
-   and uses the existing platform-default interface. Keep VM sizing, image,
-   storage, and other workload validation active. When enabled, preserve the
-   current tenant-network path.
-3. Leave fulfillment-service attachment defaulting, authorization, reference
-   validation, and pool/capacity checks unchanged. The create request reserves
-   one pool-capacity slot and persists the automatic ExternalIP request. Move
-   automatic ExternalIPAttachment creation out of the synchronous
-   `private_compute_instances_server.go` path into the new deferred
-   parent-resource reconciler defined in Unified Networking. The existing
-   ExternalIP and ExternalIPAttachment controllers only synchronize persisted
-   records to the hub; they do not materialize these attachments. Create the
-   attachment only after both real allocation and VM Ready. With the gate disabled, the EIP
-   remains Pending, the capacity reservation remains held until deletion, no
-   EIA is created, and the VM AAP job proceeds.
-4. Keep ordinary VM provision and delete AAP jobs enabled in both modes. The
-   shared network-resource controllers handle network-job cancellation and
-   logical child cleanup under the unified contract.
-
-Implementation coverage must exercise the ComputeInstance controller's
-namespace choice, enabled/disabled AAP inputs, template validation and default
-interface, unchanged API errors, and automatic ExternalIP deferral. [User]
 
 ## Alternatives (Not Implemented)
 
@@ -531,14 +477,10 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 - Verify invalid API/defaulting/dependency requests remain rejected,
   SecurityGroup defaulting/immutability remains unchanged, and automatic
   attachments still wait for Allocated + workload Ready.
-- Verify the API continues to apply tenant defaults and preserve missing-
-  default/invalid-reference errors for omitted or empty attachments. Separately,
-  verify an operator-level ComputeInstance CR that legitimately has no
-  attachments passes disabled-mode VM template validation and uses the
-  platform pod interface; supplied API attachment references retain their
-  validation, and enabled-mode tenant attachment validation remains in effect.
-- Verify the service-specific disabled flow above through the appropriate DEV
-  controller/template coverage and QE deployed user journey. [User]
+- Verify omitted or empty API attachments retain existing defaulting and
+  missing-default errors. A valid VM that has no tenant attachment provisions
+  on the platform default network when disabled; supplied API references retain
+  their existing validation, and enabled mode continues tenant placement.
 
 ### Unit Tests
 
@@ -691,8 +633,11 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 
 ## Provenance
 
-Committed: commit @ design 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -729,41 +729,41 @@ bare-metal-fulfillment-operator handles provisioning and networking, osac-operat
 
 ### Provider Networking Disabled
 
-This service consumes the shared `global.networking.provisioningEnabled`
-Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
-environment value at startup; changes require rollout. The checkbox is available during installation/
-upgrade and is not an OSAC console live toggle. The Networking API,
-authorization, validation/defaulting, fulfillment reconcilers, and operator
-networking reconcilers stay active, as specified in
-[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+This service follows the shared provider-networking setting and disabled-mode
+contract in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+The setting is changed during installation or upgrade and takes effect after
+the coordinated rollout. Networking APIs, authorization, validation and
+defaulting, and ordinary service provisioning remain available while provider
+networking is disabled.
 [PRD: FR-13] [User]
 
 1. Inventory allocation, hardware management, power management, and ordinary
-   host TemplateID provision/deprovision AAP jobs remain active. New hosts keep
-   their baseline provisioning connectivity throughout host provisioning.
-   `--auto-up` (`RunStrategy=Always`) still uses the ordinary power reconciler
-   to turn the host on; the host stays on the provisioning network because the
-   tenant port move, handoff reboot, and tenant DHCP discovery are skipped.
-2. The networking phase cancels and awaits tracked network-move and DHCP-query
-   jobs. It dispatches no port move, no handoff reboot, no tenant DHCP query,
-   and no substitute job. Each incomplete phase skipped after disablement uses
-   `Status=Unknown`, reason `ProvisioningDisabled`, and a message naming the
-   skipped operation. Preserve `True` conditions for provider phases confirmed
-   complete before disablement. Progress derivation treats a network phase as
-   complete only when its condition is `True`, or when it is `Unknown` with the
-   exact reason `ProvisioningDisabled`; any other `Unknown` remains incomplete.
+   host operating-system provisioning and deprovisioning remain active. New
+   hosts keep their baseline provisioning connectivity throughout host
+   provisioning. `--auto-up` (`RunStrategy=Always`) still turns the host on; it
+   stays on the provisioning network because the tenant port move, handoff
+   reboot, and tenant DHCP discovery are skipped.
+2. Any network move or DHCP query already in progress reaches terminal state
+   before the phase is reported skipped. No port move, handoff reboot, tenant
+   DHCP query, or substitute work is started while disabled. Each incomplete
+   phase skipped after disablement uses `Status=Unknown`, reason
+   `ProvisioningDisabled`, and a message naming the skipped operation. Preserve
+   `True` conditions for provider phases confirmed complete before disablement.
+   A skipped network phase counts as complete only when its condition is
+   `Unknown` with the exact reason `ProvisioningDisabled`; any other `Unknown`
+   remains incomplete.
    Host provisioning can reach Ready without a tenant IP; that Ready state
    describes OS provisioning, not tenant connectivity.
 3. No provisioning-network address is relabeled as a tenant-network address;
    no tenant IP is fabricated or discovered through the skipped path, and no
    public ExternalIP routing is configured.
-4. Deletion preserves normal host shutdown/teardown/inventory release and
-   logical auto-created child deletion order. Network finalizers wait for
-   active network jobs to become terminal, then release without tenant-to-
-   provisioning port movement or other provider cleanup. Skip the
-   network-specific offboard power-off gate because no port move follows, and
-   do not create or change `NetworkOffboardComplete` solely to report that the
-   move was skipped. If the condition already exists, preserve it as a record
+4. Deletion preserves normal host shutdown, teardown, inventory release, and
+   logical auto-created child deletion order. It waits for active network work
+   to become terminal and performs no tenant-to-provisioning port movement or
+   other provider cleanup. A host is
+   not powered off solely to precede a port move that will not occur, and
+   `NetworkOffboardComplete` is not created or changed solely to report that
+   the move was skipped. If the condition already exists, preserve it as a record
    of the prior enabled-mode power-off attempt: `True` confirms host power-off;
    `False` means completion was not observed before disablement. Neither value
    proves the port moved. Newly created disabled-mode hosts were never moved
@@ -789,73 +789,6 @@ complete shared status contract is in
 Fulfillment creates an automatic attachment only after real allocation and
 workload Ready with a known primary attachment address, so disabled mode does
 not bypass those gates. [User]
-
-#### BMaaS implementation path and current code gap
-
-The current BMF startup path in
-`bare-metal-fulfillment-operator/cmd/main.go` already leaves normal host
-provisioning active while setting `NetworkingProvider` and `IPDiscoveryProvider`
-to nil when the environment setting is false. That skips port moves, tenant
-DHCP discovery, and the network handoff reboot. The current status and deletion
-behavior in
-`bare-metal-fulfillment-operator/internal/controller/baremetalinstance_controller.go`
-and
-`bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_provisioning_progress.go`
-still differs from this contract: skipped network-phase conditions are written as
-`True`/`Skipped`, progress derivation has no exact disabled-skip case, and a nil
-network provider allows the networking finalizer path to finish without
-cancelling a tracked job from before the rollout. The main
-`reconcileNetworkProvisionAndDiscovery` flow also requires network conditions
-to be `True`; leaving those gates unchanged would keep a host in Progressing
-after the skipped phases correctly become `Unknown`/`ProvisioningDisabled`.
-The fulfillment-service's
-`PrivateBareMetalInstancesServer.autoProvisionExternalIP` also currently
-creates the ExternalIP and ExternalIPAttachment records together during the
-create request, before provider allocation and BaremetalInstance readiness.
-The target flow keeps the synchronous ExternalIP request and capacity
-reservation but defers attachment creation until a real allocation and a Ready
-BaremetalInstance with a known primary attachment address are confirmed.
-
-1. Keep ordinary `ProvisioningProvider`, inventory, hardware, power, and host
-   deprovisioning dependencies configured in both modes. Separate the AAP job
-   status/cancellation capability from the network-operation dispatcher so a
-   nil/disabled dispatcher can still drain a previously tracked move or DHCP
-   job without being able to submit another provider operation.
-2. In the BMI networking phase, write each incomplete
-   `NetworkAttachmentsReady`, `NetworkHandoffComplete`, and
-   `IPDiscoveryComplete` phase as `Unknown`/`ProvisioningDisabled` only after
-   tracked jobs are terminal. Preserve their existing success conditions for
-   phases that completed before disablement. Normalize legacy disabled-mode
-   `Status=True`, reason `Skipped` conditions to `Unknown`/`ProvisioningDisabled`;
-   they record a disabled-path skip, not provider work that completed.
-3. Update both `reconcileNetworkProvisionAndDiscovery` and
-   `DeriveProvisioningProgress` so each of those three stages counts as
-   complete when it is `True` or exactly `Unknown` with reason
-   `ProvisioningDisabled`. Do not treat arbitrary `Unknown` or other reasons as
-   completion. The phase orchestrator must continue through the skipped
-   attachment, handoff, and IP-discovery stages so the host reaches Ready
-   without claiming tenant networking.
-4. In deletion, drain tracked network jobs before releasing the networking
-   finalizer, but do not submit a reverse port move or network cleanup. Skip the
-   network-specific `reconcileNetworkOffboardShutdown` step because no port
-   move follows. Do not synthesize or rewrite `NetworkOffboardComplete` for the
-   skipped step; keep any existing value as the last-known host-power result.
-   Continue ordinary host deprovisioning and inventory release.
-5. Move automatic ExternalIPAttachment creation out of
-   `private_baremetal_instances_server.go` and into the new deferred
-   parent-resource reconciler defined in Unified Networking. Keep one selected
-   pool-capacity slot reserved by the Pending ExternalIP until logical
-   deletion; create the attachment only after
-   the provider returns a real address and the BaremetalInstance is Ready with
-   its primary attachment IP. A disabled provider setting must leave the
-   ExternalIP Pending, create no attachment, and not block host provisioning.
-6. Test enabled and disabled phase transitions, disablement midway through the
-   three network stages, normalization of legacy `True`/`Skipped` conditions,
-   preservation of confirmed success conditions, exact phase-orchestration and
-   progress derivation through Ready,
-   cancel/complete races, retryable cancellation errors, deletion for a newly
-   disabled-mode host, and deletion of a previously tenant-moved host with the
-   stated external restoration prerequisite. [User]
 
 ## Alternatives (Not Implemented)
 
@@ -895,8 +828,8 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 
 - Verify normal bare-metal server provision/delete jobs still run with the shared setting
   disabled and sufficient baseline connectivity; no network provider job runs.
-- Verify active network jobs are cancelled and awaited before skipped status
-  or network-finalizer release, including deletion and retryable AAP failures.
+- Verify in-progress network work reaches terminal state before skipped status
+  or deletion completion, including retryable status errors.
 - Verify non-allocating Networking API resources report `Ready=True`, reason
   `ProvisioningDisabled`, with a skipped-work message after logical
   preconditions pass. Verify ExternalIP pending and previously allocated
@@ -909,8 +842,6 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
 - Verify invalid API/defaulting/dependency requests remain rejected,
   SecurityGroup defaulting/immutability remains unchanged, and automatic
   attachments still wait for Allocated + workload Ready.
-- Verify the service-specific disabled flow above through the appropriate DEV
-  controller/template coverage and QE deployed user journey. [User]
 
 ### Unit Tests
 
@@ -1144,8 +1075,11 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 
 ## Provenance
 
-Committed: commit @ design 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (57 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":57,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

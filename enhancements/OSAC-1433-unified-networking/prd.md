@@ -564,7 +564,7 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] Automatic ExternalIP requests retain synchronous pool/capacity validation and reserve capacity while Pending, without blocking workload provisioning; an attachment is created only after a real allocation and a Ready target are confirmed
 - [ ] Previously active network operations are cancelled and awaited before skipped status or deletion-finalizer release; a job that completes first remains a real provider outcome and does not trigger disabled-mode rollback; provider resources may remain for manual or provider-side cleanup
 - [ ] Ordinary VM, cluster, and bare-metal host provisioning remains available with the stated platform/provisioning connectivity limitations and unchanged API prerequisites
-- [ ] Core ClusterOrder install/delete jobs remain active, while provider-network work such as `cluster_infra`, `external_access`, tenant VIP/IPAM, public DNS, and routing runs only as separately gated/drained work and is not dispatched when disabled
+- [ ] Core ClusterOrder install/delete jobs remain active while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent when networking is disabled
 - [ ] Incomplete BM network phases skipped after disablement use `Unknown`/`ProvisioningDisabled`, confirmed earlier phases retain `True`, and legacy disabled `True`/`Skipped` conditions are normalized; progress accepts only the exact Unknown/ProvisioningDisabled skip and BM Ready does not claim tenant networking
 - [ ] Enabling provider networking preserves the manager-profile behavior described by FR-1 through FR-9
 
@@ -629,8 +629,11 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 
 ## Provenance
 
-Committed: commit @ prd 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (57 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":57,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -516,24 +516,25 @@ VIP discovery flow (template → ClusterOrder status → Signal RPC → fulfillm
 
 ### Provider Networking Disabled
 
-This service consumes the shared `global.networking.provisioningEnabled`
-Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
-environment value at startup; changes require rollout. The checkbox is available during installation/
-upgrade and is not an OSAC console live toggle. The Networking API,
-authorization, validation/defaulting, fulfillment reconcilers, and operator
-networking reconcilers stay active, as specified in
-[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+This service follows the shared provider-networking setting and disabled-mode
+contract in [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+The setting is changed during installation or upgrade and takes effect after
+the coordinated rollout. Networking APIs, authorization, validation and
+defaulting, and ordinary service provisioning remain available while provider
+networking is disabled.
 [PRD: FR-12] [User]
 
-1. The ClusterOrder controller and core cluster install/delete AAP workflows
-   remain active, as do worker BMI creation, inventory, OS provisioning, and
-   host teardown. Provider-network work runs separately from those core jobs
-   and is skipped without cancelling them. Worker BMIs follow the BMaaS
-   disabled branch: no tenant port move, handoff reboot, or tenant DHCP query.
+1. Core cluster installation and deletion remain available when baseline
+   platform/provisioning connectivity and installation dependencies are
+   available. Tenant network setup and cleanup remain separate from this core
+   work; when provider networking is disabled, that work is not submitted and
+   does not block the core cluster lifecycle. Worker hosts follow the BMaaS
+   disabled behavior: no tenant port move, handoff reboot, or tenant DHCP query.
    Each incomplete worker network phase skipped after disablement uses
    `Status=Unknown`, reason `ProvisioningDisabled`; confirmed earlier phases
-   retain `True`. The ClusterOrder may reach Ready when cluster installation
-   succeeds on baseline connectivity; that phase does not claim tenant routing.
+   retain `True`. Cluster Ready means installation completed on the available
+   baseline connectivity, not that tenant routing is configured. [User]
+
 2. Cluster installation requires working baseline platform/provisioning
    connectivity to assisted-service, control-plane endpoints, DNS/address
    services, and image/install dependencies. No OSAC tenant segment, routing,
@@ -554,14 +555,12 @@ networking reconcilers stay active, as specified in
    `Ready=True`/`ProvisioningDisabled` only after its logical preconditions
    pass. See the shared status contract in
    [Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
-4. Cluster and worker deletion remain active. Logical child deletion waits
-   for tracked network jobs to terminate and keeps dependency order, then
-   removes provider-related finalizers without launching network cleanup.
-   ClusterOrder teardown still removes the cluster itself but skips
-   `cluster_infra`, `external_access`, and other provider-network cleanup; any
-   provider leftovers require manual/provider-side cleanup. Existing tenant
-   port placements may need manual restoration before host cleaning can use
-   provisioning connectivity.
+4. Cluster and worker deletion remain available. OSAC preserves logical child
+   deletion order and waits for in-progress network operations to finish before
+   deletion completes. No provider-network cleanup is submitted; provider
+   resources or host port placements may remain and require provider-side
+   cleanup or restoration before host cleaning can use provisioning
+   connectivity. [User]
 
 Default SecurityGroup selection, rule validation, API readiness,
 interface/cardinality/immutability, and deletion guards remain in force.
@@ -573,67 +572,6 @@ an IP that stays unallocated exposes no fabricated address and does not satisfy
 the Allocated prerequisite. Fulfillment creates an automatic attachment only
 after Allocated + workload Ready, so the disabled branch does not fabricate or
 early-create an attachment to bypass those gates. [User]
-
-#### CaaS implementation path
-
-`osac-operator/internal/controller/clusterorder_controller.go` currently
-dispatches ordinary cluster jobs independently of the network-resource flag;
-retain that behavior. The existing fulfillment-service ExternalIP and
-ExternalIPAttachment reconcilers synchronize persisted records to the hub;
-automatic ExternalIPAttachment materialization needs to move to a deferred
-parent-resource reconciliation. Worker-network gating belongs to BMF. However,
-`PrivateClustersServer.autoProvisionExternalIPs` currently creates each
-ExternalIP and its ExternalIPAttachment together during the cluster request,
-before provider allocation and Cluster Ready. Move attachment creation into
-the new deferred parent-resource reconciliation described below. In addition,
-the current `osac.templates.ocp_small` install and delete roles unconditionally
-dispatch `cluster_infra` and `external_access` step collections; neither reads
-the shared setting, and those calls run inside the core ClusterOrder AAP job.
-Cancelling that combined job to stop a network step would also stop cluster
-installation or deletion. The target CaaS proposal removes these legacy
-collection calls. Any replacement VIP/IPAM, provider-routing, or tenant/public
-DNS operation must be a separately tracked network operation so it can be
-gated and drained without cancelling the core ClusterOrder job. During the
-upgrade transition, wait for legacy combined ClusterOrder AAP runs to finish
-before declaring networking disabled; do not cancel them as a unit.
-
-1. Keep the ClusterOrder controller and core cluster install/delete AAP jobs
-   active on baseline platform/provisioning connectivity. Remove the current
-   `ocp_small/tasks/install.yaml` and `delete.yaml` calls to the
-   `cluster_infra` and `external_access` step collections from the core job.
-   Run any replacement tenant VIP, IPAM, provider-routing, or tenant/public
-   DNS work as a separately tracked network operation, then gate and drain it
-   through the shared setting. Do not cancel the core ClusterOrder job when
-   disabling networking. When disabled, baseline-provided endpoint services
-   and DNS are used; OSAC does not create tenant VIP pools or public routing.
-   The target CaaS proposal removes the legacy step-collection calls; its
-   replacement network stages must obey the same disabled contract.
-2. Keep CaaS request defaulting and validation active. When
-   `--external-ip-attachment` is requested, synchronously validate capacity
-   and persist two Pending ExternalIP requests that reserve two pool-capacity
-   slots; continue ClusterOrder provisioning. Move ExternalIPAttachment
-   creation out of the synchronous `private_clusters_server.go` path into the
-   new deferred parent-resource reconciler defined in Unified Networking.
-   With the gate disabled those ExternalIPs remain Pending without addresses, and no
-   ExternalIPAttachments are created until each real backend allocation and
-   the corresponding Cluster target readiness prerequisite are confirmed.
-3. Run worker BMIs through the BMaaS disabled contract: retain inventory,
-   operating-system provisioning, and normal deprovisioning; skip fabric port
-   moves, tenant-network reboots, and tenant DHCP queries. The BMF phase
-   orchestrator and progress derivation must accept only the exact
-   `Unknown`/`ProvisioningDisabled` skip so worker BMIs can reach Ready without
-   claiming tenant networking. ClusterOrder Ready and endpoint feedback report
-   only successful baseline installation and addresses actually provided by
-   that environment.
-4. On Cluster deletion, keep auto-created child deletion order, but use the
-   shared cancellation-only drain and do not dispatch network cleanup. Existing
-   provider resources or host port placements may require provider/manual
-   cleanup.
-
-Implementation coverage must verify that disabled ClusterOrder jobs still run,
-workers follow the BMI condition/progress contract, automatic ExternalIP
-requests do not block cluster provisioning, attachments remain deferred, and
-cluster cleanup does not dispatch provider networking. [User]
 
 ## Alternatives (Not Implemented)
 
@@ -688,14 +626,13 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 ### Provider Networking Control (FR-12)
 
 - Verify normal cluster provision/delete jobs still run with the shared setting
-  disabled and sufficient baseline connectivity; no `cluster_infra`,
-  `external_access`, tenant-pool-backed MetalLB Service/VIP allocation,
-  IPAM, public DNS/routing, or network cleanup operation is dispatched by the
-  ClusterOrder core job; the core job itself is not cancelled by the toggle.
-- Verify the disabled guarantee is declared only after pre-upgrade combined
-  ClusterOrder AAP jobs finish their legacy inline network steps.
-- Verify active network jobs are cancelled and awaited before skipped status
-  or network-finalizer release, including deletion and retryable AAP failures.
+  disabled and sufficient baseline connectivity; no tenant VIP allocation,
+  IPAM, public DNS/routing, or provider cleanup runs while disabled; core
+  ClusterOrder jobs remain active.
+- Verify the disabled contract takes effect after coordinated rollout and
+  active provider-network operations reach terminal state.
+- Verify in-progress provider-network operations reach terminal state before
+  skipped status or deletion completion, including retryable status errors.
 - Verify non-allocating Networking API resources report `Ready=True`, reason
   `ProvisioningDisabled`, with a skipped-work message only after logical
   preconditions pass. Verify ExternalIP pending and previously allocated
@@ -708,8 +645,6 @@ Resolved: Kubeconfig API address uses the MetalLB VIP directly — workers are o
 - Verify invalid API/defaulting/dependency requests remain rejected,
   SecurityGroup defaulting/immutability remains unchanged, and automatic
   attachments still wait for Allocated + workload Ready.
-- Verify the service-specific disabled flow above through the appropriate DEV
-  controller/template coverage and QE deployed user journey. [User]
 
 ### Unit Tests
 
@@ -751,7 +686,7 @@ Tech Preview criteria:
 - [ ] Agent-to-BMI MAC correlation and NodePool labeling implemented
 - [ ] VIP feedback loop (template → ClusterOrder → fulfillment-service → Cluster) implemented
 - [ ] Auto ExternalIP attachment provisioning functional
-- [ ] Core template no longer invokes `cluster_infra`/`external_access` or inline tenant VIP work; the separately tracked CaaS VIP phase is gated and cancellable
+- [ ] With networking disabled, ClusterOrder install/delete remains available while tenant VIP allocation, IPAM, public DNS/routing, and provider cleanup are absent
 - [ ] Integration tests pass (E2E coverage for network_attachment, auto ExternalIP attachment, VIP feedback)
 - [ ] Documentation: API reference, user guide for simplified cluster creation
 
@@ -912,8 +847,11 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 
 ## Provenance
 
-Committed: commit @ design 0.11.3 - 2bd6607, workspace networking-provisioning-toggle @ e97b06357
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> Context changed between revise and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"e97b06357","source_repo_branch":"networking-provisioning-toggle","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
