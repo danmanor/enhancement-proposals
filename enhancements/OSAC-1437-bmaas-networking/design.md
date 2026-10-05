@@ -41,9 +41,12 @@ explicitly specifies them.
 BaremetalInstance supports a repeated `BareMetalNetworkAttachment` field for API compatibility, but accepts at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The bare-metal-fulfillment-operator's `reconcileNetworking` phase configures the switch port via dispatcher, and IP address feedback via CR status enables DNAT rule creation. See [PRD](prd.md) for detailed requirements.
 
 The manager-backed resource flows and provider IP-discovery/readiness behavior
-in this document describe the enabled mode. The disabled branch below preserves
-Networking API validation and current SecurityGroup semantics while completing
-ordinary workload provisioning with networking explicitly skipped. [User]
+in this document describe the enabled mode. The feature-gated disabled behavior
+is specified at the end of the Proposal section. API-level SecurityGroup rule
+validation and reference checks remain active in disabled mode. OSAC submits no
+provider operation to apply or remove SecurityGroup rules; rules already
+programmed in the backend may continue to affect traffic until provider-side
+cleanup. [User]
 
 ## Motivation
 
@@ -178,43 +181,6 @@ The [BareMetalInstanceType EP](/enhancements/OSAC-1201-baremetal-instance-types)
 | `lifecycle` | Out-of-band lifecycle management (PXE boot, Redfish/BMC) |
 
 Roles are conventions, not enforced enums. BMaaS uses them for display/documentation; the tenant selects by port name, not role. Ports with role `lifecycle` are used by the provisioning system (Ironic, Metal3) for PXE boot and BMC operations — they are NOT tenant-attachable and should not appear in `network_attachments`.
-
-### Provider Networking Disabled
-
-This service consumes the shared `global.networking.provisioningEnabled`
-Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
-environment value at startup; changes require rollout. The checkbox is available during installation/
-upgrade and is not an OSAC console live toggle. The Networking API,
-authorization, validation/defaulting, fulfillment reconcilers, and operator
-networking reconcilers stay active, as specified in
-[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
-[PRD: FR-13] [User]
-
-1. Inventory allocation, hardware management, power management, and ordinary
-   host TemplateID provision/deprovision AAP jobs remain active. New hosts keep
-   their baseline provisioning connectivity throughout host provisioning.
-2. The networking phase cancels and awaits tracked network-move and DHCP-query
-   jobs, then reports the networking, handoff, and IP-discovery conditions as
-   Skipped. It dispatches no port move, no handoff reboot, no tenant DHCP query,
-   and no substitute job. Host provisioning can reach Ready without a tenant
-   IP; that Ready state describes OS provisioning with networking skipped.
-3. No provisioning-network address is relabeled as a tenant-network address;
-   no tenant IP is fabricated or discovered through the skipped path, and no
-   public ExternalIP routing is configured.
-4. Deletion preserves normal host shutdown/teardown/inventory release and
-   logical auto-created child deletion order. Network finalizers wait for
-   active network jobs to become terminal, then release without tenant-to-
-   provisioning port movement or other provider cleanup. Existing tenant port
-   placements are not restored by disabling the setting; provider/manual
-   restoration may be required before host cleaning has baseline connectivity.
-
-Default SecurityGroup resolution and semantics, API readiness,
-interface/cardinality/immutability, and deletion guards remain
-in force. Automatic ExternalIP requests retain existing pool/capacity checks;
-an IP that stays unallocated exposes no fabricated address and does not satisfy
-the Allocated prerequisite. Fulfillment creates an automatic attachment only
-after Allocated + workload Ready, so the disabled branch does not fabricate or
-early-create an attachment to bypass those gates. [User]
 
 ### Workflow Description
 
@@ -591,15 +557,20 @@ The operator uses conditions and phase to signal tenant handoff readiness:
   if `IPDiscoveryComplete=False/TemplateFailed`, the phase is set to `Failed`
   and the flow stops. Without this explicit check, the phase could briefly
   reach `Ready` between IP discovery retry cycles.
-- `NetworkOffboardComplete` (deletion only) — the host has been powered off
+- `NetworkOffboardComplete` (enabled-mode deletion only) — the host has been powered off
   while still on the tenant network, prior to the port moving back to the
   provisioning network. Tracked by `reconcileNetworkOffboardShutdown`.
-- Phase `Ready` — fully provisioned + on the tenant network + IP known.
+- With provider networking enabled, phase `Ready` means fully provisioned, on
+  the tenant network, and tenant IP known. With provider networking disabled,
+  Ready means OS provisioning completed; it does not assert tenant placement or
+  tenant IP discovery (see [Provider Networking Disabled](#provider-networking-disabled)).
 
-**Gating rule:** the operator must not surface a tenant IP or report `Ready`
-until after move + segment active + reboot + discovery. The provisioning-network
-IP is never exposed to the tenant. External access is signaled separately by
-the `ExternalIPAttachment` (DNAT) and `NATGateway` (SNAT) CR statuses.
+**Enabled-mode gating rule:** the operator must not surface a tenant IP or
+report `Ready` until after move + segment active + reboot + discovery. The
+provisioning-network IP is never exposed to the tenant. External access is
+signaled separately by the `ExternalIPAttachment` (DNAT) and `NATGateway`
+(SNAT) CR statuses. In disabled mode, no tenant IP is surfaced and the skipped
+stages follow the separate contract below.
 
 #### IP Discovery
 
@@ -756,6 +727,136 @@ bare-metal-fulfillment-operator handles provisioning and networking, osac-operat
 
 **Trade-off:** Separation of concerns (provisioning vs. feedback) vs. operational simplicity. Chosen approach: maintain two-operator architecture to avoid merging codebases. Document reconciliation phase ordering and finalizer dependencies.
 
+### Provider Networking Disabled
+
+This service consumes the shared `global.networking.provisioningEnabled`
+Helm installation/upgrade setting or Enclave Wizard checkbox. Both operators read the propagated
+environment value at startup; changes require rollout. The checkbox is available during installation/
+upgrade and is not an OSAC console live toggle. The Networking API,
+authorization, validation/defaulting, fulfillment reconcilers, and operator
+networking reconcilers stay active, as specified in
+[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control).
+[PRD: FR-13] [User]
+
+1. Inventory allocation, hardware management, power management, and ordinary
+   host TemplateID provision/deprovision AAP jobs remain active. New hosts keep
+   their baseline provisioning connectivity throughout host provisioning.
+   `--auto-up` (`RunStrategy=Always`) still uses the ordinary power reconciler
+   to turn the host on; the host stays on the provisioning network because the
+   tenant port move, handoff reboot, and tenant DHCP discovery are skipped.
+2. The networking phase cancels and awaits tracked network-move and DHCP-query
+   jobs. It dispatches no port move, no handoff reboot, no tenant DHCP query,
+   and no substitute job. Each incomplete phase skipped after disablement uses
+   `Status=Unknown`, reason `ProvisioningDisabled`, and a message naming the
+   skipped operation. Preserve `True` conditions for provider phases confirmed
+   complete before disablement. Progress derivation treats a network phase as
+   complete only when its condition is `True`, or when it is `Unknown` with the
+   exact reason `ProvisioningDisabled`; any other `Unknown` remains incomplete.
+   Host provisioning can reach Ready without a tenant IP; that Ready state
+   describes OS provisioning, not tenant connectivity.
+3. No provisioning-network address is relabeled as a tenant-network address;
+   no tenant IP is fabricated or discovered through the skipped path, and no
+   public ExternalIP routing is configured.
+4. Deletion preserves normal host shutdown/teardown/inventory release and
+   logical auto-created child deletion order. Network finalizers wait for
+   active network jobs to become terminal, then release without tenant-to-
+   provisioning port movement or other provider cleanup. Skip the
+   network-specific offboard power-off gate because no port move follows, and
+   do not create or change `NetworkOffboardComplete` solely to report that the
+   move was skipped. If the condition already exists, preserve it as a record
+   of the prior enabled-mode power-off attempt: `True` confirms host power-off;
+   `False` means completion was not observed before disablement. Neither value
+   proves the port moved. Newly created disabled-mode hosts were never moved
+   off provisioning connectivity, so ordinary deprovisioning can use that
+   baseline. A host
+   previously moved to a tenant network is not moved back when the setting is
+   disabled; provider/manual restoration may be required before Ironic cleaning
+   can use provisioning connectivity.
+
+Default SecurityGroup selection, rule validation, API readiness,
+interface/cardinality/immutability, and deletion guards remain in force.
+Disabled mode submits no provider operation to create, change, or remove
+SecurityGroup rules; rules already programmed in the backend may continue to
+affect traffic until provider-side cleanup. An automatic ExternalIP request
+retains the existing synchronous pool/capacity checks and reserves one logical
+pool-capacity slot until its ExternalIP is deleted. With networking disabled,
+the request remains Pending without a provider address and creates no
+ExternalIPAttachment. A real allocation confirmed before disablement retains
+its backend-returned address and `Allocated` state, but reports `Progressing`
+and `Ready=False`/`ProvisioningDisabled`; the address is last-known only. The
+complete shared status contract is in
+[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md#resource-operation-behavior).
+Fulfillment creates an automatic attachment only after real allocation and
+workload Ready with a known primary attachment address, so disabled mode does
+not bypass those gates. [User]
+
+#### BMaaS implementation path and current code gap
+
+The current BMF startup path in
+`bare-metal-fulfillment-operator/cmd/main.go` already leaves normal host
+provisioning active while setting `NetworkingProvider` and `IPDiscoveryProvider`
+to nil when the environment setting is false. That skips port moves, tenant
+DHCP discovery, and the network handoff reboot. The current status and deletion
+behavior in
+`bare-metal-fulfillment-operator/internal/controller/baremetalinstance_controller.go`
+and
+`bare-metal-fulfillment-operator/api/v1alpha1/baremetalinstance_provisioning_progress.go`
+still differs from this contract: skipped network-phase conditions are written as
+`True`/`Skipped`, progress derivation has no exact disabled-skip case, and a nil
+network provider allows the networking finalizer path to finish without
+cancelling a tracked job from before the rollout. The main
+`reconcileNetworkProvisionAndDiscovery` flow also requires network conditions
+to be `True`; leaving those gates unchanged would keep a host in Progressing
+after the skipped phases correctly become `Unknown`/`ProvisioningDisabled`.
+The fulfillment-service's
+`PrivateBareMetalInstancesServer.autoProvisionExternalIP` also currently
+creates the ExternalIP and ExternalIPAttachment records together during the
+create request, before provider allocation and BaremetalInstance readiness.
+The target flow keeps the synchronous ExternalIP request and capacity
+reservation but defers attachment creation until a real allocation and a Ready
+BaremetalInstance with a known primary attachment address are confirmed.
+
+1. Keep ordinary `ProvisioningProvider`, inventory, hardware, power, and host
+   deprovisioning dependencies configured in both modes. Separate the AAP job
+   status/cancellation capability from the network-operation dispatcher so a
+   nil/disabled dispatcher can still drain a previously tracked move or DHCP
+   job without being able to submit another provider operation.
+2. In the BMI networking phase, write each incomplete
+   `NetworkAttachmentsReady`, `NetworkHandoffComplete`, and
+   `IPDiscoveryComplete` phase as `Unknown`/`ProvisioningDisabled` only after
+   tracked jobs are terminal. Preserve their existing success conditions for
+   phases that completed before disablement. Normalize legacy disabled-mode
+   `Status=True`, reason `Skipped` conditions to `Unknown`/`ProvisioningDisabled`;
+   they record a disabled-path skip, not provider work that completed.
+3. Update both `reconcileNetworkProvisionAndDiscovery` and
+   `DeriveProvisioningProgress` so each of those three stages counts as
+   complete when it is `True` or exactly `Unknown` with reason
+   `ProvisioningDisabled`. Do not treat arbitrary `Unknown` or other reasons as
+   completion. The phase orchestrator must continue through the skipped
+   attachment, handoff, and IP-discovery stages so the host reaches Ready
+   without claiming tenant networking.
+4. In deletion, drain tracked network jobs before releasing the networking
+   finalizer, but do not submit a reverse port move or network cleanup. Skip the
+   network-specific `reconcileNetworkOffboardShutdown` step because no port
+   move follows. Do not synthesize or rewrite `NetworkOffboardComplete` for the
+   skipped step; keep any existing value as the last-known host-power result.
+   Continue ordinary host deprovisioning and inventory release.
+5. Move automatic ExternalIPAttachment creation out of
+   `private_baremetal_instances_server.go` and into the new deferred
+   parent-resource reconciler defined in Unified Networking. Keep one selected
+   pool-capacity slot reserved by the Pending ExternalIP until logical
+   deletion; create the attachment only after
+   the provider returns a real address and the BaremetalInstance is Ready with
+   its primary attachment IP. A disabled provider setting must leave the
+   ExternalIP Pending, create no attachment, and not block host provisioning.
+6. Test enabled and disabled phase transitions, disablement midway through the
+   three network stages, normalization of legacy `True`/`Skipped` conditions,
+   preservation of confirmed success conditions, exact phase-orchestration and
+   progress derivation through Ready,
+   cancel/complete races, retryable cancellation errors, deletion for a newly
+   disabled-mode host, and deletion of a previously tenant-moved host with the
+   stated external restoration prerequisite. [User]
+
 ## Alternatives (Not Implemented)
 
 ### Alternative 1: Single-operator architecture
@@ -796,8 +897,15 @@ Resolved: After `reconcileProvisioning` completes and the host has received a DH
   disabled and sufficient baseline connectivity; no network provider job runs.
 - Verify active network jobs are cancelled and awaited before skipped status
   or network-finalizer release, including deletion and retryable AAP failures.
-- Verify status reports Skipped/ProvisioningDisabled and never invents a tenant
-  IP or allocated ExternalIP. Enabled mode retains normal provider behavior.
+- Verify non-allocating Networking API resources report `Ready=True`, reason
+  `ProvisioningDisabled`, with a skipped-work message after logical
+  preconditions pass. Verify ExternalIP pending and previously allocated
+  statuses match the shared contract. Verify incomplete BMI networking phases
+  skipped after disablement report `Status=Unknown`, reason
+  `ProvisioningDisabled`, confirmed prior successes remain `True`, and legacy
+  `True`/`Skipped` conditions are normalized; no tenant IP or ExternalIP address
+  is fabricated. Verify disabled deletion does not synthesize
+  `NetworkOffboardComplete`. Enabled mode retains normal provider behavior.
 - Verify invalid API/defaulting/dependency requests remain rejected,
   SecurityGroup defaulting/immutability remains unchanged, and automatic
   attachments still wait for Allocated + workload Ready.
@@ -977,7 +1085,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 2. If IP is missing, check bare-metal-fulfillment-operator logs for provisioning phase completion
 3. If provisioning completed but IP missing, investigate `query_dhcp_lease` dispatcher call (DHCP lease query may have failed, returned empty, or port MAC did not match any lease). Confirm the BareMetalHost carries the `osac.openshift.io/interface-macs` annotation with the attachment's interface — without it, MAC matching is skipped and only named fabric servers resolve
 
-### Disabling the feature
+### Disabling automatic ExternalIP requests
 
 To disable auto ExternalIP attachment:
 - Remove or redact ExternalIPPool CRs (capacity exhaustion prevents auto allocation)
@@ -992,8 +1100,10 @@ Consequences:
 
 Set `global.networking.provisioningEnabled=false` through the Helm setting or Enclave Wizard checkbox
 installation/upgrade value map and complete both operator rollouts. Inspect
-ProvisioningDisabled/Skipped conditions and tracked network job states. Ordinary
-workload provisioning remains active with the baseline connectivity described
+`Ready=True`/`ProvisioningDisabled` conditions on non-allocating Networking API
+resources, `Unknown`/`ProvisioningDisabled` conditions on BMI network phases,
+and tracked network job states. Ordinary workload provisioning remains active
+with the baseline connectivity described
 above. Networking APIs remain available; no provider allocation, routing,
 port movement, DHCP discovery, or cleanup is supplied by the skipped path.
 Existing provider resources may require manual/provider-side cleanup. [User]

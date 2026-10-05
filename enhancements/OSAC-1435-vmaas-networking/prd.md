@@ -82,7 +82,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Auto External IP
 
-- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system auto-selects the external IP pool with the most available capacity, allocates an IP, and attaches it to the VM's primary interface for inbound access. The IP and attachment are automatically cleaned up when the VM is deleted. Default networking resources (virtual networks, subnets, security groups, NATGateway) are not cleaned up as they are tenant-scoped and shared across resources. [User]
+- **FR-4:** VMs support `--external-ip-attachment`. When specified, the system synchronously selects and capacity-checks an ExternalIPPool, creates a Pending ExternalIP request that reserves one pool-capacity slot, and requests an address from the provider backend asynchronously. After a real allocation and VM Ready are confirmed, it creates an ExternalIPAttachment to the VM's primary interface for inbound access. The IP and any attachment are automatically cleaned up when the VM is deleted. Default networking resources (VirtualNetworks, Subnets, SecurityGroups, and NATGateways) are not cleaned up as they are tenant-scoped and shared across resources. [User]
 
 #### IP Address Discovery
 
@@ -98,7 +98,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 
 #### Provider Networking Disabled
 
-- **FR-8:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary VM provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. VM provisioning and deletion remain available on platform default networking. OSAC does not provide the selected tenant network, tenant policy, routing, or public ExternalIP routing in this mode. Platform-reported VM addresses do not imply that a tenant Subnet or an ExternalIP was provisioned. Networking status explicitly identifies skipped work with `ProvisioningDisabled`/`Skipped`; no unallocated ExternalIP reports an address. Existing network operations are cancelled and awaited before skipped/deleted completion; logical cleanup preserves dependency order and may leave provider resources for manual/provider-side cleanup. [User]
+- **FR-8:** A Cloud Provider Admin can disable OSAC network-provider operations through the shared Helm setting or Enclave Wizard checkbox available during installation or upgrade while keeping networking APIs, their authorization/validation/defaulting, and ordinary VM provisioning available. The setting takes effect through rollout and is not an OSAC console live toggle. VM provisioning and deletion remain available on the platform default network; the controller and template do not require or use a provider-created tenant Subnet namespace or tenant SecurityGroup selection. Platform-reported VM addresses do not imply that a tenant Subnet or ExternalIP was provisioned. After logical prerequisites pass, non-allocating Networking API resources report `Ready=True`/`ProvisioningDisabled`; unmet prerequisites remain waiting. An ExternalIP without confirmed backend allocation reports `Pending`/`Progressing`, an empty address, and `Ready=False`/`ProvisioningDisabled`; a confirmed real allocation retains its address and `Allocated` state but reports `Progressing` and `Ready=False`/`ProvisioningDisabled` while networking is disabled. An automatic ExternalIP request reserves one validated pool-capacity slot, remains Pending without an address, and does not block the VM job; no attachment object is created until a real allocation and VM Ready are confirmed. Existing network operations are cancelled and awaited before skipped/deleted completion; logical cleanup preserves dependency order and may leave provider resources for manual/provider-side cleanup. [User]
 
 An API-valid VM without tenant network attachments still provisions using
 the platform default network. Disabling provider integration adds no tenant-
@@ -108,7 +108,7 @@ is skipped. Existing API defaulting and precondition rules still apply. [User]
 
 ### 4.2 Non-Functional Requirements
 
-- **NFR-1:** Auto external IP allocation completes synchronously within the create request. If no pool has available capacity, the create request fails with a clear error. [User]
+- **NFR-1:** ExternalIP pool selection and capacity validation complete synchronously in the create request; provider address allocation is asynchronous. If no pool has available capacity, the request fails with a clear error. [User]
 
 Connectivity, allocation, provider policy enforcement/cleanup, and related
 provider-work timing requirements described here apply when provider networking is
@@ -129,11 +129,11 @@ skipped provider work; it does not claim those provider outcomes. [User]
 - [ ] Creating a VM with a partial single attachment defaults only its missing subnet or security-group fields
 
 - [ ] With the shared setting disabled after rollout, an API-valid ordinary workload request still provisions using the stated platform/provisioning connectivity
-- [ ] Status explicitly identifies provider work as ProvisioningDisabled/Skipped and does not claim tenant/public routing, allocation, or provider cleanup
+- [ ] Non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled` after logical prerequisites pass; VM Ready and platform-reported VMI addresses do not claim tenant/public routing, ExternalIP allocation, or provider cleanup
 - [ ] Default SecurityGroup resolution, invalid-reference/non-ready-dependency rejection, tenant boundaries, and existing interface/cardinality/immutability rules remain active
 - [ ] Networking specification and metadata updates, including SecurityGroup rules, remain rejected in both modes
 - [ ] Deletion awaits active network-operation cancellation and preserves dependency/cascade order without provider cleanup; ordinary workload deletion stays active
-- [ ] Unallocated ExternalIPs expose no fabricated address and do not bypass Allocated + workload Ready gates for automatic attachment creation [User]
+- [ ] An unallocated ExternalIP reports Pending/Progressing with an empty address and Ready=False/ProvisioningDisabled; automatic ExternalIP requests do not block VM provisioning and no attachment is created until real allocation + VM Ready [User]
 
 ## 6. Assumptions
 

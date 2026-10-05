@@ -95,8 +95,11 @@ This section defines key terms used throughout this document.
 Provider-dependent connectivity and allocation in this document apply when
 provider networking is enabled. FR-10 defines the installation/upgrade setting,
 including the Enclave Wizard checkbox, and the disabled user experience.
-Networking APIs, SecurityGroup semantics, and validation apply in both modes.
-[User]
+Networking API authorization, validation, defaulting, reference checks, and
+SecurityGroup rule schema and immutability apply in both modes. When disabled,
+OSAC submits no provider operation to apply or remove SecurityGroup rules. Rules
+already programmed in the backend may continue to affect traffic until
+provider-side cleanup. [User]
 
 ## 1. Problem Statement
 
@@ -472,17 +475,52 @@ provider network configuration, address allocation, routing, or cleanup runs.
 This applies to VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
 ExternalIP, ExternalIPAttachment, and NATGateway. All networking
 specification and metadata updates, including SecurityGroup rule changes,
-remain rejected under the published create/read/delete contract. Existing
-network operations are cancelled and awaited before their status reports
-skipped or object deletion completes. Status explicitly reports
-`ProvisioningDisabled`/`Skipped`; an unallocated ExternalIP exposes no address
-and is not reported as allocated. Deleting an OSAC object may leave provider
-resources requiring manual or provider-side cleanup. [User]
+remain rejected under the published create/read/delete contract. With the
+setting disabled, OSAC submits no provider operation to apply, change, or remove
+SecurityGroup rules. Rules already programmed in the backend may continue to
+affect traffic until provider-side cleanup. Existing network operations are
+cancelled and awaited before status reports skipped or deletion releases a
+finalizer. Cancellation is not rollback: a job that completes before
+cancellation takes effect remains a confirmed provider outcome, and OSAC does
+not launch a compensating cleanup job while disabled. After logical
+preconditions pass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool,
+ExternalIPAttachment, and NATGateway report `Ready=True`, reason
+`ProvisioningDisabled`, with a message naming the skipped provider operation.
+This is logical OSAC readiness only; it does not assert provider connectivity,
+policy enforcement, or routing. An object whose dependency or target is not
+ready remains in its ordinary waiting state.
+
+An ExternalIP with no confirmed backend allocation reports
+`state=Pending`, `phase=Progressing`, an empty address, and `Ready=False`, reason
+`ProvisioningDisabled`. A confirmed allocation retains its real backend-returned
+address and `state=Allocated`, but reports `phase=Progressing` and
+`Ready=False`, reason `ProvisioningDisabled`, with a message that the address
+is last-known and is not being reconciled or guaranteed reachable. OSAC never
+selects an address from the pool CIDR and never writes a placeholder such as
+`0.0.0.0`. Existing sentinel records are cleared to Pending/empty; attachments
+that depended on a sentinel wait for a real allocation. Automatic ExternalIP
+requests still undergo the same pool/capacity validation, but the workload
+continues while the ExternalIP is Pending. Creating the Pending ExternalIP
+reserves its selected pool capacity in OSAC until that logical ExternalIP is
+deleted; this is not a provider address allocation. No automatic
+ExternalIPAttachment is created until a real allocation and a Ready target are
+both confirmed. Deleting an OSAC object may leave provider resources requiring
+manual or provider-side cleanup. Re-enabling resumes reconciliation for
+resources that still exist; deleted objects do not trigger provider cleanup
+after the fact. [User]
 
 Ordinary VM, cluster, and bare-metal host provisioning remains available when
 its unchanged API prerequisites are met. VMs use platform default networking;
 new bare-metal hosts remain on provisioning connectivity, without tenant port
-moves or tenant IP discovery. CaaS requires baseline platform/provisioning
+moves or tenant IP discovery. Each incomplete BM
+`NetworkAttachmentsReady`, `NetworkHandoffComplete`, and
+`IPDiscoveryComplete` phase skipped after disablement reports
+`Unknown`/`ProvisioningDisabled`; phases confirmed before disablement retain
+their `True` result. Legacy `True`/`Skipped` conditions from the current
+disabled path are normalized to `Unknown`/`ProvisioningDisabled`. Progress
+derivation treats only `True` or `Unknown` with that exact reason as complete.
+A BM Ready state then means OS provisioning completed, not tenant connectivity.
+CaaS requires baseline platform/provisioning
 connectivity, including access to control-plane services and installation
 dependencies; OSAC provides no tenant routing or public ExternalIP routing in
 this mode. Network-dependent behavior elsewhere in this PRD describes the
@@ -504,14 +542,13 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] Resources in different VirtualNetworks cannot communicate (full isolation)
 - [ ] Resources in the same Subnet are in the same L2 broadcast domain
 - [ ] Resources in different Subnets within the same VirtualNetwork can communicate via Layer 3 routing
-- [ ] SecurityGroups control which traffic is permitted within these boundaries — enforced uniformly for all resource types
+- [ ] With provider networking enabled, SecurityGroups control which traffic is permitted within these boundaries and are enforced uniformly for all resource types; when disabled, rule validation remains active but OSAC submits no provider rule operation
 - [ ] Bare-metal servers in the same Subnet are in the same broadcast domain regardless of their physical location (rack, switch)
 - [ ] VMs in the same Subnet are in the same broadcast domain regardless of which infrastructure they run on
 - [ ] VMs are reachable at their subnet IP alongside bare-metal servers and cluster nodes
 - [ ] The system provisions all necessary networking infrastructure for each subnet automatically
 - [ ] Any resource type (ComputeInstance, Cluster, BaremetalInstance) can be placed on any subnet
-- [ ] VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
-- [ ] SecurityGroup enforcement is uniform across all resource types
+- [ ] With provider networking enabled, VMs, BM servers, and cluster nodes receive uniform networking treatment — SecurityGroup and ExternalIP operations work identically regardless of resource type
 - [ ] Each resource type has its own network attachment configuration appropriate to the resource, and VMaaS, BMaaS, and CaaS each enforce at most one tenant attachment per workload
 - [ ] ExternalIPAttachment supports all three service types as targets
 - [ ] The tenant workflow for creating networking resources is identical regardless of service type
@@ -522,9 +559,13 @@ SecurityGroup immutability, and lifecycle constraints apply in both modes.
 - [ ] A Cloud Provider Admin can disable or enable provider networking during installation or upgrade through Helm or the Enclave Wizard checkbox, with the same setting applying across services after rollout
 - [ ] With provider networking disabled, API, CLI, and UI networking operations retain their existing authorization, validation, defaulting, immutability, and dependency errors
 - [ ] Valid creates and deletes for all seven network resource kinds complete their OSAC object lifecycle without configuring or cleaning up provider networking; specification and metadata updates remain rejected, including SecurityGroup rule changes
-- [ ] Status distinguishes skipped provider work with `ProvisioningDisabled`/`Skipped`; an ExternalIP without an allocated address remains unallocated and exposes no fabricated address
-- [ ] Previously active network operations are cancelled and awaited before skipped status or deletion completion; provider resources may remain for manual or provider-side cleanup
+- [ ] After logical prerequisites pass, non-allocating Networking API resources report `Ready=True` with reason `ProvisioningDisabled`; resources with unmet dependencies remain waiting
+- [ ] An ExternalIP without a confirmed backend allocation remains `Pending`/`Progressing`, has an empty address, and reports `Ready=False`/`ProvisioningDisabled`; a confirmed real allocation retains its backend-returned address and `Allocated` state but reports `Ready=False`/`ProvisioningDisabled` while the provider is disabled
+- [ ] Automatic ExternalIP requests retain synchronous pool/capacity validation and reserve capacity while Pending, without blocking workload provisioning; an attachment is created only after a real allocation and a Ready target are confirmed
+- [ ] Previously active network operations are cancelled and awaited before skipped status or deletion-finalizer release; a job that completes first remains a real provider outcome and does not trigger disabled-mode rollback; provider resources may remain for manual or provider-side cleanup
 - [ ] Ordinary VM, cluster, and bare-metal host provisioning remains available with the stated platform/provisioning connectivity limitations and unchanged API prerequisites
+- [ ] Core ClusterOrder install/delete jobs remain active, while provider-network work such as `cluster_infra`, `external_access`, tenant VIP/IPAM, public DNS, and routing runs only as separately gated/drained work and is not dispatched when disabled
+- [ ] Incomplete BM network phases skipped after disablement use `Unknown`/`ProvisioningDisabled`, confirmed earlier phases retain `True`, and legacy disabled `True`/`Skipped` conditions are normalized; progress accepts only the exact Unknown/ProvisioningDisabled skip and BM Ready does not claim tenant networking
 - [ ] Enabling provider networking preserves the manager-profile behavior described by FR-1 through FR-9
 
 ### Resource Lifecycle Enforcement
