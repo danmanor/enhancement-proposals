@@ -476,10 +476,14 @@ The fulfillment-service reserves API-side pool capacity in the transaction
 that creates the ExternalIP. On deletion, OSAC first requires dependent
 ExternalIPAttachments and NATGateways to be removed, then invokes
 `external_ip.release`. The manager removes the UID-owned provider reservation
-and reports success only after the address is absent. OSAC validates the
-common result envelope before returning API-side pool capacity. A failed
-allocation or release remains eligible for reconciliation and does not
-prematurely free that capacity.
+and reports success only after the address is absent. OSAC returns API-side
+pool capacity only after successful AAP completion and validation of an
+`osac_result` with `schemaVersion: "v1"`, `operation: external_ip.release`, the
+current ExternalIP UID in `resourceUID`, the dispatched generation in
+`observedGeneration`, and empty `data`. The successful result asserts that the
+UID-owned provider reservation is absent; no separate `RELEASED` data field is
+required. A failed job or missing, malformed, stale, or mismatched envelope
+keeps capacity held for reconciliation.
 
 ### End-to-End Flows
 
