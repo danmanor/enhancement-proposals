@@ -51,7 +51,7 @@ The prior networking model was VM-focused, while CaaS and BMaaS used separate se
 
 ### 4.1 Architecture
 
-The request path keeps tenant intent in fulfillment-service and uses operator reconciliation for provider changes. The diagram shows the main control flow and the optional Kubernetes bridge; the fabric manager remains responsible for physical networking across workload types.
+The request path keeps tenant intent in fulfillment-service and uses operator reconciliation for provider changes. The diagram shows the main control flow and the optional Kubernetes manager creating a VM overlay and bridging it to the fabric; the fabric manager remains responsible for physical networking across workload types.
 
 ```mermaid
 flowchart LR
@@ -61,7 +61,7 @@ flowchart LR
     Resources --> Operator["osac-operator dispatcher"]
     Operator --> AAP["AAP manager role"]
     AAP --> Fabric["Fabric manager"]
-    AAP -. "subnet bridge when configured" .-> K8s["Optional Kubernetes manager"]
+    AAP -. "create and bridge VM overlay for each subnet, when configured" .-> K8s["Optional Kubernetes manager"]
     Fabric --> Result["Manager result and resource annotations"]
     K8s --> Result
     Result --> Operator
