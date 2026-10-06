@@ -178,55 +178,6 @@ Once VMs are on the fabric, the fabric manager handles everything for all
 resource types uniformly. There is no VM-vs-BM distinction for security,
 ExternalIP, DNAT, or SNAT.
 
-##### NetworkClass Examples
-
-**Netris + CUDN (VMs and BM):**
-
-```yaml
-apiVersion: osac.openshift.io/v1alpha1
-kind: NetworkClass
-metadata:
-  name: connected-region-a
-spec:
-  fabricManager: netris
-  k8sManager: cudn_localnet
-capabilities:
-  supportsIpv4: true
-  supportsIpv6: false
-  supportsDualStack: false
-```
-
-**Neutron + CUDN (VMs and BM):**
-
-```yaml
-apiVersion: osac.openshift.io/v1alpha1
-kind: NetworkClass
-metadata:
-  name: connected-region-b
-spec:
-  fabricManager: neutron
-  k8sManager: cudn_localnet
-capabilities:
-  supportsIpv4: true
-  supportsIpv6: false
-  supportsDualStack: false
-```
-
-**BM-only deployment (no VMs):**
-
-```yaml
-apiVersion: osac.openshift.io/v1alpha1
-kind: NetworkClass
-metadata:
-  name: baremetal-region-1
-spec:
-  fabricManager: netris
-capabilities:
-  supportsIpv4: true
-  supportsIpv6: false
-  supportsDualStack: false
-```
-
 ##### Capabilities
 
 Capabilities are **inferred from the assigned managers** and published in
@@ -432,404 +383,6 @@ ExternalIPAttachment (tenant-managed)
                           → fabricManager
                             references an ExternalIP and a target resource
 ```
-
-#### End-to-End Flows
-
-This section shows how the unified networking API works from the tenant's
-perspective. The flows are the same regardless of which fabric manager or
-K8s manager the provider has deployed.
-
-These provider setup, networking setup, attachment, and external access flows
-describe `global.networking.provisioningEnabled=true`. The disabled branch is
-defined in [Provider Networking Control](#provider-networking-control); API
-readiness, validation, and deletion constraints apply in both modes. [User]
-
-##### Provider Setup
-
-1. Provider deploys hosting cluster(s) and fabric controller
-2. Provider creates NetworkClass for the deployment (provider-only,
-   tenants never see it)
-3. Provider creates ExternalIPPool:
-
-```bash
-osac admin create externalippool \
-  --network-class connected-region-a \
-  --cidrs 203.0.113.0/24 \
-  --ip-family ipv4 \
-  --name external-pool-1
-```
-
-The fabric manager registers the IP range in its IPAM for allocation.
-
-##### Networking Setup (Same for All Resource Types)
-
-The tenant creates networking resources. This workflow is identical
-regardless of whether the tenant plans to run VMs, clusters, or bare-metal
-servers.
-
-**Create VirtualNetwork:**
-
-```bash
-osac create virtualnetwork --network-class connected-region-a --cidr 10.0.0.0/16 \
-  --name my-net
-```
-
-The fabric manager creates an isolated tenant segment on the fabric.
-
-**Create Subnet:**
-
-```bash
-osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
-  --name my-subnet
-```
-
-The fabric manager creates a fabric segment (e.g., VLAN) for the subnet.
-If the NetworkClass has a K8s manager, it also creates a K8s overlay on each
-hosting cluster and bridges it to the fabric segment. After this step, VMs placed in the
-overlay and BM servers with switch ports on the fabric segment are in the
-same L2 domain.
-
-**Create SecurityGroup:**
-
-```bash
-osac create security-group --virtual-network my-net --name my-sg \
-  --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
-```
-
-The fabric manager creates ACL rules on the fabric.
-
-##### Resource Creation (Differs by Type)
-
-The networking setup above is shared. Only the resource creation step
-differs internally — the tenant CLI experience is the same for all types.
-
-**ComputeInstance (VM):**
-
-```bash
-osac create computeinstance --template ocp_virt_vm \
-  --network-attachment subnet=my-subnet,security-groups=my-sg \
-  --name my-vm
-```
-
-VM is placed in the K8s overlay namespace on a hosting cluster. Because the
-overlay is bridged to the fabric, the VM is directly on the fabric segment
-and gets an IP from the subnet CIDR.
-
-**BaremetalInstance:**
-
-Bare-metal servers have multiple physical interfaces. The tenant discovers
-available network ports via the BareMetalInstanceType API — each
-BareMetalInstanceType lists its network ports with name, role, type, speed,
-and description (see
-[HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)). Given the port identifiers, the tenant specifies which
-interface to attach to the subnet. The current BMaaS contract accepts one
-entry in the repeated `network_attachments` field, mapping one physical
-interface to one subnet. If `interface` is omitted, fulfillment defaults to
-the first `fabric` port from `BareMetalInstanceType.network_ports`.
-
-Single interface (simple case):
-
-```bash
-osac create baremetalinstance --template bcm_h100 \
-  --network-attachment interface=data-0,subnet=my-subnet,security-groups=my-sg \
-  --name my-server
-```
-
-The API retains the repeated field for compatibility, but only one attachment
-is supported. The fabric manager configures the selected host switch port on
-the corresponding fabric segment and the interface gets an IP from the
-subnet's CIDR.
-
-Validation rules:
-- At most one attachment is accepted
-- All referenced subnets must belong to the same VirtualNetwork
-- The `interface` must reference a valid port name from the BareMetalInstanceType's
-  network ports list
-
-**Cluster:**
-
-```bash
-osac create cluster --template ocp_4_17_small \
-  --network-attachment subnet=my-subnet,security-groups=my-sg \
-  --node-set workers=large,size=3 --name my-cluster
-```
-
-For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
-are architecturally possible but deferred. The fulfillment-service resolves
-the interface from the BareMetalInstanceType (`fabric_interface` — first port
-with role `fabric`) and stores it on the node set. The worker controller passes
-that stored value to BMaaS; BMaaS handles the host's network attachment as part
-of its provisioning lifecycle.
-See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
-
-Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
-(where the tenant specifies interfaces directly), for clusters the
-**system** resolves the interface from each node set's BareMetalInstanceType
-`network_ports` list.
-The tenant specifies which subnet to use (one per cluster); the system maps it to the
-correct physical interfaces based on each node set's BareMetalInstanceType.
-
-In all cases, the resource ends up on the fabric. The fabric manager sees
-all resources equally — there is no VM-vs-BM distinction.
-
-##### External Access (Same for All Resource Types)
-
-Since all resources are on the fabric, external access operations are
-uniform. There is no VM-vs-BM distinction — the fabric manager handles
-DNAT and SNAT identically for all resource types.
-
-**Allocate ExternalIP:**
-
-```bash
-osac create externalip --pool external-pool-1 --name my-ip
-```
-
-The manager selected by the NetworkClass profile reserves a free address from
-the selected pool and writes it to the ExternalIP annotation. OSAC validates
-that annotation and writes status as defined in [ExternalIP Address Selection
-and Ownership](#externalip-address-selection-and-ownership) (e.g.,
-203.0.113.45).
-
-**Attach for inbound access (DNAT):**
-
-```bash
-# Attach to a VM
-osac create externalipattachment --externalip my-ip \
-  --compute-instance my-vm --name vm-att
-
-# Attach to a BM server (new target type)
-osac create externalipattachment --externalip my-ip \
-  --baremetal-instance my-server --name bm-att
-
-# Attach to a cluster API server (new target type + endpoint)
-osac create externalipattachment --externalip my-ip \
-  --cluster my-cluster --target-endpoint api --name api-att
-```
-
-The fabric manager creates a DNAT rule: external IP → resource's subnet IP.
-Each resource (ComputeInstance, BaremetalInstance) is associated with one
-tenant subnet and has one fabric IP — the DNAT targets that IP directly. The
-ExternalIP is attached to the resource, not to a specific interface; the
-fabric manager routes to the resource's sole/primary subnet IP.
-
-##### Cluster ExternalIPAttachment flow
-
-For VMs and BM, the DNAT target is the resource's fabric IP —
-straightforward. For clusters, the DNAT target is a service-level VIP
-(API server or ingress) that is discovered during cluster provisioning.
-The VIP allocation is decoupled from the networking layer:
-
-1. CaaS template creates MetalLB LoadBalancer Services for API server
-   and ingress. MetalLB allocates VIPs from its IPAddressPool (created
-   by k8s_manager at subnet creation).
-2. Template discovers the allocated VIPs and writes them to ClusterOrder
-   CR status (`apiEndpoint`, `ingressEndpoint`)
-3. Feedback controller syncs VIPs to the Cluster object in the
-   fulfillment service as `api_endpoint` and `ingress_endpoint` fields
-4. ExternalIPAttachment controller reads the VIP from ClusterOrder
-   status → calls fabric manager to create DNAT: external IP →
-   internal VIP
-5. ExternalIPAttachment transitions to Ready
-
-The tenant can inspect the allocated VIPs:
-
-```bash
-osac get cluster my-cluster -o yaml
-# api_endpoint: 10.0.5.20
-# ingress_endpoint: 10.0.1.50
-```
-
-ExternalIPAttachments for clusters follow the same creation readiness
-rules as all other resources: the cluster must be in Ready state before
-an ExternalIPAttachment targeting it can be created. Auto-provisioned
-ExternalIPAttachments (via `auto_external_ip_attachment`) also follow
-the readiness rules — they are created by the fulfillment-service
-internal reconciler only after both the ExternalIP is Allocated and the
-cluster is Ready (see below).
-
-#### Auto-provisioning lifecycle (auto_external_ip_attachment)
-
-Auto ExternalIP attachment provisioning (described in per-service
-EPs and [Default Networking](/enhancements/OSAC-1433-default-networking)) is a
-multi-step process that follows the same creation readiness rules as
-tenant-initiated operations. The fulfillment-service controls the
-timing and creates each resource only after its dependencies are ready.
-
-*Step 1 — synchronous (during the create API call):*
-
-The fulfillment-service validates pool capacity, creates ExternalIP
-records in PostgreSQL, and decrements pool capacity — within the same
-API transaction as the workload creation. If the pool is exhausted, the
-call fails and no resources are persisted (including the parent
-workload). The ExternalIP starts in **Pending** state. For clusters,
-two ExternalIPs are created (one for API, one for ingress). For
-ComputeInstances and BaremetalInstances, one ExternalIP is created.
-
-ExternalIPAttachments are **not** created at this point — their
-dependencies (ExternalIP Allocated + target Ready) are not yet met.
-
-*Step 2 — asynchronous (ExternalIP reconciliation):*
-
-The fulfillment-service reconciler pushes ExternalIP CRs to the hub
-cluster. The osac-operator dispatches `external_ip.allocate` to the manager
-selected by the NetworkClass profile. The manager durably reserves an address
-and writes the standard allocated-address annotation. OSAC validates the job
-result and annotation, then writes status under [ExternalIP Address Selection
-and Ownership](#externalip-address-selection-and-ownership). The ExternalIP
-then transitions to **Allocated**, and the fulfillment-service receives the
-status update via Signal RPC.
-
-*Step 3 — asynchronous (deferred ExternalIPAttachment creation):*
-
-Once both prerequisites are met — the ExternalIP is **Allocated** and
-the target workload is **Ready** — a fulfillment-service parent-resource
-reconciler creates the ExternalIPAttachment. This new reconciler is separate
-from the existing ExternalIP and ExternalIPAttachment synchronization
-controllers. It follows the standard creation readiness gate: the attachment
-is only persisted when
-its ExternalIP is Allocated and its target is Ready. The
-ExternalIPAttachment starts in **Pending** state and is pushed to the
-hub cluster by the reconciler.
-
-*Step 4 — asynchronous (ExternalIPAttachment reconciliation):*
-
-The osac-operator ExternalIPAttachment controller verifies its
-preconditions (ExternalIP Allocated + target has a known IP) and
-dispatches to AAP → fabric manager creates the DNAT rule →
-ExternalIPAttachment transitions to **Ready**.
-
-*ExternalIPAttachment controller preconditions per target type:*
-
-| Target type | Required precondition | Source of target IP |
-|-------------|----------------------|---------------------|
-| ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
-| Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to CR status |
-
-The controller uses the existing requeue pattern: if the precondition
-is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
-retries until the target IP appears. This is the same pattern used
-today for the `VirtualMachineReference` check on ComputeInstance
-targets.
-
-*IP discovery — DHCP-based host networking:*
-
-All host-side IP assignment uses DHCP. The fabric's DHCP server (managed
-by the fabric manager as part of the network segment infrastructure) assigns IPs
-to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
-or configure host-side networking — DHCP handles IP address, gateway,
-prefix, and DNS automatically.
-
-After the host receives its IP via DHCP, the IP is discovered and
-written to the resource's CR status for two purposes:
-- ExternalIPAttachment controller reads the primary IP for DNAT target
-- Tenant visibility (API response includes the allocated IP)
-
-IP discovery mechanism per service type:
-
-| Service | Discovery source | Who writes status | Status field |
-|---------|-----------------|-------------------|-------------|
-| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
-| CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
-
-The fabric manager's `move_network_attachment` role is switch-side
-only — it moves a host's fabric port from one network segment to another
-(`from_vnet_name` → `to_vnet_name`, either side optional). Attach and
-detach are the **same primitive**: on provision the port moves from a
-**provisioning network** to the tenant subnet's network segment; on deletion it
-moves back to the provisioning network. The role operates purely against the
-fabric (no Subnet CR lookup) and is keyed on plain segment names, so the caller
-resolves a `subnetRef` → tenant segment name and supplies the provisioning
-network name from configuration. Detach is a no-op if the port is not on the
-named segment, so re-runs and unexpected states are safe.
-
-One role handles both BMaaS (fabric NIC on the provisioning network while the
-server is idle so it has internet during metal3 inspection) and CaaS (agent
-moving from a provisioning network to the tenant network). The **timing** of the
-move differs per service:
-
-- **BMaaS:** Move happens **POST-provisioning** (provision on the provisioning
-  network → move to tenant network → reboot so the OS re-DHCPs on the tenant
-  network). This achieves isolation-until-ready: the tenant cannot reach the
-  server during imaging/first-boot.
-- **CaaS:** BMaaS moves the port **POST-OS-provisioning** (the host is provisioned
-  on the provisioning network, then the port moves to the tenant network and the
-  host reboots before it joins the cluster installation flow).
-
-Once on the tenant network, the host receives an IP from the fabric's DHCP server
-automatically. A single AAP job template serves both directions, deriving onboard
-(provisioning network → tenant) vs. offboard (tenant → provisioning network) from
-the resource's `deletionTimestamp`. See [BMaaS — Provisioning Network and Port
-Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#provisioning-network-and-port-moves).
-
-IP discovery for BMaaS is a separate dispatcher call. After
-`reconcileProvisioning` completes and the host has received a DHCP
-lease, the operator dispatches `query_dhcp_lease` — this role queries
-the fabric manager's DHCP lease API for the subnet and matches the
-server's port MAC address to find the corresponding DHCP-assigned IP.
-Bare-metal hosts are not named fabric servers, so the lease is matched
-by NIC MAC, which the operator supplies from the host's
-`osac.openshift.io/interface-macs` BareMetalHost annotation; named
-fabric servers such as CaaS agents fall back to matching by server name.
-
-*NATGateway controller preconditions:*
-
-The NATGateway controller has two preconditions before dispatching the
-SNAT rule creation:
-
-| Precondition | Source |
-|-------------|--------|
-| Referenced VirtualNetwork must be Ready (fabric segment provisioned) | VirtualNetwork CR status |
-| Referenced ExternalIP must be Allocated (have an allocated address) | ExternalIP CR status |
-
-If either precondition is not met, the NATGateway controller requeues.
-This prevents dispatching to AAP before the VN's fabric segment exists
-(no segment to attach the SNAT rule to) or without a valid SNAT source
-address.
-
-*Auto-provisioned resource labeling:*
-
-All auto-created resources receive the label
-`osac.openshift.io/auto-created: "true"`. Auto-provisioned
-ExternalIPs also receive a parent-resource label
-`osac.openshift.io/auto-created-for: <resource-id>` so that the
-cleanup logic can find orphaned ExternalIPs directly, even if the
-intermediate ExternalIPAttachment has already been deleted.
-
-*Auto-provisioned resource cleanup on parent deletion:*
-
-The parent resource's finalizer uses a phased requeue approach to
-ensure correct ordering:
-
-1. Query ExternalIPAttachments labeled `auto-created` targeting
-   this resource. Issue delete for each. Requeue.
-2. On next reconcile: check if all ExternalIPAttachments are fully
-   deleted (including their own finalizers completing the DNAT rule
-   removal). If not, requeue.
-3. Once all ExternalIPAttachments are gone: query ExternalIPs labeled
-   `auto-created-for: <this-resource>`. Issue delete for each.
-   Requeue.
-4. On next reconcile: check if all ExternalIPs are fully deleted. If
-   not, requeue.
-5. Once all ExternalIPs are gone: proceed with parent resource
-   deletion.
-
-If cleanup fails permanently (after N retries): finalizer is removed,
-parent resource deleted, orphaned resources left in cluster. Orphaned
-resources are identifiable by the `auto-created-for` label.
-
-**Enable outbound NAT (SNAT):**
-
-```bash
-osac create externalip --pool external-pool-1 --name nat-ip
-osac create natgateway --virtual-network my-net --externalip nat-ip \
-  --name my-nat
-```
-
-The fabric manager creates a SNAT rule for the VN: all egress traffic from
-the VN's CIDR is source-NATted to the ExternalIP. Applies to all resources
-in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 
 ### 4.2 Data Model / Schema Changes
 
@@ -1617,6 +1170,453 @@ MetalLB VIP allocation without requiring a K8s overlay.
 
 The operator validates that Subnet CIDRs do not overlap within a
 VirtualNetwork at creation time.
+
+#### NetworkClass Examples
+
+**Netris + CUDN (VMs and BM):**
+
+```yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkClass
+metadata:
+  name: connected-region-a
+spec:
+  fabricManager: netris
+  k8sManager: cudn_localnet
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
+```
+
+**Neutron + CUDN (VMs and BM):**
+
+```yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkClass
+metadata:
+  name: connected-region-b
+spec:
+  fabricManager: neutron
+  k8sManager: cudn_localnet
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
+```
+
+**BM-only deployment (no VMs):**
+
+```yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkClass
+metadata:
+  name: baremetal-region-1
+spec:
+  fabricManager: netris
+capabilities:
+  supportsIpv4: true
+  supportsIpv6: false
+  supportsDualStack: false
+```
+
+#### End-to-End Flows
+
+This section shows how the unified networking API works from the tenant's
+perspective. The flows are the same regardless of which fabric manager or
+K8s manager the provider has deployed.
+
+These provider setup, networking setup, attachment, and external access flows
+describe `global.networking.provisioningEnabled=true`. The disabled branch is
+defined in [Provider Networking Control](#provider-networking-control); API
+readiness, validation, and deletion constraints apply in both modes. [User]
+
+##### Provider Setup
+
+1. Provider deploys hosting cluster(s) and fabric controller
+2. Provider creates NetworkClass for the deployment (provider-only,
+   tenants never see it)
+3. Provider creates ExternalIPPool:
+
+```bash
+osac admin create externalippool \
+  --network-class connected-region-a \
+  --cidrs 203.0.113.0/24 \
+  --ip-family ipv4 \
+  --name external-pool-1
+```
+
+The fabric manager registers the IP range in its IPAM for allocation.
+
+##### Networking Setup (Same for All Resource Types)
+
+The tenant creates networking resources. This workflow is identical
+regardless of whether the tenant plans to run VMs, clusters, or bare-metal
+servers.
+
+**Create VirtualNetwork:**
+
+```bash
+osac create virtualnetwork --network-class connected-region-a --cidr 10.0.0.0/16 \
+  --name my-net
+```
+
+The fabric manager creates an isolated tenant segment on the fabric.
+
+**Create Subnet:**
+
+```bash
+osac create subnet --virtual-network my-net --cidr 10.0.1.0/24 \
+  --name my-subnet
+```
+
+The fabric manager creates a fabric segment (e.g., VLAN) for the subnet.
+If the NetworkClass has a K8s manager, it also creates a K8s overlay on each
+hosting cluster and bridges it to the fabric segment. After this step, VMs placed in the
+overlay and BM servers with switch ports on the fabric segment are in the
+same L2 domain.
+
+**Create SecurityGroup:**
+
+```bash
+osac create security-group --virtual-network my-net --name my-sg \
+  --ingress "protocol:tcp,port:443,source:0.0.0.0/0"
+```
+
+The fabric manager creates ACL rules on the fabric.
+
+##### Resource Creation (Differs by Type)
+
+The networking setup above is shared. Only the resource creation step
+differs internally — the tenant CLI experience is the same for all types.
+
+**ComputeInstance (VM):**
+
+```bash
+osac create computeinstance --template ocp_virt_vm \
+  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --name my-vm
+```
+
+VM is placed in the K8s overlay namespace on a hosting cluster. Because the
+overlay is bridged to the fabric, the VM is directly on the fabric segment
+and gets an IP from the subnet CIDR.
+
+**BaremetalInstance:**
+
+Bare-metal servers have multiple physical interfaces. The tenant discovers
+available network ports via the BareMetalInstanceType API — each
+BareMetalInstanceType lists its network ports with name, role, type, speed,
+and description (see
+[HostType and BareMetalInstanceType](#hosttype-and-baremetalinstancetype)). Given the port identifiers, the tenant specifies which
+interface to attach to the subnet. The current BMaaS contract accepts one
+entry in the repeated `network_attachments` field, mapping one physical
+interface to one subnet. If `interface` is omitted, fulfillment defaults to
+the first `fabric` port from `BareMetalInstanceType.network_ports`.
+
+Single interface (simple case):
+
+```bash
+osac create baremetalinstance --template bcm_h100 \
+  --network-attachment interface=data-0,subnet=my-subnet,security-groups=my-sg \
+  --name my-server
+```
+
+The API retains the repeated field for compatibility, but only one attachment
+is supported. The fabric manager configures the selected host switch port on
+the corresponding fabric segment and the interface gets an IP from the
+subnet's CIDR.
+
+Validation rules:
+- At most one attachment is accepted
+- All referenced subnets must belong to the same VirtualNetwork
+- The `interface` must reference a valid port name from the BareMetalInstanceType's
+  network ports list
+
+**Cluster:**
+
+```bash
+osac create cluster --template ocp_4_17_small \
+  --network-attachment subnet=my-subnet,security-groups=my-sg \
+  --node-set workers=large,size=3 --name my-cluster
+```
+
+For v0.2, **CaaS supports BM node sets only**. VM-based cluster node sets
+are architecturally possible but deferred. The fulfillment-service resolves
+the interface from the BareMetalInstanceType (`fabric_interface` — first port
+with role `fabric`) and stores it on the node set. The worker controller passes
+that stored value to BMaaS; BMaaS handles the host's network attachment as part
+of its provisioning lifecycle.
+See [CaaS Networking](/enhancements/OSAC-1436-caas-networking) for the detailed flow.
+
+Cluster nodes have multiple physical interfaces. Unlike BaremetalInstance
+(where the tenant specifies interfaces directly), for clusters the
+**system** resolves the interface from each node set's BareMetalInstanceType
+`network_ports` list.
+The tenant specifies which subnet to use (one per cluster); the system maps it to the
+correct physical interfaces based on each node set's BareMetalInstanceType.
+
+In all cases, the resource ends up on the fabric. The fabric manager sees
+all resources equally — there is no VM-vs-BM distinction.
+
+##### External Access (Same for All Resource Types)
+
+Since all resources are on the fabric, external access operations are
+uniform. There is no VM-vs-BM distinction — the fabric manager handles
+DNAT and SNAT identically for all resource types.
+
+**Allocate ExternalIP:**
+
+```bash
+osac create externalip --pool external-pool-1 --name my-ip
+```
+
+The manager selected by the NetworkClass profile reserves a free address from
+the selected pool and writes it to the ExternalIP annotation. OSAC validates
+that annotation and writes status as defined in [ExternalIP Address Selection
+and Ownership](#externalip-address-selection-and-ownership) (e.g.,
+203.0.113.45).
+
+**Attach for inbound access (DNAT):**
+
+```bash
+# Attach to a VM
+osac create externalipattachment --externalip my-ip \
+  --compute-instance my-vm --name vm-att
+
+# Attach to a BM server (new target type)
+osac create externalipattachment --externalip my-ip \
+  --baremetal-instance my-server --name bm-att
+
+# Attach to a cluster API server (new target type + endpoint)
+osac create externalipattachment --externalip my-ip \
+  --cluster my-cluster --target-endpoint api --name api-att
+```
+
+The fabric manager creates a DNAT rule: external IP → resource's subnet IP.
+Each resource (ComputeInstance, BaremetalInstance) is associated with one
+tenant subnet and has one fabric IP — the DNAT targets that IP directly. The
+ExternalIP is attached to the resource, not to a specific interface; the
+fabric manager routes to the resource's sole/primary subnet IP.
+
+##### Cluster ExternalIPAttachment flow
+
+For VMs and BM, the DNAT target is the resource's fabric IP —
+straightforward. For clusters, the DNAT target is a service-level VIP
+(API server or ingress) that is discovered during cluster provisioning.
+The VIP allocation is decoupled from the networking layer:
+
+1. CaaS template creates MetalLB LoadBalancer Services for API server
+   and ingress. MetalLB allocates VIPs from its IPAddressPool (created
+   by k8s_manager at subnet creation).
+2. Template discovers the allocated VIPs and writes them to ClusterOrder
+   CR status (`apiEndpoint`, `ingressEndpoint`)
+3. Feedback controller syncs VIPs to the Cluster object in the
+   fulfillment service as `api_endpoint` and `ingress_endpoint` fields
+4. ExternalIPAttachment controller reads the VIP from ClusterOrder
+   status → calls fabric manager to create DNAT: external IP →
+   internal VIP
+5. ExternalIPAttachment transitions to Ready
+
+The tenant can inspect the allocated VIPs:
+
+```bash
+osac get cluster my-cluster -o yaml
+# api_endpoint: 10.0.5.20
+# ingress_endpoint: 10.0.1.50
+```
+
+ExternalIPAttachments for clusters follow the same creation readiness
+rules as all other resources: the cluster must be in Ready state before
+an ExternalIPAttachment targeting it can be created. Auto-provisioned
+ExternalIPAttachments (via `auto_external_ip_attachment`) also follow
+the readiness rules — they are created by the fulfillment-service
+internal reconciler only after both the ExternalIP is Allocated and the
+cluster is Ready (see below).
+
+#### Auto-provisioning lifecycle (auto_external_ip_attachment)
+
+Auto ExternalIP attachment provisioning (described in per-service
+EPs and [Default Networking](/enhancements/OSAC-1433-default-networking)) is a
+multi-step process that follows the same creation readiness rules as
+tenant-initiated operations. The fulfillment-service controls the
+timing and creates each resource only after its dependencies are ready.
+
+*Step 1 — synchronous (during the create API call):*
+
+The fulfillment-service validates pool capacity, creates ExternalIP
+records in PostgreSQL, and decrements pool capacity — within the same
+API transaction as the workload creation. If the pool is exhausted, the
+call fails and no resources are persisted (including the parent
+workload). The ExternalIP starts in **Pending** state. For clusters,
+two ExternalIPs are created (one for API, one for ingress). For
+ComputeInstances and BaremetalInstances, one ExternalIP is created.
+
+ExternalIPAttachments are **not** created at this point — their
+dependencies (ExternalIP Allocated + target Ready) are not yet met.
+
+*Step 2 — asynchronous (ExternalIP reconciliation):*
+
+The fulfillment-service reconciler pushes ExternalIP CRs to the hub
+cluster. The osac-operator dispatches `external_ip.allocate` to the manager
+selected by the NetworkClass profile. The manager durably reserves an address
+and writes the standard allocated-address annotation. OSAC validates the job
+result and annotation, then writes status under [ExternalIP Address Selection
+and Ownership](#externalip-address-selection-and-ownership). The ExternalIP
+then transitions to **Allocated**, and the fulfillment-service receives the
+status update via Signal RPC.
+
+*Step 3 — asynchronous (deferred ExternalIPAttachment creation):*
+
+Once both prerequisites are met — the ExternalIP is **Allocated** and
+the target workload is **Ready** — a fulfillment-service parent-resource
+reconciler creates the ExternalIPAttachment. This new reconciler is separate
+from the existing ExternalIP and ExternalIPAttachment synchronization
+controllers. It follows the standard creation readiness gate: the attachment
+is only persisted when
+its ExternalIP is Allocated and its target is Ready. The
+ExternalIPAttachment starts in **Pending** state and is pushed to the
+hub cluster by the reconciler.
+
+*Step 4 — asynchronous (ExternalIPAttachment reconciliation):*
+
+The osac-operator ExternalIPAttachment controller verifies its
+preconditions (ExternalIP Allocated + target has a known IP) and
+dispatches to AAP → fabric manager creates the DNAT rule →
+ExternalIPAttachment transitions to **Ready**.
+
+*ExternalIPAttachment controller preconditions per target type:*
+
+| Target type | Required precondition | Source of target IP |
+|-------------|----------------------|---------------------|
+| ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
+| Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder CR | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to CR status |
+
+The controller uses the existing requeue pattern: if the precondition
+is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
+retries until the target IP appears. This is the same pattern used
+today for the `VirtualMachineReference` check on ComputeInstance
+targets.
+
+*IP discovery — DHCP-based host networking:*
+
+All host-side IP assignment uses DHCP. The fabric's DHCP server (managed
+by the fabric manager as part of the network segment infrastructure) assigns IPs
+to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
+or configure host-side networking — DHCP handles IP address, gateway,
+prefix, and DNS automatically.
+
+After the host receives its IP via DHCP, the IP is discovered and
+written to the resource's CR status for two purposes:
+- ExternalIPAttachment controller reads the primary IP for DNAT target
+- Tenant visibility (API response includes the allocated IP)
+
+IP discovery mechanism per service type:
+
+| Service | Discovery source | Who writes status | Status field |
+|---------|-----------------|-------------------|-------------|
+| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment-service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
+| CaaS | Agent CR network status | osac-operator feedback controller → Signal RPC → fulfillment-service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
+| BMaaS | Operator queries fabric manager's DHCP lease API via dispatcher (`query_dhcp_lease` role) after provisioning completes; matches port MAC — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration)) | bare-metal-fulfillment-operator dispatches `query_dhcp_lease` → writes to CR status → feedback controller → Signal RPC → fulfillment-service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+
+The fabric manager's `move_network_attachment` role is switch-side
+only — it moves a host's fabric port from one network segment to another
+(`from_vnet_name` → `to_vnet_name`, either side optional). Attach and
+detach are the **same primitive**: on provision the port moves from a
+**provisioning network** to the tenant subnet's network segment; on deletion it
+moves back to the provisioning network. The role operates purely against the
+fabric (no Subnet CR lookup) and is keyed on plain segment names, so the caller
+resolves a `subnetRef` → tenant segment name and supplies the provisioning
+network name from configuration. Detach is a no-op if the port is not on the
+named segment, so re-runs and unexpected states are safe.
+
+One role handles both BMaaS (fabric NIC on the provisioning network while the
+server is idle so it has internet during metal3 inspection) and CaaS (agent
+moving from a provisioning network to the tenant network). The **timing** of the
+move differs per service:
+
+- **BMaaS:** Move happens **POST-provisioning** (provision on the provisioning
+  network → move to tenant network → reboot so the OS re-DHCPs on the tenant
+  network). This achieves isolation-until-ready: the tenant cannot reach the
+  server during imaging/first-boot.
+- **CaaS:** BMaaS moves the port **POST-OS-provisioning** (the host is provisioned
+  on the provisioning network, then the port moves to the tenant network and the
+  host reboots before it joins the cluster installation flow).
+
+Once on the tenant network, the host receives an IP from the fabric's DHCP server
+automatically. A single AAP job template serves both directions, deriving onboard
+(provisioning network → tenant) vs. offboard (tenant → provisioning network) from
+the resource's `deletionTimestamp`. See [BMaaS — Provisioning Network and Port
+Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#provisioning-network-and-port-moves).
+
+IP discovery for BMaaS is a separate dispatcher call. After
+`reconcileProvisioning` completes and the host has received a DHCP
+lease, the operator dispatches `query_dhcp_lease` — this role queries
+the fabric manager's DHCP lease API for the subnet and matches the
+server's port MAC address to find the corresponding DHCP-assigned IP.
+Bare-metal hosts are not named fabric servers, so the lease is matched
+by NIC MAC, which the operator supplies from the host's
+`osac.openshift.io/interface-macs` BareMetalHost annotation; named
+fabric servers such as CaaS agents fall back to matching by server name.
+
+*NATGateway controller preconditions:*
+
+The NATGateway controller has two preconditions before dispatching the
+SNAT rule creation:
+
+| Precondition | Source |
+|-------------|--------|
+| Referenced VirtualNetwork must be Ready (fabric segment provisioned) | VirtualNetwork CR status |
+| Referenced ExternalIP must be Allocated (have an allocated address) | ExternalIP CR status |
+
+If either precondition is not met, the NATGateway controller requeues.
+This prevents dispatching to AAP before the VN's fabric segment exists
+(no segment to attach the SNAT rule to) or without a valid SNAT source
+address.
+
+*Auto-provisioned resource labeling:*
+
+All auto-created resources receive the label
+`osac.openshift.io/auto-created: "true"`. Auto-provisioned
+ExternalIPs also receive a parent-resource label
+`osac.openshift.io/auto-created-for: <resource-id>` so that the
+cleanup logic can find orphaned ExternalIPs directly, even if the
+intermediate ExternalIPAttachment has already been deleted.
+
+*Auto-provisioned resource cleanup on parent deletion:*
+
+The parent resource's finalizer uses a phased requeue approach to
+ensure correct ordering:
+
+1. Query ExternalIPAttachments labeled `auto-created` targeting
+   this resource. Issue delete for each. Requeue.
+2. On next reconcile: check if all ExternalIPAttachments are fully
+   deleted (including their own finalizers completing the DNAT rule
+   removal). If not, requeue.
+3. Once all ExternalIPAttachments are gone: query ExternalIPs labeled
+   `auto-created-for: <this-resource>`. Issue delete for each.
+   Requeue.
+4. On next reconcile: check if all ExternalIPs are fully deleted. If
+   not, requeue.
+5. Once all ExternalIPs are gone: proceed with parent resource
+   deletion.
+
+If cleanup fails permanently (after N retries): finalizer is removed,
+parent resource deleted, orphaned resources left in cluster. Orphaned
+resources are identifiable by the `auto-created-for` label.
+
+**Enable outbound NAT (SNAT):**
+
+```bash
+osac create externalip --pool external-pool-1 --name nat-ip
+osac create natgateway --virtual-network my-net --externalip nat-ip \
+  --name my-nat
+```
+
+The fabric manager creates a SNAT rule for the VN: all egress traffic from
+the VN's CIDR is source-NATted to the ExternalIP. Applies to all resources
+in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 
 ### 4.4 Scalability and Performance
 
