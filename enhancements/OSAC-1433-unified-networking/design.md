@@ -929,12 +929,13 @@ The K8s Manager is pluggable, but an implementation must provide that same
 per-Subnet Layer 2 behavior regardless of the underlying mechanism. CUDN with
 LocalNet can bridge a Subnet's OVN network to the corresponding physical
 VLAN. DPU bridging can also satisfy the contract when it provides a shared
-L2 domain for each Subnet. By contrast, OVN EVPN route advertisement and
-VRF-lite as described in their L3-only forms provide routed reachability but
-not a shared broadcast domain; those forms do not conform unless extended to
-provide the required per-Subnet L2 behavior. This distinction keeps backend
-choice transparent without weakening the VirtualNetwork and Subnet API
-contract.
+L2 domain for each Subnet. OVN EVPN is not categorically excluded: the
+[CUDN EVPN manager design](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md)
+describes same-Subnet Layer 2 connectivity between VMs and bare-metal hosts,
+and Layer 3 routing between Subnets. An EVPN or VRF-lite implementation that
+provides only routed reachability without a shared per-Subnet broadcast domain
+does not conform unless extended to provide the required Layer 2 behavior.
+This preserves one VirtualNetwork and Subnet contract across backend choices.
 
 #### Manager Dispatch and Integration Contract
 
@@ -2056,7 +2057,8 @@ No additional infrastructure beyond existing OSAC components and managers.
 ### Unit and component tests (DEV)
 
 - **FR-1 through FR-9, IC-1 through IC-3:** validate canonical IPv4 ranges,
-  isolation boundaries, rule semantics, resource immutability, one attachment
+  isolation boundaries, same-Subnet traffic against attached SecurityGroup
+  rules, other rule semantics, resource immutability, one attachment
   per workload, readiness gates, and dependency-guard error details.
 - **FR-2, FR-3, FR-6, IC-4:** validate registration identity, role,
   `implementationRef`, `contractVersion`, capabilities, and `compatibleManagers`;
@@ -2098,8 +2100,9 @@ No additional infrastructure beyond existing OSAC components and managers.
   allocation/release, and ExternalIPAttachment create/delete end to end. Verify
   tenant annotations and owner references on controller-created resources.
 - Provision a VM, CaaS cluster, and bare-metal instance on the same supported
-  Subnet, then verify discovered address status, ExternalIP target resolution,
-  and SecurityGroup behavior.
+  Subnet; verify direct traffic only for flows allowed by attached
+  SecurityGroups, denial of unmatched traffic, established reply traffic,
+  discovered address status, and ExternalIP target resolution.
 - Verify CaaS endpoint status is populated before Cluster Ready and that
   ExternalIPAttachment creation is rejected until the target and endpoint
   prerequisites are Ready.

@@ -116,7 +116,7 @@ The target release is OSAC 0.2. The provider networking setting is included beca
 
 #### FR-1: Network isolation and connectivity (R1)
 
-Tenants must be able to create isolated VirtualNetworks. Workloads on the same Subnet can communicate directly; workloads on different Subnets in the same VirtualNetwork can communicate when permitted by network policy. Workloads in separate VirtualNetworks remain isolated. These outcomes apply across VMaaS, CaaS, and BMaaS.
+Tenants must be able to create isolated VirtualNetworks. Workloads on the same Subnet share a local network segment and can communicate directly when their attached SecurityGroups permit the traffic. Workloads on different Subnets in the same VirtualNetwork can communicate through routing when their SecurityGroups permit the traffic. Workloads in separate VirtualNetworks remain isolated. These outcomes apply across VMaaS, CaaS, and BMaaS.
 
 #### FR-2: Infrastructure-agnostic networking resources (R2)
 
@@ -144,7 +144,7 @@ Each ComputeInstance, Cluster, and BaremetalInstance can use at most one tenant 
 
 #### FR-8: Create/read/delete networking contract (R8)
 
-Tenants and providers can create, view, list, and delete the networking resources in scope. They cannot change a resource's configuration in place; a change requires replacing the resource. A workload's network attachment is also fixed when the workload is created and can be changed only by replacing the workload.
+Tenant Admins and Tenant Users can create, list, view, and delete tenant-managed networking resources within their tenant. Cloud Infrastructure Admins can create, list, view, and delete provider-managed NetworkClasses and ExternalIP pools according to their role. Resource access follows ownership and authorization. No networking resource can be changed in place; a change requires replacing it. A workload's network attachment is also fixed when the workload is created and can be changed only by replacing the workload.
 
 #### FR-9: Strict resource lifecycle enforcement (R9)
 
@@ -169,7 +169,7 @@ No non-functional requirements were specified for this proposal.
 ### Shared tenant networking
 
 - [ ] Tenant Admins and Tenant Users can use the same networking resource model with VMaaS, CaaS, and BMaaS.
-- [ ] Workloads on one Subnet can communicate directly, and workloads on different Subnets in the same VirtualNetwork can communicate when permitted by policy.
+- [ ] Workloads on one Subnet share a local network segment; traffic between them is allowed only when their attached SecurityGroups permit it. Workloads on different Subnets in the same VirtualNetwork can communicate through routing when their SecurityGroups permit the traffic.
 - [ ] Workloads in separate VirtualNetworks are isolated.
 - [ ] VMs, cluster nodes, and bare-metal servers can be placed on the same Subnet without selecting a workload-specific network.
 - [ ] SecurityGroups control permitted traffic consistently for each workload type when provider networking is enabled.
@@ -185,7 +185,7 @@ No non-functional requirements were specified for this proposal.
 
 ### Resource lifecycle
 
-- [ ] Users can create, list, view, and delete networking resources, but cannot modify their configuration in place.
+- [ ] Tenant Admins and Tenant Users can create, list, view, and delete tenant-managed networking resources within their tenant. Cloud Infrastructure Admins can create, list, view, and delete provider-managed NetworkClasses and ExternalIP pools according to their role. Resource access follows ownership and authorization, and no role can change resource configuration in place.
 - [ ] Changing a workload's network attachment requires replacing the workload.
 - [ ] A request that depends on a missing resource or one that has not completed its required lifecycle is rejected with an explanation of the prerequisite.
 - [ ] A deletion that would leave active resources without a dependency is rejected with an explanation of what blocks deletion.
