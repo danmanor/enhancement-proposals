@@ -8,6 +8,8 @@ tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
   - Unified Networking Design: /enhancements/OSAC-1433-unified-networking
+  - Network Manager Integration Contract PRD: /enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md
+  - Network Manager Integration Contract Design: /enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md
   - BareMetal Instance API: /enhancements/OSAC-1118-baremetal-instance-api
   - Three-Layer Networking Model: https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM
 replaces:
@@ -210,6 +212,7 @@ No non-functional requirements were specified for this proposal.
 - **Default Networking:** [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) defines tenant default-resource automation.
 - **BareMetal Instance API:** [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) defines the BaremetalInstance resource used by BMaaS.
 - **Per-service networking proposals:** [VMaaS](/enhancements/OSAC-1435-vmaas-networking), [CaaS](/enhancements/OSAC-1436-caas-networking), and [BMaaS](/enhancements/OSAC-1437-bmaas-networking) define how each service consumes the shared networking model.
+- **Network Manager Integration Contract:** Its [PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md) defines how providers determine whether manager implementations and selected pairs meet OSAC's requirements while preserving the shared tenant networking model.
 - **Unified Networking UI (OSAC-2226):** Tracks the standalone networking UI and shared resource pickers required by FR-11.
 - **User documentation:** API, CLI, and UI guidance must reflect the shared resource lifecycle and the support limits in this PRD.
 - **Three-Layer Networking Model:** [Architecture reference](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM).
@@ -232,11 +235,8 @@ networking resources are not coordinated across multiple hubs.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
-Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (66 behind origin/main, dirty)
+Committed: commit @ prd 0.11.3 - 2bd6607, workspace docs/unified-networking-docs-structure @ bd4c2d5 (dirty)
 
-> Context changed between revise and revise.
+> Authoring phases not recorded this session (commit-time snapshot only).
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":66,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"bd4c2d5 (dirty)","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":16,"main_ref":"main","phases":["commit"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":false} -->
