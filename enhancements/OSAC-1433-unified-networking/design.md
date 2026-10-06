@@ -833,7 +833,55 @@ in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 
 ### 4.2 Data Model / Schema Changes
 
-The design extends OSAC networking resources and workload-specific attachment types. The detailed proto and resource shapes below are the source of truth for field names, cardinality, defaults, and status; the PRD describes their user-visible effects.
+The design extends OSAC networking resources and workload-specific attachment types. The resource contract below defines what each object means and what its selected backend must implement. The detailed proto and resource shapes that follow are the source of truth for field names, cardinality, defaults, and status; the PRD describes their user-visible effects.
+
+#### Resource API Meaning
+
+The API is declarative. NetworkClass and ExternalIPPool are provider-managed
+configuration; the other network resources express tenant intent. The table
+defines each object's purpose and relationship. Field-level schemas,
+cardinality, defaults, and status are specified in this section and the
+[NetworkClass](#networkclass) subsection in Section 4.1.
+
+| Resource and API contract | Meaning |
+|---|---|
+| **NetworkClass** — provider-selected `fabricManager`, optional `k8sManager`, and capabilities | Selects registered manager implementations by role and advertises the deployment's supported capabilities. It is provider configuration, not a tenant network. |
+| **VirtualNetwork** — `network_class` and canonical IPv4 `ipv4_cidr` | Tenant-isolated L3 routing domain and parent for its Subnets, SecurityGroups, and optional NATGateway. |
+| **Subnet** — `virtual_network` and canonical IPv4 `ipv4_cidr` | Address range and network segment inside one VirtualNetwork. It is the shared attachment target for VM, cluster, and bare-metal workloads. |
+| **SecurityGroup** — `virtual_network`, `ingress` and `egress` rules | VirtualNetwork-scoped traffic policy attached to workloads through their network attachments. Rules match protocol, ports, and IPv4 source/destination ranges; a matching rule in any attached group allows traffic, no match across the attached groups denies it, and return traffic for established connections is allowed. |
+| **ExternalIPPool** — provider-managed CIDR range and IPv4 family, associated with a NetworkClass | Deployment-wide capacity of addresses external to tenant VirtualNetworks. The current contract accepts one canonical IPv4 CIDR per pool. |
+| **ExternalIP** — `pool`; allocated `status.address` is output-only | One reserved address from an ExternalIPPool. “External” means outside the tenant VirtualNetwork and does not promise Internet reachability. |
+| **ExternalIPAttachment** — `external_ip`, exactly one workload target, and a cluster-only `target_endpoint` | Associates one allocated ExternalIP with a VM, bare-metal server, or a Cluster API/ingress endpoint for inbound access. |
+| **NATGateway** — `virtual_network` and `external_ip` | Optional outbound identity for one VirtualNetwork; it does not provide inbound access. One NATGateway is allowed per VirtualNetwork, and its ExternalIP cannot be used by another consumer. |
+| **Workload network attachment** — workload-specific `subnet` and `security_groups`; BMaaS may also specify `interface` | Connects a ComputeInstance, BaremetalInstance, or Cluster to the shared resource model. This is part of the workload API, not a separate provider network resource. |
+
+#### Backend Effects and Completion Contract
+
+The operator dispatches provider operations through the manager roles in the
+[dispatcher table](#dispatcher-operator-composition-logic). The expected
+provider effect for each object is:
+
+| Object or operation | Manager responsibility |
+|---|---|
+| NetworkClass selection | Validate the registered managers and required capabilities. NetworkClass selection itself creates no tenant data-plane network. |
+| VirtualNetwork create/delete | The fabric manager creates/removes the isolated routing domain, keeps separate VirtualNetworks isolated, and routes between Subnets in the same VirtualNetwork. |
+| Subnet create/delete | The fabric manager creates/removes the segment, gateway, and address service. When configured for VM support, the Kubernetes manager also creates/removes and bridges the VM overlay on each applicable hosting cluster. |
+| SecurityGroup create/delete | The fabric manager installs/removes ACL enforcement for the stateful, default-deny ingress and egress allow rules. Workload provisioning applies the selected groups to the workload's network interface, combining multiple groups as a union of their allow rules. |
+| ExternalIPPool setup | Provider configuration makes the pool range available to the selected manager's address-management system. Fulfillment-service owns API-side capacity accounting. |
+| ExternalIP allocate/release | The fabric manager reserves a unique address from the requested pool and releases it on deletion. Reservations are durable and retry-safe under the ExternalIP UID; OSAC accepts the address only after validating the manager result and annotation. |
+| ExternalIPAttachment create/delete | The fabric manager creates/removes DNAT from the ExternalIP to the workload's primary subnet address or selected cluster endpoint VIP. Readiness requires a known target address and an installed mapping. |
+| NATGateway create/delete | The fabric manager creates/removes SNAT from the VirtualNetwork's IPv4 address space to the allocated ExternalIP. Readiness requires the VirtualNetwork, address, and SNAT rule to be ready. |
+| Workload network attachment | The service provisioning flow attaches the workload to the selected segment: VM overlay/bridge, BM switch-port movement, or CaaS node-set handoff. Each path must produce the same fabric-level network and policy semantics. |
+
+The manager contract is role-specific: the fabric manager implements its
+provider resource operations, while the optional Kubernetes manager implements
+the VM overlay bridge. Managers must treat retries as safe, scope changes to
+the OSAC resource identity, and report success only after the requested
+provider state is present (create) or absent (delete). OSAC owns API
+validation, dependency ordering, and resource status; a failed or incomplete
+provider operation leaves the resource non-ready for reconciliation.
+Vendor-specific configuration stays in the manager implementation and does
+not change the tenant API.
 
 #### ExternalIPPool
 
@@ -852,7 +900,9 @@ field is retained for compatibility, but validation rejects an empty list or
 more than one entry; IPv6 and dual-stack pools are not supported.
 Pool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4`;
 `IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values are rejected before
-persistence.
+persistence. The provider create API associates the pool with a NetworkClass
+and supplies `cidrs` and `ipFamily`; the provider configures that range in the
+selected manager's address-management system before the pool becomes Ready.
 
 ##### Address-Family and CIDR Contract
 
@@ -933,6 +983,51 @@ concrete provider manager. VirtualNetworks reference the deployment's
 provider-managed NetworkClass, which selects registered manager
 implementations. The same resource model applies across VM, cluster, and BM
 workloads.
+
+##### Subnet
+
+```protobuf
+message SubnetSpec {
+  VirtualNetworkLocalReference virtual_network = 1; // required, immutable
+  string ipv4_cidr = 2; // required canonical IPv4, within parent CIDR, immutable
+}
+```
+
+The Subnet CIDR must be contained by its VirtualNetwork CIDR and must not
+overlap another Subnet in that VirtualNetwork. A Subnet is the workload
+attachment point; it does not select a workload type or a manager.
+
+##### SecurityGroup
+
+```protobuf
+message SecurityGroupSpec {
+  VirtualNetworkLocalReference virtual_network = 1; // required, immutable
+  repeated SecurityRule ingress = 2;
+  repeated SecurityRule egress = 3;
+}
+```
+
+Each `SecurityRule` matches a protocol, optional TCP/UDP port range, and an
+IPv4 CIDR (source for ingress, destination for egress). A matching rule allows
+traffic; traffic that matches no rule is denied. Return traffic for an
+established connection is allowed. Rules contain match criteria, not an
+explicit allow/deny action, so list order does not change their meaning. When
+multiple SecurityGroups are attached to a workload, their allow rules combine
+as a union. SecurityGroups can be attached only to workloads in their parent
+VirtualNetwork.
+
+##### ExternalIP
+
+```protobuf
+message ExternalIPSpec {
+  ExternalIPPoolReference pool = 1; // required, immutable
+}
+```
+
+The allocated address is system-provided in `ExternalIP.status.address`; a
+tenant requests a pool, not a specific address. See
+[ExternalIP Address Selection and Ownership](#externalip-address-selection-and-ownership)
+for the manager allocation and release contract.
 
 ##### HostType and BareMetalInstanceType
 
