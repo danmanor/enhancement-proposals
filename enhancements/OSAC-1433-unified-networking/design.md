@@ -1,5 +1,5 @@
 ---
-title: Unified Networking API for VMaaS, CaaS, and BMaaS
+title: unified-networking-api
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
@@ -104,16 +104,16 @@ superseded-by:
 
 ## 1. Summary
 
-This design defines one networking application programming interface (API) for virtual machines (VMs), managed Kubernetes clusters, and bare-metal servers. OSAC provides these through Virtual-Machine-as-a-Service (VMaaS), Cluster-as-a-Service (CaaS), and bare-metal-as-a-service (BMaaS). The same network resources and workflows apply to each workload type, while providers may use different networking implementations. The design defines the resources first, then their schemas, provider architecture, and lifecycle flows. See the [PRD](prd.md) for user needs and acceptance criteria.
+This design defines one networking application programming interface (API) and resource model for virtual machines (VMs), managed Kubernetes clusters, and bare-metal servers, delivered through Virtual-Machine-as-a-Service (VMaaS), Cluster-as-a-Service (CaaS), and bare-metal-as-a-service (BMaaS). Provider-selected manager roles supply backend behavior without changing resource meanings across workload types; see the [PRD](prd.md) for user needs and acceptance criteria.
 
 ## 2. Motivation: Goals and Non-Goals
 
 ### 2.1 Goals
 
-- Give virtual machines, managed clusters, and bare-metal servers the same networking resources and lifecycle.
-- Let providers change networking implementations without changing the tenant-facing resource model.
-- Keep provider implementation choices out of tenant requests.
-- Support Internet Protocol version 4 (IPv4) and at most one network attachment per workload.
+- Use the same tenant networking resource schemas across VM, cluster, and bare-metal workloads; keep workload-specific connection fields on each workload resource.
+- Resolve provider implementations through the deployment's NetworkClass registrations so tenant requests contain no backend selector.
+- Assign each manager role a fixed operation and workload-target set, and require each assigned implementation to fulfill that complete contract.
+- Limit this contract to Internet Protocol version 4 (IPv4) and one tenant network attachment per workload.
 
 ### 2.2 Non-Goals
 
@@ -2275,4 +2275,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (81 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":81,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
