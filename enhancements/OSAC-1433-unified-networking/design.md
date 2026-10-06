@@ -37,22 +37,22 @@ superseded-by:
 - [3. Background and Rationale](#3-background-and-rationale)
 - [4. Proposal](#4-proposal)
   - [4.1 Architecture](#41-architecture)
-    - [NetworkClass](#networkclass)
+    - [Manager Roles and Selection](#manager-roles-and-selection)
       - [Two Managers](#two-managers)
       - [Manager Contracts and Selection](#manager-contracts-and-selection)
-      - [Capabilities](#capabilities)
-      - [Manager Registration](#manager-registration-configmap)
+      - [Why Two Managers?](#why-two-managers)
     - [How VMs Join the Fabric](#how-vms-join-the-fabric)
     - [Infrastructure and Backend Agnostic Resource Model](#infrastructure-and-backend-agnostic-resource-model)
     - [Dispatcher](#dispatcher-operator-composition-logic)
-    - [Resource Hierarchy](#resource-hierarchy)
   - [4.2 Data Model and Schema Changes](#42-data-model-and-schema-changes)
     - [Resource API Meaning](#resource-api-meaning)
     - [Backend Effects and Completion Contract](#backend-effects-and-completion-contract)
     - [Manager Operation Contract](#manager-operation-contract)
     - [ExternalIPPool](#externalippool)
     - [API Extensions](#api-extensions)
-      - [NetworkClass](#networkclass-1)
+      - [NetworkClass](#networkclass)
+        - [Capabilities](#capabilities)
+        - [Manager Registration (ConfigMap)](#manager-registration-configmap)
       - [ExternalIPPool](#externalippool-1)
       - [VirtualNetwork](#virtualnetwork)
       - [Subnet](#subnet)
@@ -62,6 +62,7 @@ superseded-by:
       - [Resource Status: Discovered IPs](#resource-status-discovered-ips)
       - [ExternalIPAttachment: Inbound Traffic (DNAT)](#externalipattachment-inbound-traffic-dnat)
       - [NATGateway: Outbound Traffic (SNAT)](#natgateway-outbound-traffic-snat)
+    - [Resource Hierarchy](#resource-hierarchy)
   - [4.3 API Changes](#43-api-changes)
     - [Resource lifecycle enforcement](#resource-lifecycle-enforcement)
     - [API operation constraint](#api-operation-constraint)
@@ -160,8 +161,8 @@ conforming implementation of that role may provide the backend behavior.
 
 The design introduces:
 
-- **NetworkClass** with provider-selected `fabric_manager` and `k8s_manager`
-  role assignments; registrations define their supported operations and targets
+- **Provider-selected manager roles** with supported operation-target pairs
+  declared by each registered implementation
 - **Infrastructure-agnostic networking resources** where the same tenant
   resource model serves VMs, BM servers, and cluster nodes
 - **Backend-agnostic manager integrations** where any implementation that
@@ -181,17 +182,17 @@ IPv6 and dual-stack networking are not supported.
 
 For user-facing goals and requirements, see the [PRD](prd.md).
 
-#### NetworkClass
+#### Manager Roles and Selection
 
-NetworkClass is provider configuration that selects registered implementations
-for the networking roles. Tenants do not choose or see those implementations.
-Each deployment uses one NetworkClass profile; the profile can be Fabric-only,
-K8s-only, or combined where the fixed dispatch contract permits it.
+The deployment's provider profile assigns registered implementations to
+these roles. That profile is represented by the provider-managed
+[NetworkClass](#networkclass), defined in the API section. A deployment may use
+one or both roles, subject to the operation-target support required by its
+workload profile.
 
 ##### Two Managers
 
-OSAC networking defines two manager roles. A deployment may use one or both,
-subject to the operation support in its NetworkClass profile:
+OSAC networking defines two manager roles. A deployment may use one or both, subject to its supported operations:
 
 - **Fabric Manager** — one provider-selected implementation for operations
   that realize the shared physical-fabric contract: tenant isolation, traffic
@@ -211,13 +212,12 @@ subject to the operation support in its NetworkClass profile:
 ##### Manager Contracts and Selection
 
 Any implementation source can provide either role if it conforms to the
-versioned OSAC manager contract. A registration declares its role,
-`implementationRef`, contract version, general networking capabilities, and
-supported operation-target pairs. The dispatcher remains authoritative about
-which role handles each operation: declarations validate support and never
-cause dynamic routing or silent fallback. See
-[Manager Operation Contract](#manager-operation-contract) for the input,
-result, retry, and failure requirements.
+versioned OSAC manager contract. The fixed dispatcher determines which role
+handles each operation; registration declarations validate support and never
+cause dynamic routing or silent fallback. The provider-profile and registration
+fields are defined in the [NetworkClass API](#networkclass). See the
+[Manager Operation Contract](#manager-operation-contract) for input, result,
+retry, and failure requirements.
 
 ##### Why Two Managers?
 
@@ -231,87 +231,12 @@ connects the VM overlay to the selected Subnet. A K8s-only profile can also
 handle only the fallback operations explicitly listed in the dispatcher
 table. The mechanism depends on the deployment — see
 [How VMs Join the Fabric](#how-vms-join-the-fabric) for the available
-options. A single `k8s_manager` role assignment selects its implementation.
+options. The provider profile assigns one implementation to the K8s Manager role.
 
 Once attached, the same VirtualNetwork, Subnet, SecurityGroup, ExternalIP,
 ExternalIPAttachment, and NATGateway semantics apply to VMs, clusters, and
 bare-metal workloads. Implementations may support different target sets, but
 the tenant resource model does not vary by infrastructure.
-
-##### Capabilities
-
-Capabilities are **inferred from the assigned managers** and published in
-the NetworkClass `capabilities` field — the provider does not set them
-manually. The operator computes the intersection of capabilities declared by
-the assigned manager ConfigMaps and populates `capabilities` automatically. For
-a BM-only NetworkClass without a `k8sManager`, the absent manager is excluded
-from this intersection; only the configured `fabricManager` contributes
-capabilities.
-
-The supported deployment boundary is IPv4-only. Managers must advertise the
-`ipv4` capability. IPv6 and dual-stack manager registrations are rejected,
-and NetworkClass capability output must be `supportsIpv4: true` with
-`supportsIpv6: false` and `supportsDualStack: false`.
-
-| Capability | Type | Meaning |
-|-----------|------|---------|
-| `supportsIpv4` | bool | IPv4 addressing is available; `true` for OSAC networking |
-| `supportsIpv6` | bool | IPv6 addressing; always `false` |
-| `supportsDualStack` | bool | IPv4 + IPv6 addressing; always `false` |
-| `dpuSupport` | bool | DPU-accelerated networking available |
-
-The set of capabilities is defined by the operator and is fixed — adding a
-new capability requires an operator update. Managers declare which
-capabilities they support; they cannot define custom capabilities. These
-capability flags do not replace the operation and workload-target support
-declared by each manager registration.
-
-##### Manager Registration (ConfigMap)
-
-Each implementation registers one manager role through a ConfigMap installed
-in the OSAC operator namespace. The role label determines whether it is a
-Fabric Manager or K8s Manager. Contract v1 requires a unique `name`, a fully
-qualified `implementationRef`, `contractVersion`, general `capabilities`, and
-`supportedOperations`; description is optional. Operation entries list exact
-operation identifiers and, for target-scoped operations, the supported target
-types. Credentials remain in provider-managed AAP credentials or Secrets, not
-in the registration.
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: osac-network-fabric-manager-example
-  namespace: osac
-  labels:
-    osac.openshift.io/network-fabric-manager: "true"
-data:
-  name: example
-  implementationRef: acme.networking.fabric_manager
-  description: "Example Fabric Manager implementation"
-  contractVersion: "v1"
-  capabilities: "ipv4"
-  supportedOperations: |
-    - id: virtual_network.create
-    - id: virtual_network.delete
-    - id: subnet.create
-    - id: subnet.delete
-    - id: external_ip_attachment.create
-      targets:
-        - cluster
-    - id: external_ip_attachment.delete
-      targets:
-        - cluster
-```
-
-The operator validates each NetworkClass role assignment against the matching
-registration before dispatch. The advertised operation-target pairs validate
-the fixed dispatch choice; they do not add operations or change routing. A
-conforming implementation from any source can be registered without changing
-tenant APIs or operation dispatch. Adding a new OSAC operation, target type,
-or incompatible input/output contract requires an OSAC contract update.
-Legacy implementation-strategy fields or annotations on networking resources
-do not select an implementation and must not alter fixed role dispatch.
 
 #### How VMs Join the Fabric
 
@@ -395,7 +320,7 @@ manager implementation.
 
 #### Dispatcher (Operator Composition Logic)
 
-The osac-operator acts as a fixed **dispatcher**: it resolves the NetworkClass,
+The osac-operator acts as a fixed **dispatcher**: it resolves the active [NetworkClass](#networkclass),
 checks that the selected manager registration advertises the required
 operation and target, then invokes the role assigned to that operation. A
 registration cannot change the dispatch table, and OSAC does not silently
@@ -428,23 +353,6 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 [CaaS](/enhancements/OSAC-1436-caas-networking),
 [BMaaS](/enhancements/OSAC-1437-bmaas-networking).
 
-#### Resource Hierarchy
-
-```text
-NetworkClass (per deployment, provider-only)
-
-VirtualNetwork (tenant-managed, shared across workload types)
-  ├── Subnet              → Fabric Manager; K8s Manager only for VM-enabled profiles
-  ├── SecurityGroup       → Fabric Manager role or explicit K8s-only fallback
-  └── NATGateway          → Fabric Manager role
-
-ExternalIPPool (deployment-scoped, provider-managed)
-  └── ExternalIP (tenant-managed) → assigned manager role for the selected profile
-
-ExternalIPAttachment (tenant-managed)
-                          → assigned manager role for the selected profile
-                            references an ExternalIP and a target resource
-```
 
 ### 4.2 Data Model and Schema Changes
 
@@ -455,8 +363,7 @@ The design extends OSAC networking resources and workload-specific attachment ty
 The API is declarative. NetworkClass and ExternalIPPool are provider-managed
 configuration; the other network resources express tenant intent. The table
 defines each object's purpose and relationship. Field-level schemas,
-cardinality, defaults, and status are specified in this section and the
-[NetworkClass](#networkclass) subsection in Section 4.1.
+cardinality, defaults, and status are specified in the API Extensions below.
 
 | Resource and API contract | Meaning |
 |---|---|
@@ -648,11 +555,16 @@ provider or guarantee that the provider can allocate it again. [User]
 
 ##### NetworkClass
 
-NetworkClass is provider configuration, not a tenant-selected network. It
-selects implementations by manager role and contains deployment-level
-defaults and capability controls. Manager names resolve to role-labeled
-registrations; the registration, rather than a vendor field in the tenant
-resource, identifies the implementation.
+NetworkClass is the provider-managed configuration container for deployment
+networking. It binds manager-role assignments to registered implementations,
+contains deployment defaults and capability controls, and reports effective
+readiness. It is not a tenant network and does not own tenant VirtualNetworks;
+VirtualNetworks reference the deployment profile. Tenants do not select it.
+Each deployment uses one active NetworkClass; its profile may assign the Fabric
+Manager, the K8s Manager, or both where the supported operation-target pairs
+allow it. See [Manager Roles and Selection](#manager-roles-and-selection)
+for role responsibilities and the [dispatcher contract](#dispatcher-operator-composition-logic)
+for operation routing.
 
 ```protobuf
 message NetworkClass {
@@ -701,10 +613,81 @@ message NetworkClassCapabilities {
 }
 ```
 
-For this proposal, manager registrations must advertise IPv4 and must not
-advertise IPv6 or dual-stack support. The operator derives the capability
-intersection from the selected managers and the provider may disable supported
-capabilities in the NetworkClass spec.
+###### Capabilities
+
+Capabilities are **inferred from the assigned managers** and published in
+the NetworkClass `capabilities` field — the provider does not set them
+manually. The operator computes the intersection of capabilities declared by
+the assigned manager ConfigMaps and populates `capabilities` automatically. For
+a BM-only NetworkClass without a `k8sManager`, the absent manager is excluded
+from this intersection; only the configured `fabricManager` contributes
+capabilities.
+
+The supported deployment boundary is IPv4-only. Managers must advertise the
+`ipv4` capability. IPv6 and dual-stack manager registrations are rejected,
+and NetworkClass capability output must be `supportsIpv4: true` with
+`supportsIpv6: false` and `supportsDualStack: false`.
+
+| Capability | Type | Meaning |
+|-----------|------|---------|
+| `supportsIpv4` | bool | IPv4 addressing is available; `true` for OSAC networking |
+| `supportsIpv6` | bool | IPv6 addressing; always `false` |
+| `supportsDualStack` | bool | IPv4 + IPv6 addressing; always `false` |
+| `dpuSupport` | bool | DPU-accelerated networking available |
+
+The set of capabilities is defined by the operator and is fixed — adding a
+new capability requires an operator update. Managers declare which
+capabilities they support; they cannot define custom capabilities. These
+capability flags do not replace the operation and workload-target support
+declared by each manager registration.
+
+###### Manager Registration (ConfigMap)
+
+Each implementation registers one manager role through a ConfigMap installed
+in the OSAC operator namespace. The role label determines whether it is a
+Fabric Manager or K8s Manager. Contract v1 requires a unique `name`, a fully
+qualified `implementationRef`, `contractVersion`, general `capabilities`, and
+`supportedOperations`; description is optional. Operation entries list exact
+operation identifiers and, for target-scoped operations, the supported target
+types. Credentials remain in provider-managed AAP credentials or Secrets, not
+in the registration.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: osac-network-fabric-manager-example
+  namespace: osac
+  labels:
+    osac.openshift.io/network-fabric-manager: "true"
+data:
+  name: example
+  implementationRef: acme.networking.fabric_manager
+  description: "Example Fabric Manager implementation"
+  contractVersion: "v1"
+  capabilities: "ipv4"
+  supportedOperations: |
+    - id: virtual_network.create
+    - id: virtual_network.delete
+    - id: subnet.create
+    - id: subnet.delete
+    - id: external_ip_attachment.create
+      targets:
+        - cluster
+    - id: external_ip_attachment.delete
+      targets:
+        - cluster
+```
+
+The operator validates each NetworkClass role assignment against the matching
+registration before dispatch. The advertised operation-target pairs validate
+the fixed dispatch choice; they do not add operations or change routing. A
+conforming implementation from any source can be registered without changing
+tenant APIs or operation dispatch. Adding a new OSAC operation, target type,
+or incompatible input/output contract requires an OSAC contract update.
+Legacy implementation-strategy fields or annotations on networking resources
+do not select an implementation and must not alter fixed role dispatch.
+
 
 ##### ExternalIPPool
 
@@ -1136,6 +1119,26 @@ All fields are immutable after creation.
 |----------|-----------|-----------|
 | ExternalIPAttachment | Inbound (DNAT) | External IP → resource |
 | NATGateway | Outbound (SNAT) | Resource → external IP |
+
+#### Resource Hierarchy
+
+The diagram summarizes the resource relationships defined in the API extensions above. Manager roles shown on provider operations follow the dispatcher contract.
+
+```text
+NetworkClass (per deployment, provider-only)
+
+VirtualNetwork (tenant-managed, shared across workload types)
+  ├── Subnet              → Fabric Manager; K8s Manager only for VM-enabled profiles
+  ├── SecurityGroup       → Fabric Manager role or explicit K8s-only fallback
+  └── NATGateway          → Fabric Manager role
+
+ExternalIPPool (deployment-scoped, provider-managed)
+  └── ExternalIP (tenant-managed) → assigned manager role for the selected profile
+
+ExternalIPAttachment (tenant-managed)
+                          → assigned manager role for the selected profile
+                            references an ExternalIP and a target resource
+```
 
 ### 4.3 API Changes
 
@@ -2367,6 +2370,8 @@ explicitly specifies them.
 
 ---
 
+---
+
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
@@ -2376,4 +2381,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (66 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":66,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":66,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
