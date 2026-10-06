@@ -3,7 +3,7 @@ title: multi-fabric-east-west-networking
 authors:
   - vromanso@redhat.com
 creation-date: 2026-07-14
-last-updated: 2026-09-28
+last-updated: 2026-10-06
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1382
 prd:
@@ -121,14 +121,15 @@ FabricDomain
   # NetworkClass inherited from the associated VirtualNetwork
 
 NetworkClass
-  capabilities:
-    supports_east_west_ethernet: true/false
-    supports_east_west_infiniband: true/false   # Phase 2
-    supports_nvlink: true/false                 # Phase 3
-  east_west_config:
-    ethernet_ew: { template_id, … }
-    infiniband_ew: { … }                        # Phase 2
-    nvlink: { … }                               # Phase 3
+  spec:
+    east_west_capabilities:
+      supports_east_west_ethernet: true/false
+      supports_east_west_infiniband: false      # unsupported in this proposal
+      supports_nvlink: false                    # unsupported in this proposal
+    east_west_config:
+      ethernet_ew: { template_id, … }
+      infiniband_ew: { … }                      # Phase 2
+      nvlink: { … }                             # Phase 3
 
 VirtualNetwork   # existing — N-S / IP isolation boundary
   └── Subnet     # existing — IP segments
@@ -198,12 +199,17 @@ service FabricDomains {
   rpc SignalFabricDomain(SignalFabricDomainRequest) returns (FabricDomain);
 }
 
-// NetworkClass extensions (existing resource, new fields)
-message NetworkClassCapabilities {
-  // Existing networking capability: IPv4 only.
-  bool supports_east_west_ethernet = 5;
-  bool supports_east_west_infiniband = 6;
-  bool supports_nvlink = 7;
+// NetworkClassSpec extensions from the Unified Networking Design.
+message NetworkClassSpec {
+  // Existing spec fields omitted.
+  EastWestConfig east_west_config = 4;
+  NetworkClassEastWestCapabilities east_west_capabilities = 5;
+}
+
+message NetworkClassEastWestCapabilities {
+  bool supports_east_west_ethernet = 1;
+  bool supports_east_west_infiniband = 2;
+  bool supports_nvlink = 3;
 }
 
 message EastWestConfig {
@@ -230,16 +236,28 @@ message NVLinkEastWestConfig {
 **Immutability:** `type` and `virtual_networks` are immutable after creation.
 Changing them requires delete + re-create. `servers` is mutable (resize).
 
+**NetworkClass capability validation:** `spec.east_west_capabilities` is the
+provider's declaration of which FabricDomain types the active implementation
+offers. A true Ethernet declaration enables Ethernet FabricDomain requests and
+requires a non-empty `spec.east_west_config.ethernet_ew.template_id`; an
+inconsistent NetworkClass is rejected with `INVALID_ARGUMENT`. InfiniBand and
+NVLink are unsupported in this proposal, so setting either capability to true
+is also rejected with `INVALID_ARGUMENT`. OSAC checks these declarations when
+validating NetworkClass and FabricDomain requests; it does not infer east-west
+support from manager-registration metadata. The provider must only advertise
+Ethernet when its selected Fabric Manager and template implement the behavior.
+
 **Validation (Phase 1)**
 
 | Rule | Check | gRPC error |
 |------|-------|------------|
-| FD-VAL-01 | `type` must be a valid `FabricDomainType` enum value and match a capability on the VN's NetworkClass | `INVALID_ARGUMENT`: "type does not match NetworkClass capability" |
+| FD-VAL-01 | `type` must be a recognized `FabricDomainType` enum value | `INVALID_ARGUMENT`: "unknown FabricDomain type" |
 | FD-VAL-02 | `servers` non-empty | `INVALID_ARGUMENT`: "servers list must not be empty" |
 | FD-VAL-03 | `virtual_networks` length == 1 | `INVALID_ARGUMENT`: "exactly one VirtualNetwork required in Phase 1" |
 | FD-VAL-04 | Referenced VN must exist and be same-tenant | `NOT_FOUND` / `PERMISSION_DENIED` |
-| FD-VAL-05 | VN's NetworkClass must have `east_west_config.ethernet_ew.template_id` for `ETHERNET_EW` | `FAILED_PRECONDITION`: "NetworkClass missing template_id for ethernet_ew" |
-| FD-VAL-06 | Type `INFINIBAND_EW` / `NVLINK` rejected until Phase 2/3 | `UNIMPLEMENTED`: "type not yet supported" |
+| FD-VAL-05 | For `ETHERNET_EW`, NetworkClass must provide a non-empty `spec.east_west_config.ethernet_ew.template_id` | `FAILED_PRECONDITION`: "NetworkClass missing Ethernet east-west template_id" |
+| FD-VAL-06 | `INFINIBAND_EW` and `NVLINK` are unsupported by this proposal; their capability fields must be false and their FabricDomain requests are rejected | `UNIMPLEMENTED`: "type not supported" |
+| FD-VAL-07 | For `ETHERNET_EW`, `NetworkClass.spec.east_west_capabilities.supports_east_west_ethernet` must be true | `FAILED_PRECONDITION`: "NetworkClass does not advertise Ethernet east-west" |
 
 ### Why Phase 1 requires VirtualNetwork (1:1)
 
@@ -298,8 +316,7 @@ kind: NetworkClass
 metadata:
   name: spectrum-x-ai
 spec:
-  capabilities:
-    supports_ipv4: true
+  east_west_capabilities:
     supports_east_west_ethernet: true
   east_west_config:
     ethernet_ew:
@@ -412,7 +429,10 @@ backends later.
 ### Phase 1 behavior (Ethernet / Netris)
 
 1. **Cloud Infrastructure Admin** configures NetworkClass with
-   `supports_east_west_ethernet` and `east_west_config.ethernet_ew.template_id`.
+   `spec.east_west_capabilities.supports_east_west_ethernet=true` and a
+   non-empty `spec.east_west_config.ethernet_ew.template_id`. This declaration
+   enables Ethernet FabricDomain requests; OSAC separately derives IP-family
+   capability output from the selected network managers.
 2. **Tenant Admin** (or Cloud Infrastructure Admin) has VirtualNetwork (N-S).
 3. **Cloud Infrastructure Admin** creates FabricDomain (`type=ETHERNET_EW`,
    `servers`, `virtual_networks: [that VN]`). The fulfillment-service
@@ -517,19 +537,25 @@ The join table `fabric_domain_virtual_networks` supports the Phase 1 exactly-one
 constraint via application-level validation (FD-VAL-05) while keeping the schema
 ready for Phase 2+ multi-VN association.
 
-NetworkClass gains `east_west_config` (JSONB) alongside existing columns — no
-migration of existing rows required (nullable column, additive).
+NetworkClass gains `spec.east_west_config` and
+`spec.east_west_capabilities` as provider configuration — no migration of
+existing rows is required (nullable fields, additive).
 
 ### Affected components
 
 - **fulfillment-service:** FabricDomain CRUD + validation; NetworkClass
-  `east_west_config` + capabilities.
+  `spec.east_west_config` and `spec.east_west_capabilities`.
 - **osac-operator:** FabricDomain reconciler; map type → AAP job; resolve
   template from NC; VN → VPC id.
-- **osac-aap:** Existing create/delete server_cluster tasks (PR #447);
-  capability `supports_east_west_ethernet`.
+- **osac-aap:** Existing create/delete server_cluster tasks (PR #447) implement
+  the configured Ethernet east-west backend behavior. The provider declares
+  that behavior through
+  `NetworkClass.spec.east_west_capabilities.supports_east_west_ethernet`;
+  OSAC validates FabricDomain requests against that declaration and the
+  required template, but does not derive the declaration from manager metadata.
 - **osac-installer:** New FabricDomain CRD registration; NetworkClass Helm
-  values extended with `east_west_config`; RBAC rules for the new resource.
+  values extended with `east_west_config` and `east_west_capabilities`; RBAC
+  rules for the new resource.
 - **Scoping:** Follow existing OSAC networking resource conventions
   (cluster/tenant scoped as established for VirtualNetwork); examples in this
   doc are illustrative.
@@ -591,7 +617,7 @@ cluster by name before creating.
 
 | Persona | FabricDomain | NetworkClass EW config |
 |---------|-------------|------------------------|
-| **Cloud Infrastructure Admin** | Create, read, update, delete | Configure `east_west_config` and capabilities |
+| **Cloud Infrastructure Admin** | Create, read, update, delete | Configure `spec.east_west_config` and `spec.east_west_capabilities` |
 | **Cloud Provider Admin** | Read (audit/troubleshoot) | Read |
 | **Tenant Admin** | Read own tenant's FabricDomains | Read (discover available capabilities) |
 | **Tenant User** | No direct access | No direct access |
@@ -629,7 +655,7 @@ minutes indicates Netris API or data-plane convergence issues.
 | **Server Cluster activation latency** | Data plane convergence takes ~3 min after API reports "Active" | Document expected latency; operator treats `Ready=True` as control-plane ready; data-plane readiness is a future health-check enhancement |
 | **Server overlap across domains** | Two FabricDomains with overlapping servers could cause switch port conflicts | Phase 1: admin-trusted (documented limitation). Phase 2: add server overlap validation at the fulfillment-service layer |
 | **Template misconfiguration** | Wrong `template_id` on NetworkClass applies incorrect NIC mapping | Validation ensures template_id is non-empty; Netris rejects invalid IDs. Template correctness is infra admin responsibility |
-| **`supports_east_west_ethernet` capability rename** | AAP metadata and operator may disagree during rolling upgrade | Additive change: new capability field; old `supports_east_west` retained as deprecated alias during transition. See Version Skew Strategy |
+| **Ethernet support declaration mismatch** | Provider configuration could advertise Ethernet east-west when the selected implementation is not configured to provide it | Validate declaration shape and required template at NetworkClass admission. The provider must ensure its selected Fabric Manager and template actually provide the advertised behavior; OSAC cannot infer this from current manager registrations, and a false assertion fails during backend provisioning with the manager's diagnostic. |
 
 ### Drawbacks
 
@@ -670,18 +696,23 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ### Unit Tests
 
-- FD-VAL-01: reject FabricDomain when `type` does not match VN's NetworkClass
-  capability → `INVALID_ARGUMENT`.
+- FD-VAL-01: reject an unknown `type` → `INVALID_ARGUMENT`.
 - FD-VAL-02: reject FabricDomain with empty `servers` list → `INVALID_ARGUMENT`.
 - FD-VAL-03: reject FabricDomain with zero or >1 `virtual_networks` in Phase 1
   → `INVALID_ARGUMENT`.
 - FD-VAL-04: reject FabricDomain when referenced VN belongs to a different
   tenant → `PERMISSION_DENIED`.
-- FD-VAL-05: reject `ETHERNET_EW` when VN's NetworkClass is missing
-  `template_id` → `FAILED_PRECONDITION`.
+- FD-VAL-05: reject `ETHERNET_EW` when VN's NetworkClass does not declare
+  a non-empty `spec.east_west_config.ethernet_ew.template_id` →
+  `FAILED_PRECONDITION`.
+- FD-VAL-07: reject `ETHERNET_EW` when VN's NetworkClass has a false or missing
+  `spec.east_west_capabilities.supports_east_west_ethernet` declaration →
+  `FAILED_PRECONDITION`.
+- NetworkClass validation: reject an enabled Ethernet declaration without a
+  template, or enabled InfiniBand/NVLink declarations, with `INVALID_ARGUMENT`.
 - FD-VAL-06: reject `INFINIBAND_EW` and `NVLINK` types → `UNIMPLEMENTED`.
 - Template resolution: operator resolves NetworkClass from VN, then
-  `template_id` from `east_west_config.ethernet_ew`.
+  `template_id` from `spec.east_west_config.ethernet_ew`.
 - Condition transitions: `Ready=False` (Reason=Provisioning) → `Ready=True`
   on success; `Ready=False` (Reason=ProvisioningFailed) on failure.
 - Per-member status: all members report `ACTIVE` on success; failed members
@@ -691,7 +722,8 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 
 ### Integration Tests
 
-- Create NetworkClass with `east_west_config` → create FabricDomain CR →
+- Create NetworkClass with `spec.east_west_config` and
+  `spec.east_west_capabilities` → create FabricDomain CR →
   verify condition transitions to `Ready=True` and `backend_id` is populated.
 - Delete FabricDomain → verify Server Cluster cleanup and condition removal.
 - Re-provision after failure: simulate AAP job failure → verify operator
@@ -815,7 +847,7 @@ multi-fabric clarity; risks leaking `template_id` into every binding.
 
 | Stage | Criteria |
 |-------|----------|
-| **Dev Preview** | FabricDomain CRUD operations pass unit and integration tests. Condition-based lifecycle verified. NetworkClass `east_west_config` validated. |
+| **Dev Preview** | FabricDomain CRUD operations pass unit and integration tests. Condition-based lifecycle verified. NetworkClass `spec.east_west_config` and `spec.east_west_capabilities` validated. |
 | **Tech Preview** | Full lifecycle E2E on netris-lab: create → isolation verified → resize → delete. VNet coexistence with OSAC Subnets confirmed. Error paths tested (invalid template, missing VN, AAP timeout). No regressions in existing networking tests. |
 | **GA** | Production deployment with ≥2 tenants using FabricDomain for ≥30 days. Support procedures validated. Admin documentation published. No manual fabric-manager intervention required for standard operations. |
 
@@ -824,9 +856,9 @@ multi-fabric clarity; risks leaking `template_id` into every binding.
 FabricDomain is a new resource type with no existing instances to migrate.
 
 - **Upgrade:** Installing the new CRD and controller is additive. Existing
-  VirtualNetwork and Subnet resources are unaffected. NetworkClass gains new
-  optional fields (`east_west_config`, `supports_east_west_ethernet`); existing
-  NetworkClasses without these fields continue to work for N-S networking.
+  VirtualNetwork and Subnet resources are unaffected. NetworkClass gains the
+  optional `spec.east_west_config` and `spec.east_west_capabilities` fields;
+  existing NetworkClasses without them continue to work for N-S networking.
 - **Downgrade:** Requires deleting all FabricDomain instances before removing
   the CRD. The operator must be scaled down before CRD removal to avoid
   reconciliation errors. VirtualNetwork and Subnet resources are unaffected
@@ -838,7 +870,6 @@ FabricDomain is a new resource type with no existing instances to migrate.
 |---------------|---------------|----------|
 | **fulfillment-service ahead of osac-operator** | FS accepts FabricDomain creates; operator CRD not yet installed | FS persists the resource in the database; CR creation fails. Condition `Ready=False`, Reason=`CRDNotInstalled`. Resolves when operator is upgraded. |
 | **osac-operator ahead of fulfillment-service** | Operator has CRD but FS does not have the FabricDomain service | No FabricDomains can be created via API. No impact on existing resources. |
-| **osac-aap capability rename** | Old AAP has `supports_east_west`; new FS/operator expects `supports_east_west_ethernet` | Additive: new capability field is added alongside the old one. The `find_template_roles.py` pydantic model accepts both during the transition window. Old field deprecated after one release cycle. |
 
 ## Support Procedures
 

@@ -3,9 +3,9 @@
 ## Overview
 
 - **Feature:** Network Manager Integration Contract
-- **Total test cases:** 10
+- **Total test cases:** 11
 - **Requirements covered:** 4 of 4 functional requirements
-- **Interface changes covered:** 5 of 5
+- **Interface changes covered:** 6 of 6
 
 ## Test Cases
 
@@ -13,14 +13,14 @@
 
 #### TC-FR1-01: Invoke a conforming collection outside the OSAC collection
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-2 | critical | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1, IC-2 | E2E | critical | automated |
 
 ##### Preconditions
 
 - A test Fabric Manager registration points to an installed collection role using a new fully qualified name outside the OSAC collection.
-- The role implements every Fabric operation and target assigned by contract v1.
+- The role implements every Fabric operation and target assigned by the contract.
 - The AAP execution environment contains the test collection.
 
 ##### Steps
@@ -40,9 +40,9 @@
 
 #### TC-FR2-01: Reject an invalid manager registration
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | critical | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1 | Integration | critical | automated |
 
 ##### Preconditions
 
@@ -61,39 +61,39 @@
 - The NetworkClass is not Ready while a selected registration is invalid.
 - OSAC creates no AAP job for the invalid registration.
 
-#### TC-FR2-02: Derive effective NetworkClass capabilities
+#### TC-FR2-02: Validate manager capabilities and NetworkClass output
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1 | high | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1 | Unit | high | automated |
 
 ##### Preconditions
 
-- A Fabric Manager and a Kubernetes Manager declare `ipv4`; the Fabric Manager declares `dpuSupport` and the Kubernetes Manager does not.
-- The operator exposes NetworkClass capability output and provider `disable_capabilities` input.
+- A Fabric Manager and a Kubernetes Manager declare `ipv4`.
+- The operator derives the read-only NetworkClass IP-family capability output from the selected manager registrations.
 
 ##### Steps
 
 1. Create a NetworkClass using both managers and inspect its capability output.
-2. Set `disable_capabilities.dpuSupport` and inspect the output again.
-3. Try to disable IPv4 and observe NetworkClass readiness.
+2. Try registrations with missing `ipv4`, `ipv6`, and `dualStack` declarations.
+3. Submit IPv6 and dual-stack network inputs through the networking API.
 
 ##### Expected Results
 
-- OSAC intersects capabilities from selected managers: `supportsIpv4` is true, `supportsIpv6` and `supportsDualStack` are false, and `dpuSupport` is false because the Kubernetes Manager does not declare it.
-- Disabling DPU support keeps `dpuSupport` false and does not alter operation routing.
-- A NetworkClass that disables contract-required IPv4 is invalid and is not Ready.
+- The valid pair produces `supportsIpv4=true`, `supportsIpv6=false`, and `supportsDualStack=false`.
+- Missing `ipv4` and unsupported `ipv6` or `dualStack` declarations make the selected NetworkClass invalid and no provider job starts.
+- IPv6 and dual-stack API inputs are rejected before provider dispatch.
 
 #### TC-FR2-03: Verify complete role operation and target coverage
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-2, IC-4 | critical | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-2, IC-4, IC-6 | Integration | critical | automated |
 
 ##### Preconditions
 
 - A contract conformance harness can load candidate Fabric and Kubernetes Manager collections.
-- The v1 operation table and target combinations are available to the harness.
+- The fixed operation table and target combinations are available to the harness.
 
 ##### Steps
 
@@ -105,15 +105,15 @@
 
 - Each collection provides every operation and workload target assigned to its role.
 - Repeated create/apply converges without duplicate backend objects; repeated delete of absent state succeeds.
-- Each successful task returns an `osac_result` artifact whose schema version, operation, resource UID, and observed generation match the dispatched operation and whose `data` is empty, except `dhcp_lease.query`, which returns the required `leases` artifact.
+- Each successful task returns an `osac_result` artifact whose operation, resource UID, and observed generation match the dispatched operation and whose `data` is empty, except `dhcp_lease.query`, which returns the required `leases` artifact.
 - Missing, malformed, stale, or mismatched result envelopes are rejected and do not advance readiness or release capacity.
-- Each task meets the v1 input, result, tenancy, and failure requirements.
+- Each task meets the input, result, tenancy, idempotency, and failure requirements.
 
 #### TC-FR2-04: Validate ExternalIP and DHCP lease results
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-4 | high | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-4 | Integration | high | automated |
 
 ##### Preconditions
 
@@ -133,13 +133,38 @@
 - The `leases` artifact contains `subnet_ref`, `interface`, `ip_address`, and `mac_address`.
 - A missing or ambiguous match fails with a diagnostic and is not reported as a successful lookup.
 
+#### TC-FR2-05: Apply SecurityGroup rules to resolved workload attachments
+
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-2, IC-6 | Integration | critical | automated |
+
+##### Preconditions
+
+- A test Fabric Manager and Kubernetes Manager record their operation inputs and can enforce test rules on physical and overlay interfaces.
+- A tenant has a Ready VirtualNetwork, Subnet, and two Ready SecurityGroups with distinct ingress and egress rules.
+
+##### Steps
+
+1. Create a ComputeInstance selecting the Subnet and both SecurityGroups; inspect the Kubernetes Manager task input and traffic behavior.
+2. Create a BaremetalInstance and a Cluster selecting the same resources; inspect the Fabric Manager input for the physical interface and each Cluster node-set interface.
+3. Delete each workload; inject one policy-removal failure, then allow retry to succeed and inspect teardown ordering.
+
+##### Expected Results
+
+- OSAC sends ComputeInstance policy to the Kubernetes Manager and BaremetalInstance/Cluster policy to the Fabric Manager; managers do not call each other.
+- Each payload includes the owning workload UID, resolved Subnet and interface data, SecurityGroup UIDs, and complete normalized ingress/egress rules. Rule references are not passed as labels or left for the manager to look up.
+- The combined allow rules are a union, unmatched new traffic is denied, and established connections allow return traffic.
+- The manager installs policy before enabling interface traffic. A failed apply leaves the workload non-ready and the attachment closed to workload traffic.
+- Delete sends the same normalized attachment, removes policy and detaches before workload teardown, and retries idempotently. A failed delete retains the finalizer and blocks teardown.
+
 ### FR-3: Provider selection with one tenant networking API
 
 #### TC-FR3-01: Select mutually compatible managers from different sources
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-2, IC-3 | high | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1, IC-2, IC-3 | E2E | high | automated |
 
 ##### Preconditions
 
@@ -160,9 +185,9 @@
 
 #### TC-FR3-02: Create and delete a Subnet with shared Fabric outputs
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | critical | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-5 | Integration | critical | automated |
 
 ##### Preconditions
 
@@ -185,9 +210,9 @@
 
 #### TC-FR3-03: Recover from partial Subnet create and delete failures
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-5 | high | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-5 | Integration | high | automated |
 
 ##### Preconditions
 
@@ -211,9 +236,9 @@
 
 #### TC-FR4-01: Reject a manager pair without mutual compatibility declarations
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-1, IC-3 | critical | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1, IC-3 | Integration | critical | automated |
 
 ##### Preconditions
 
@@ -235,9 +260,9 @@
 
 #### TC-FR4-02: Reject work requiring an unselected or unsupported role/target
 
-| Interface Change | Priority | Automation |
-|-----------------|----------|------------|
-| IC-3, IC-4 | critical | automated |
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-3, IC-4 | Integration | critical | automated |
 
 ##### Preconditions
 
@@ -247,7 +272,7 @@
 ##### Steps
 
 1. Submit a VM request whose selected networking path requires Kubernetes-side Subnet networking.
-2. Separately submit a role/target combination not assigned by the v1 operation table.
+2. Separately submit a role/target combination not assigned by the fixed operation table.
 3. Observe the request result and AAP job count.
 
 ##### Expected Results
@@ -270,12 +295,12 @@ All design interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 10 |
-| Critical | 6 |
+| Total test cases | 11 |
+| Critical | 7 |
 | High | 4 |
 | Medium | 0 |
 | Low | 0 |
 | Automated | 10 |
 | Manual | 0 |
 | Requirements with test cases | 4 / 4 |
-| Interface changes with test cases | 5 / 5 |
+| Interface changes with test cases | 6 / 6 |

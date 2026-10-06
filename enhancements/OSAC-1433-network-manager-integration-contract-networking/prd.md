@@ -28,11 +28,11 @@ superseded-by:
 
 - [1. Problem Statement](#1-problem-statement)
 - [2. Goals and Non-Goals](#2-goals-and-non-goals)
+- [User Stories](#user-stories)
 - [3. Requirements](#3-requirements)
   - [3.1 Functional Requirements](#31-functional-requirements)
   - [3.2 Non-Functional Requirements](#32-non-functional-requirements)
-- [4. Acceptance Criteria](#4-acceptance-criteria)
-- [5. Dependencies](#5-dependencies)
+- [4. Dependencies](#4-dependencies)
 
 ## 1. Problem Statement
 
@@ -54,6 +54,16 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - Exposing provider manager selection to tenants.
 - Defining vendor-specific configuration for Netris, Agentless VLAN, CUDN, or another backend.
 
+## User Stories
+
+### Cloud Infrastructure Admin
+
+- As a Cloud Infrastructure Admin, I want one contract that states each manager role's requirements and which implementations can interoperate, so that I can select a supported provider configuration with clear diagnostics when a pairing or operation is unsupported.
+
+### Tenant User
+
+- As a Tenant User, I want to use the shared networking resources for VMs, managed clusters, and bare-metal workloads across supported manager combinations, so that changing provider implementations does not change my networking workflow.
+
 ## 3. Requirements
 
 ### 3.1 Functional Requirements
@@ -67,15 +77,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 
 No separate non-functional requirements were specified for this work.
 
-## 4. Acceptance Criteria
-
-- [ ] A provider can determine the complete requirements for each manager role and identify which selected manager combinations are supported from one published contract.
-- [ ] Implementations from any source, including those distributed with OSAC, are eligible when they meet the same published contract.
-- [ ] An incompatible manager pair, missing required role, or unsupported request produces a clear provider-facing diagnostic; OSAC does not route the work to an unrelated manager.
-- [ ] Tenants use the same networking resources and workflows for VMs, managed clusters, and bare-metal workloads across compatible manager combinations.
-- [ ] The Unified Networking design defines the shared resource semantics and OSAC orchestration, and references the standalone contract for exact manager integration requirements.
-
-## 5. Dependencies
+## 4. Dependencies
 
 - **Unified Networking:** Its PRD and design define the shared networking resources, provider manager roles, and tenant-visible behavior that conforming implementations must preserve.
 - **Provider manager implementations:** Fabric and K8s managers selected by a provider must meet the published requirements and declare compatibility with each other when both roles are selected.

@@ -42,13 +42,7 @@ superseded-by:
 - [Requirements](#3-requirements)
   - [Functional Requirements](#31-functional-requirements)
   - [Non-Functional Requirements](#32-non-functional-requirements)
-- [Acceptance Criteria](#4-acceptance-criteria)
-  - [Shared tenant networking](#shared-tenant-networking)
-  - [External access and provider choice](#external-access-and-provider-choice)
-  - [Resource lifecycle](#resource-lifecycle)
-  - [Provider networking control](#provider-networking-control-fr-10)
-  - [Unified networking UI and documentation](#unified-networking-ui-and-documentation-fr-11)
-- [Dependencies](#5-dependencies)
+- [Dependencies](#4-dependencies)
 - [Support Boundaries](#support-boundaries)
   - [Deployment support boundary](#deployment-support-boundary)
   - [Networking hub support boundary](#networking-hub-support-boundary)
@@ -164,49 +158,7 @@ Tenant Admins and Tenant Users can manage VirtualNetworks, Subnets, SecurityGrou
 
 No non-functional requirements were specified for this proposal.
 
-## 4. Acceptance Criteria
-
-### Shared tenant networking
-
-- [ ] Tenant Admins and Tenant Users can use the same networking resource model with VMaaS, CaaS, and BMaaS.
-- [ ] Workloads on one Subnet share a local network segment; traffic between them is allowed only when their attached SecurityGroups permit it. Workloads on different Subnets in the same VirtualNetwork can communicate through routing when their SecurityGroups permit the traffic.
-- [ ] Workloads in separate VirtualNetworks are isolated.
-- [ ] VMs, cluster nodes, and bare-metal servers can be placed on the same Subnet without selecting a workload-specific network.
-- [ ] SecurityGroups control permitted traffic consistently for each workload type when provider networking is enabled.
-- [ ] A workload can have at most one tenant network attachment; a bare-metal workload can select one exposed physical interface.
-
-### External access and provider choice
-
-- [ ] An ExternalIP can provide inbound access to a VM, a bare-metal server, or a cluster endpoint.
-- [ ] A NATGateway provides optional outbound access with a stable source identity, independently of inbound ExternalIP attachments.
-- [ ] Documentation and interfaces do not imply that an ExternalIP is necessarily Internet-routable.
-- [ ] Tenants do not need to select a provider networking implementation to create or use tenant networking resources.
-- [ ] Cloud Infrastructure Admins can configure a supported provider implementation without changing the tenant networking model.
-
-### Resource lifecycle
-
-- [ ] Tenant Admins and Tenant Users can create, list, view, and delete tenant-managed networking resources within their tenant. Cloud Infrastructure Admins can create, list, view, and delete provider-managed NetworkClasses and ExternalIP pools according to their role. Resource access follows ownership and authorization, and no role can change resource configuration in place.
-- [ ] Changing a workload's network attachment requires replacing the workload.
-- [ ] A request that depends on a missing resource or one that has not completed its required lifecycle is rejected with an explanation of the prerequisite.
-- [ ] A deletion that would leave active resources without a dependency is rejected with an explanation of what blocks deletion.
-
-### Provider networking control (FR-10)
-
-- [ ] A Cloud Provider Admin can enable or disable provider networking during installation or upgrade through Helm or the Enclave Wizard; the default is enabled.
-- [ ] After rollout with provider networking disabled, the networking APIs remain available with the same authorization and validation behavior, while OSAC does not apply or clean up provider networking or allocate provider addresses.
-- [ ] Disabled-mode readiness does not lead users to believe that provider connectivity, ExternalIP allocation, or outbound NAT is available.
-- [ ] Ordinary VM, cluster, and bare-metal provisioning remains available when its non-networking prerequisites are met, with the limitations described in FR-10.
-- [ ] Provider-side resources or rules left by disabling networking are identified as requiring provider-side or manual cleanup.
-
-### Unified networking UI and documentation (FR-11)
-
-- [ ] The unified UI supports create, list/view, and delete for tenant networking resources and shows their VirtualNetwork, Subnet, and SecurityGroup relationships.
-- [ ] Shared networking pickers are available to VMaaS, CaaS, and BMaaS workload workflows and show only resources the caller is authorized to use.
-- [ ] Cloud Infrastructure Admins can inspect provider NetworkClasses and ExternalIP pools, including configured capabilities and available address capacity.
-- [ ] The UI does not offer in-place configuration updates or imply that an ExternalIP is Internet-routable.
-- [ ] User documentation covers resource creation/deletion, workload attachment, ExternalIP reachability, lifecycle errors, and disabled-provider behavior.
-
-## 5. Dependencies
+## 4. Dependencies
 
 - **Unified Networking Design:** [/enhancements/OSAC-1433-unified-networking](/enhancements/OSAC-1433-unified-networking) defines the technical approach for these requirements.
 - **Default Networking:** [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) defines tenant default-resource automation.
@@ -235,8 +187,9 @@ networking resources are not coordinated across multiple hubs.
 
 ## Provenance
 
-Committed: commit @ prd 0.11.3 - 2bd6607, workspace docs/unified-networking-docs-structure @ 3d0f65e
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
+Phases: revise, revise, revise, revise, revise
 
-> Authoring phases not recorded this session (commit-time snapshot only).
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"commit_only","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"3d0f65e","source_repo_branch":"docs/unified-networking-docs-structure","commits_behind_main":0,"commits_ahead_main":19,"main_ref":"main","phases":["commit","commit","commit","commit"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
