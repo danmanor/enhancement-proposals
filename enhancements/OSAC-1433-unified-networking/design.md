@@ -3,7 +3,7 @@ title: Unified Networking API for VMaaS, CaaS, and BMaaS
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-05
+last-updated: 2026-10-06
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -22,13 +22,56 @@ superseded-by:
 
 # Unified Networking API for VMaaS, CaaS, and BMaaS
 
-## Summary
+## 1. Overview
 
-This document describes the technical design for the OSAC unified
-networking architecture. For the problem statement and requirements,
-see the companion [Requirements Document (PRD)](prd.md).
+This design defines the shared networking architecture and technical contracts used by VMaaS, CaaS, and BMaaS. Fulfillment services persist tenant networking intent; the operator dispatches provider operations to a fabric manager and, where VMs need a fabric bridge, an optional Kubernetes manager. See the [PRD](prd.md) for the user goals and requirements.
 
-### Deployment Support Boundary
+## 2. Goals and Non-Goals
+
+### 2.1 Goals
+
+- Reuse one networking resource model and lifecycle contract across VMaaS, CaaS, and BMaaS.
+- Keep physical network operations under one fabric manager, with an optional Kubernetes manager for overlay-to-fabric integration.
+- Keep manager selection provider-owned and discoverable without adding tenant-facing backend choices.
+- Enforce the connected, single-hub, IPv4-only, single-attachment target contract consistently at API and operator boundaries.
+
+### 2.2 Non-Goals
+
+- Air-gapped or disconnected networking deployments.
+- Multiple independently operated networking hubs or cross-hub coordination.
+- IPv6, dual-stack, or multiple tenant network attachments per workload.
+- Tenant-managed DNS zones, VPC peering, load balancers, or Internet gateways.
+- Advanced bare-metal interface configuration such as bonding or VLAN trunking.
+
+## 3. Motivation / Background
+
+The prior networking model was VM-focused, while CaaS and BMaaS used separate service-specific paths. The shared design brings VM overlays, cluster nodes, and bare-metal ports into a common fabric model so that tenant isolation, security policy, and external access have consistent contracts. Per-service provisioning details remain in the VMaaS, CaaS, and BMaaS networking proposals linked in the metadata.
+
+## 4. Design
+
+### 4.1 Architecture
+
+The request path keeps tenant intent in fulfillment-service and uses operator reconciliation for provider changes. The diagram shows the main control flow and the optional Kubernetes bridge; the fabric manager remains responsible for physical networking across workload types.
+
+```mermaid
+flowchart LR
+    Tenant --> API["Fulfillment API and database"]
+    API --> Reconcile["Fulfillment reconciliation"]
+    Reconcile --> Resources["Networking resources"]
+    Resources --> Operator["osac-operator dispatcher"]
+    Operator --> AAP["AAP manager role"]
+    AAP --> Fabric["Fabric manager"]
+    AAP -. "subnet bridge when configured" .-> K8s["Optional Kubernetes manager"]
+    Fabric --> Result["Manager result and resource annotations"]
+    K8s --> Result
+    Result --> Operator
+    Operator --> Status["Observed resource status"]
+    Status --> Reconcile
+```
+
+The provider networking control described in [Provider Networking Control](#provider-networking-control) gates provider operations while keeping the OSAC resource APIs available. The target deployment and workload boundaries are:
+
+#### Deployment Support Boundary
 
 The current OSAC networking contract supports connected deployments only.
 Air-gapped and disconnected networking deployments are outside the supported
@@ -40,7 +83,7 @@ not tenant selectable, and these reachability prerequisites must hold before
 the deployment's NetworkClass is accepted. The boundary applies to
 Fabric-only, K8s-only, and combined manager profiles.
 
-### Networking Hub Support Boundary
+#### Networking Hub Support Boundary
 
 OSAC networking supports exactly one provider-owned hub per deployment.
 Multi-hub networking placement, cross-hub resource coordination, and
@@ -78,65 +121,15 @@ which provides a per-server resource aligned with ComputeInstance.
 All networking resources and manager integrations in this design use IPv4.
 IPv6 and dual-stack networking are not supported.
 
-> **Implementation status:** This is the normative target contract. Current
-> proto/CRD schemas and allocation paths still contain legacy IPv6/dual-stack
-> support; implementation work must enforce this contract before rollout.
+For user-facing goals and requirements, see the [PRD](prd.md).
 
-For user stories, goals, and non-goals, see the
-[Requirements Document (PRD)](prd.md).
-
-### Resource lifecycle enforcement
-
-The fulfillment-service enforces strict dependency constraints on both
-creation and deletion of networking resources at the API layer. Invalid
-operations are rejected immediately — the system never accepts a request and
-defers validation to asynchronous operator reconciliation.
-
-- **Creation:** A resource referencing another resource can only be created
-  when every referenced resource is in its terminal ready state. See
-  [Creation Readiness Gates](#creation-readiness-gates) for the full table.
-  There are no exceptions — internal flows (auto-provisioning and default
-  networking) follow the same rules by creating resources in dependency
-  order and waiting for each to reach its ready state before creating the
-  next.
-- **Deletion:** A resource can only be deleted when no other active resource
-  references it (only dependency-graph leaves are deletable). See
-  [Deletion Dependency Guards](#deletion-dependency-guards) for the full
-  table and dependency chain. Auto-provisioned resources are the only
-  resources subject to cascade deletion on parent removal.
-
-### API operation constraint
-
-The unified networking API supports only create, read, and delete operations
-for networking resources. Read means `List` and `Get`; there is no tenant or
-provider `Update`/`Patch` operation for a networking resource's specification
-or metadata. The affected resources are `NetworkClass`, `VirtualNetwork`,
-`Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
-`ExternalIPAttachment`, and `NATGateway`.
-
-All networking resource specification and metadata fields are immutable after
-creation. A change requires deleting the resource and creating a replacement,
-subject to the normal
-dependency guards. The network attachment fields on `ComputeInstance`,
-`Cluster`, and `BaremetalInstance` are create-time-only as well; changing a
-network attachment requires replacing the parent workload. Controllers may
-update status, conditions, readiness, and IP-discovery fields during
-reconciliation, but those internal writes are not additional API operations.
-This is the normative contract for the VMaaS, CaaS, and BMaaS designs that
-reference this document; those designs inherit it and do not redefine
-networking operations.
-
-## Proposal
-
-The core proposal describes provider-backed networking with the setting enabled. The feature-gated disabled mode is specified in the final subsection of this Proposal. [PRD: FR-10] [User]
-
-### NetworkClass
+#### NetworkClass
 
 NetworkClass is the provider-level CRD that defines which managers handle
 networking for the deployment. Tenants never interact with it. One
 NetworkClass per deployment.
 
-#### Two Managers
+##### Two Managers
 
 OSAC networking is handled by two managers:
 
@@ -155,7 +148,7 @@ OSAC networking is handled by two managers:
   created by the Subnet controller at subnet creation time (gated on
   `NetworkClass.spec.vip_prefix_length`), independent of the k8sManager.
 
-#### Why Two Managers?
+##### Why Two Managers?
 
 The fabric is one product. You cannot have Netris handling isolation and
 Neutron handling ACLs on the same switches — splitting into per-action
@@ -172,7 +165,7 @@ Once VMs are on the fabric, the fabric manager handles everything for all
 resource types uniformly. There is no VM-vs-BM distinction for security,
 ExternalIP, DNAT, or SNAT.
 
-#### NetworkClass Examples
+##### NetworkClass Examples
 
 **Netris + CUDN (VMs and BM):**
 
@@ -180,7 +173,7 @@ ExternalIP, DNAT, or SNAT.
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: moc-region-1
+  name: connected-region-a
 spec:
   fabricManager: netris
   k8sManager: cudn_localnet
@@ -196,7 +189,7 @@ capabilities:
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: bos-region-1
+  name: connected-region-b
 spec:
   fabricManager: neutron
   k8sManager: cudn_localnet
@@ -212,7 +205,7 @@ capabilities:
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkClass
 metadata:
-  name: gpu-region-1
+  name: baremetal-region-1
 spec:
   fabricManager: netris
 capabilities:
@@ -221,7 +214,7 @@ capabilities:
   supportsDualStack: false
 ```
 
-#### Capabilities
+##### Capabilities
 
 Capabilities are **inferred from the assigned managers** and published in
 the NetworkClass `capabilities` field — the provider does not set them
@@ -247,7 +240,7 @@ The set of capabilities is defined by the operator and is fixed — adding a
 new capability requires an operator update. Managers declare which
 capabilities they support; they cannot define custom capabilities.
 
-#### Manager Registration (ConfigMap)
+##### Manager Registration (ConfigMap)
 
 Each manager ships a ConfigMap declaring its type and capabilities. These
 ConfigMaps are deployed as part of the OSAC installation alongside the
@@ -305,7 +298,7 @@ assignment against the corresponding ConfigMap. Adding a new manager means
 deploying a new ConfigMap and Ansible role — no API or operator changes
 needed.
 
-### How VMs Join the Fabric
+#### How VMs Join the Fabric
 
 OSAC runs VMs on OpenShift using KubeVirt. Each VM is encapsulated in a pod
 whose networking is managed by OVN-Kubernetes. By default, VM IP addresses
@@ -349,7 +342,7 @@ resource model are identical regardless of which mechanism is used. All that
 matters is the contract: once the k8sManager has bridged a subnet, VMs on
 that subnet are reachable from the fabric at their subnet IP.
 
-### Infrastructure-Agnostic Subnets
+#### Infrastructure-Agnostic Subnets
 
 VirtualNetwork and Subnet do not carry a scope or service field. Subnets are
 infrastructure-agnostic — the dispatcher provisions both the fabric segment
@@ -367,7 +360,7 @@ servers and cluster nodes are placed directly on the fabric segment. The
 fabric is the single source of truth for multi-tenancy and routing — all
 resources, regardless of type, are on the fabric.
 
-### Dispatcher (Operator Composition Logic)
+#### Dispatcher (Operator Composition Logic)
 
 The osac-operator acts as a **dispatcher**: when reconciling any networking
 resource, it resolves the NetworkClass and calls the
@@ -396,7 +389,7 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 [CaaS](/enhancements/OSAC-1436-caas-networking),
 [BMaaS](/enhancements/OSAC-1437-bmaas-networking).
 
-### Resource Hierarchy
+#### Resource Hierarchy
 
 ```text
 NetworkClass (per deployment, provider-only)
@@ -414,89 +407,7 @@ ExternalIPAttachment (tenant-managed)
                             references an ExternalIP and a target resource
 ```
 
-### ExternalIPPool
-
-"External" in ExternalIPPool/ExternalIP means **external to the
-VirtualNetwork**. In the supported connected deployment boundary, the
-provider creates pools with addresses routable in the provider's connected
-network. The API does not require Internet reachability, but air-gapped and
-disconnected networking deployments are not supported.
-
-ExternalIPPools are provider-managed and deployment-scoped. The NetworkClass
-profile selects the manager that handles ExternalIP allocation and release;
-the profiles defined in this design assign those operations to the Fabric
-Manager. One pool serves all resource types.
-Each pool uses exactly one canonical IPv4 CIDR. The API's repeated `cidrs`
-field is retained for compatibility, but validation rejects an empty list or
-more than one entry; IPv6 and dual-stack pools are not supported.
-Pool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4`;
-`IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values are rejected before
-persistence.
-
-#### Address-Family and CIDR Contract
-
-All user-supplied network CIDRs use canonical dotted-decimal IPv4 notation
-(`a.b.c.d/prefix`) with host bits zero. A Subnet CIDR must be contained by its
-parent VirtualNetwork and sibling Subnet CIDRs must not overlap. Provider and
-controller-produced addresses are canonical IPv4 addresses without a CIDR
-suffix. Any IPv6, dual-stack, malformed, or non-canonical value is rejected
-before persistence or backend dispatch.
-All explicit and automatic ExternalIP allocation paths, including per-service
-auto-provisioning, must request `IP_FAMILY_IPV4`; `IP_FAMILY_UNSPECIFIED` is
-not a valid default for this contract.
-
-#### ExternalIP Address Selection and Ownership
-
-The ExternalIPPool defines the eligible range; it does not choose the concrete
-address. For `external_ip.allocate`, OSAC supplies the ExternalIP UID and the
-resolved pool UID and canonical IPv4 CIDR to the manager selected by the
-NetworkClass profile. The manager chooses a free address in that pool and
-durably reserves it under the ExternalIP UID. Allocations from the same pool
-must be unique, and retrying the same UID must return the same reservation.
-The selection order is implementation-specific; the contract does not require
-first-fit or any other particular algorithm.
-
-After confirming the reservation, the manager writes the address to the
-`osac.openshift.io/allocated-address` annotation on the same ExternalIP CR.
-The patch must be guarded by the supplied resource UID and generation, and
-must not change the spec, status, or other annotations. The manager reports
-success only after the provider reservation and annotation write succeed. The
-common `osac_result` envelope identifies the operation, resource UID, and
-generation; it carries no address payload.
-
-After AAP reports success, OSAC validates the result envelope against the
-current ExternalIP, reads the annotation, and validates canonical IPv4 form
-and membership in the selected pool. Only then does OSAC write
-`ExternalIP.status.address` and report the ExternalIP as **Allocated**. OSAC
-does not write the allocated-address annotation. A missing or invalid
-annotation leaves the ExternalIP non-ready with no accepted address. A retry
-for the same UID reuses the provider reservation and retries the annotation
-write. If the pool has no free address, the manager returns a failure with a
-diagnostic and no success result.
-
-The fulfillment-service reserves API-side pool capacity in the transaction
-that creates the ExternalIP. On deletion while provider networking is enabled,
-OSAC first requires dependent ExternalIPAttachments and NATGateways to be
-removed, then invokes `external_ip.release`. The manager removes the UID-owned
-provider reservation and reports success only after the address is absent.
-OSAC returns API-side pool capacity only after successful AAP completion and
-validation of an `osac_result` with `schemaVersion: "v1"`,
-`operation: external_ip.release`, the current ExternalIP UID in `resourceUID`,
-the dispatched generation in `observedGeneration`, and empty `data`. The
-successful result asserts that the UID-owned provider reservation is absent;
-no separate `RELEASED` data field is required. A failed job or missing,
-malformed, stale, or mismatched envelope keeps capacity held for
-reconciliation.
-
-While provider networking is disabled, deleting an ExternalIP completes its
-OSAC object deletion without dispatching `external_ip.release`, and releases
-its API-side pool-capacity reservation when the logical object is deleted. If
-the manager had confirmed an allocation before disablement, its provider
-reservation may remain after OSAC deletion and require manual or provider-side
-cleanup. Releasing the OSAC capacity slot does not release that address in the
-provider or guarantee that the provider can allocate it again. [User]
-
-### End-to-End Flows
+#### End-to-End Flows
 
 This section shows how the unified networking API works from the tenant's
 perspective. The flows are the same regardless of which fabric manager or
@@ -507,7 +418,7 @@ describe `global.networking.provisioningEnabled=true`. The disabled branch is
 defined in [Provider Networking Control](#provider-networking-control); API
 readiness, validation, and deletion constraints apply in both modes. [User]
 
-#### Provider Setup
+##### Provider Setup
 
 1. Provider deploys hosting cluster(s) and fabric controller
 2. Provider creates NetworkClass for the deployment (provider-only,
@@ -516,7 +427,7 @@ readiness, validation, and deletion constraints apply in both modes. [User]
 
 ```bash
 osac admin create externalippool \
-  --network-class moc-region-1 \
+  --network-class connected-region-a \
   --cidrs 203.0.113.0/24 \
   --ip-family ipv4 \
   --name external-pool-1
@@ -524,7 +435,7 @@ osac admin create externalippool \
 
 The fabric manager registers the IP range in its IPAM for allocation.
 
-#### Networking Setup (Same for All Resource Types)
+##### Networking Setup (Same for All Resource Types)
 
 The tenant creates networking resources. This workflow is identical
 regardless of whether the tenant plans to run VMs, clusters, or bare-metal
@@ -533,7 +444,7 @@ servers.
 **Create VirtualNetwork:**
 
 ```bash
-osac create virtualnetwork --network-class moc-region-1 --cidr 10.0.0.0/16 \
+osac create virtualnetwork --network-class connected-region-a --cidr 10.0.0.0/16 \
   --name my-net
 ```
 
@@ -561,7 +472,7 @@ osac create security-group --virtual-network my-net --name my-sg \
 
 The fabric manager creates ACL rules on the fabric.
 
-#### Resource Creation (Differs by Type)
+##### Resource Creation (Differs by Type)
 
 The networking setup above is shared. Only the resource creation step
 differs internally — the tenant CLI experience is the same for all types.
@@ -635,7 +546,7 @@ correct physical interfaces based on each node set's BareMetalInstanceType.
 In all cases, the resource ends up on the fabric. The fabric manager sees
 all resources equally — there is no VM-vs-BM distinction.
 
-#### External Access (Same for All Resource Types)
+##### External Access (Same for All Resource Types)
 
 Since all resources are on the fabric, external access operations are
 uniform. There is no VM-vs-BM distinction — the fabric manager handles
@@ -675,7 +586,7 @@ tenant subnet and has one fabric IP — the DNAT targets that IP directly. The
 ExternalIP is attached to the resource, not to a specific interface; the
 fabric manager routes to the resource's sole/primary subnet IP.
 
-**Cluster ExternalIPAttachment flow:**
+##### Cluster ExternalIPAttachment flow
 
 For VMs and BM, the DNAT target is the resource's fabric IP —
 straightforward. For clusters, the DNAT target is a service-level VIP
@@ -710,7 +621,7 @@ the readiness rules — they are created by the fulfillment-service
 internal reconciler only after both the ExternalIP is Allocated and the
 cluster is Ready (see below).
 
-**Auto-provisioning lifecycle (auto_external_ip_attachment):**
+#### Auto-provisioning lifecycle (auto_external_ip_attachment)
 
 Auto ExternalIP attachment provisioning (described in per-service
 EPs and [Default Networking](/enhancements/OSAC-1433-default-networking)) is a
@@ -894,9 +805,95 @@ The fabric manager creates a SNAT rule for the VN: all egress traffic from
 the VN's CIDR is source-NATted to the ExternalIP. Applies to all resources
 in the VN — VMs, BM servers, cluster nodes — since all are on the fabric.
 
-### API Extensions
+### 4.2 Data Model / Schema Changes
 
-#### VirtualNetwork
+The design extends OSAC networking resources and workload-specific attachment types. The detailed proto and resource shapes below are the source of truth for field names, cardinality, defaults, and status; the PRD describes their user-visible effects.
+
+#### ExternalIPPool
+
+"External" in ExternalIPPool/ExternalIP means **external to the
+VirtualNetwork**. In the supported connected deployment boundary, the
+provider creates pools with addresses routable in the provider's connected
+network. The API does not require Internet reachability, but air-gapped and
+disconnected networking deployments are not supported.
+
+ExternalIPPools are provider-managed and deployment-scoped. The NetworkClass
+profile selects the manager that handles ExternalIP allocation and release;
+the profiles defined in this design assign those operations to the Fabric
+Manager. One provider-managed pool serves all resource types in the deployment.
+Each pool uses exactly one canonical IPv4 CIDR. The API's repeated `cidrs`
+field is retained for compatibility, but validation rejects an empty list or
+more than one entry; IPv6 and dual-stack pools are not supported.
+Pool creation requires `spec.ipFamily` to be `IP_FAMILY_IPV4`;
+`IP_FAMILY_UNSPECIFIED`, IPv6, and dual-stack values are rejected before
+persistence.
+
+##### Address-Family and CIDR Contract
+
+All user-supplied network CIDRs use canonical dotted-decimal IPv4 notation
+(`a.b.c.d/prefix`) with host bits zero. A Subnet CIDR must be contained by its
+parent VirtualNetwork and sibling Subnet CIDRs must not overlap. Provider and
+controller-produced addresses are canonical IPv4 addresses without a CIDR
+suffix. Any IPv6, dual-stack, malformed, or non-canonical value is rejected
+before persistence or backend dispatch.
+All explicit and automatic ExternalIP allocation paths, including per-service
+auto-provisioning, must request `IP_FAMILY_IPV4`; `IP_FAMILY_UNSPECIFIED` is
+not a valid default for this contract.
+
+##### ExternalIP Address Selection and Ownership
+
+The ExternalIPPool defines the eligible range; it does not choose the concrete
+address. For `external_ip.allocate`, OSAC supplies the ExternalIP UID and the
+resolved pool UID and canonical IPv4 CIDR to the manager selected by the
+NetworkClass profile. The manager chooses a free address in that pool and
+durably reserves it under the ExternalIP UID. Allocations from the same pool
+must be unique, and retrying the same UID must return the same reservation.
+The selection order is implementation-specific; the contract does not require
+first-fit or any other particular algorithm.
+
+After confirming the reservation, the manager writes the address to the
+`osac.openshift.io/allocated-address` annotation on the same ExternalIP CR.
+The patch must be guarded by the supplied resource UID and generation, and
+must not change the spec, status, or other annotations. The manager reports
+success only after the provider reservation and annotation write succeed. The
+common `osac_result` envelope identifies the operation, resource UID, and
+generation; it carries no address payload.
+
+After AAP reports success, OSAC validates the result envelope against the
+current ExternalIP, reads the annotation, and validates canonical IPv4 form
+and membership in the selected pool. Only then does OSAC write
+`ExternalIP.status.address` and report the ExternalIP as **Allocated**. OSAC
+does not write the allocated-address annotation. A missing or invalid
+annotation leaves the ExternalIP non-ready with no accepted address. A retry
+for the same UID reuses the provider reservation and retries the annotation
+write. If the pool has no free address, the manager returns a failure with a
+diagnostic and no success result.
+
+The fulfillment-service reserves API-side pool capacity in the transaction
+that creates the ExternalIP. On deletion while provider networking is enabled,
+OSAC first requires dependent ExternalIPAttachments and NATGateways to be
+removed, then invokes `external_ip.release`. The manager removes the UID-owned
+provider reservation and reports success only after the address is absent.
+OSAC returns API-side pool capacity only after successful AAP completion and
+validation of an `osac_result` with `schemaVersion: "v1"`,
+`operation: external_ip.release`, the current ExternalIP UID in `resourceUID`,
+the dispatched generation in `observedGeneration`, and empty `data`. The
+successful result asserts that the UID-owned provider reservation is absent;
+no separate `RELEASED` data field is required. A failed job or missing,
+malformed, stale, or mismatched envelope keeps capacity held for
+reconciliation.
+
+While provider networking is disabled, deleting an ExternalIP completes its
+OSAC object deletion without dispatching `external_ip.release`, and releases
+its API-side pool-capacity reservation when the logical object is deleted. If
+the manager had confirmed an allocation before disablement, its provider
+reservation may remain after OSAC deletion and require manual or provider-side
+cleanup. Releasing the OSAC capacity slot does not release that address in the
+provider or guarantee that the provider can allocate it again. [User]
+
+#### API Extensions
+
+##### VirtualNetwork
 
 ```protobuf
 message VirtualNetworkSpec {
@@ -907,7 +904,7 @@ message VirtualNetworkSpec {
 
 No scope or service field — subnets are infrastructure-agnostic.
 
-#### HostType and BareMetalInstanceType
+##### HostType and BareMetalInstanceType
 
 **HostType** is a legacy system-level inventory resource. New BMaaS and CaaS
 network attachment resolution uses the tenant-facing `BareMetalInstanceType`
@@ -971,7 +968,7 @@ from BareMetalInstanceType and specifies port names directly on
 `BareMetalInstanceType.network_ports` list. The `interface` field references
 a port name from that list.
 
-#### Network Attachment Types
+##### Network Attachment Types
 
 Each resource type has its own network attachment message. The core fields
 (`subnet`, `security_groups`) are shared, but each type adds
@@ -1026,7 +1023,7 @@ The `fabric_interface` is resolved by the fulfillment-service at creation time f
 node set from its BareMetalInstanceType (first port with role `fabric`)
 and stored on the node set definition. The tenant does not set this field.
 
-#### Attachment Presence and Defaulting
+##### Attachment Presence and Defaulting
 
 The API distinguishes an omitted attachment from a supplied attachment, but
 both an omitted attachment and an empty attachment list/message mean that the
@@ -1049,7 +1046,7 @@ or not Ready, creation fails with a validation or precondition error. The
 fully resolved attachment is stored with the workload and is immutable after
 creation.
 
-#### Resource Specs
+##### Resource Specs
 
 **ComputeInstance**:
 
@@ -1115,7 +1112,7 @@ These are used by the ExternalIPAttachment controller as the DNAT backend
 IP when the target is a cluster (see
 [Cluster ExternalIPAttachment flow](#cluster-externalipattachment-flow)).
 
-#### Resource Status — Discovered IPs
+##### Resource Status — Discovered IPs
 
 After provisioning, resources receive IPs via DHCP. Feedback controllers
 discover these IPs and write them to status for two purposes: tenant
@@ -1169,7 +1166,7 @@ per-node IPs. Per-agent IPs are tracked on the ClusterOrder CR's
 `NodeSetStatus.AgentStatus.IPAddress` (operator-internal, not surfaced
 to tenant).
 
-#### ExternalIPAttachment — Inbound Traffic (DNAT)
+##### ExternalIPAttachment — Inbound Traffic (DNAT)
 
 Handles **inbound traffic only**. Does not affect egress (that is
 NATGateway's job).
@@ -1196,7 +1193,7 @@ message ExternalIPAttachmentSpec {
 
 All fields are immutable after creation.
 
-#### NATGateway — Outbound Traffic (SNAT)
+##### NATGateway — Outbound Traffic (SNAT)
 
 Handles **outbound traffic only**.
 
@@ -1222,9 +1219,54 @@ All fields are immutable after creation.
 | ExternalIPAttachment | Inbound (DNAT) | External IP → resource |
 | NATGateway | Outbound (SNAT) | Resource → external IP |
 
-### Implementation Details
+### 4.3 API Changes
 
-#### Deletion Dependency Guards
+The networking contract exposes create, read, and delete operations, with readiness and dependency checks performed before accepting invalid references. Workload attachment fields are create-time inputs and follow the same one-attachment limit. These technical rules implement [FR-7 through FR-9](prd.md#3-requirements).
+
+#### Resource lifecycle enforcement
+
+The fulfillment-service enforces strict dependency constraints on both
+creation and deletion of networking resources at the API layer. Invalid
+operations are rejected immediately — the system never accepts a request and
+defers validation to asynchronous operator reconciliation.
+
+- **Creation:** A resource referencing another resource can only be created
+  when every referenced resource is in its terminal ready state. See
+  [Creation Readiness Gates](#creation-readiness-gates) for the full table.
+  There are no exceptions — internal flows (auto-provisioning and default
+  networking) follow the same rules by creating resources in dependency
+  order and waiting for each to reach its ready state before creating the
+  next.
+- **Deletion:** A resource can only be deleted when no other active resource
+  references it (only dependency-graph leaves are deletable). See
+  [Deletion Dependency Guards](#deletion-dependency-guards) for the full
+  table and dependency chain. Auto-provisioned resources are the only
+  resources subject to cascade deletion on parent removal.
+
+#### API operation constraint
+
+The unified networking API supports only create, read, and delete operations
+for networking resources. Read means `List` and `Get`; there is no tenant or
+provider `Update`/`Patch` operation for a networking resource's specification
+or metadata. The affected resources are `NetworkClass`, `VirtualNetwork`,
+`Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
+`ExternalIPAttachment`, and `NATGateway`.
+
+All networking resource specification and metadata fields are immutable after
+creation. A change requires deleting the resource and creating a replacement,
+subject to the normal
+dependency guards. The network attachment fields on `ComputeInstance`,
+`Cluster`, and `BaremetalInstance` are create-time-only as well; changing a
+network attachment requires replacing the parent workload. Controllers may
+update status, conditions, readiness, and IP-discovery fields during
+reconciliation, but those internal writes are not additional API operations.
+This is the normative contract for the VMaaS, CaaS, and BMaaS designs that
+reference this document; those designs inherit it and do not redefine
+networking operations.
+
+#### Implementation Details
+
+##### Deletion Dependency Guards
 
 The fulfillment-service enforces resource dependency constraints at the API
 layer. A delete request is rejected immediately with a `FailedPrecondition`
@@ -1307,7 +1349,7 @@ VirtualNetwork
 NetworkClass (provider-managed, delete last)
 ```
 
-#### Creation Readiness Gates
+##### Creation Readiness Gates
 
 The fulfillment-service enforces that every referenced resource is in its
 terminal ready state before allowing creation. A create request is rejected
@@ -1348,12 +1390,12 @@ ready state before creating the next. See
 and [Default Resource Lifecycle](/enhancements/OSAC-1433-default-networking/design.md#default-resource-lifecycle)
 for the stepped creation flows.
 
-#### NATGateway Scope
+##### NATGateway Scope
 
 One NATGateway per VirtualNetwork. All subnets in the VN use the gateway.
 Per-subnet NAT association is a future enhancement.
 
-#### Single-NIC Workload Attachment Constraint
+##### Single-NIC Workload Attachment Constraint
 
 VMaaS, BMaaS, and CaaS currently support at most one tenant network
 attachment per workload. VMaaS and BMaaS retain repeated attachment fields
@@ -1403,14 +1445,14 @@ interface; the single-attachment contract determines the target.
 not supported by the current CaaS contract. The `primary` field does not
 apply to `ClusterNetworkAttachment`.
 
-#### Multiple Hosting Clusters Per Deployment
+##### Multiple Hosting Clusters Per Deployment
 
 Multiple hosting clusters are supported per deployment. At subnet creation, the
 k8sManager creates a K8s overlay on each hosting cluster and bridges it to
 the fabric segment. VMs on different hosting clusters share the same subnet
 via the fabric.
 
-#### Hub Selection (CR Placement)
+##### Hub Selection (CR Placement)
 
 The fulfillment-controller creates K8s CRs on the single registered hub
 cluster in a supported networking deployment. All networking resources
@@ -1424,17 +1466,17 @@ This boundary applies only to the networking area and does not define hub
 behavior for other OSAC areas. The fabric can still span multiple hosting
 clusters where the relevant networking feature supports that topology.
 
-#### Cross-VN Communication
+##### Cross-VN Communication
 
 VirtualNetworks are isolated. Cross-VN communication (VN Peering) is a
 separate enhancement.
 
-#### DNS
+##### DNS
 
 DNS is a service-integration concern, not part of the networking API. CaaS
 template roles create DNS records. A DNS API is a separate enhancement.
 
-#### BM-Only Deployments
+##### BM-Only Deployments
 
 If a NetworkClass has no k8sManager, the deployment does not support VMs.
 ComputeInstance creation is rejected if the target NetworkClass has no
@@ -1446,12 +1488,24 @@ is handled by the Subnet controller (gated on
 CaaS deployments provision clusters with fabric-level networking and
 MetalLB VIP allocation without requiring a K8s overlay.
 
-#### CIDR Overlap
+##### CIDR Overlap
 
 The operator validates that Subnet CIDRs do not overlap within a
 VirtualNetwork at creation time.
 
-### Risks and Mitigations
+### 4.4 Scalability and Performance
+
+Provider-side work is asynchronous and dispatched per networking resource. Subnet provisioning fans out to each hosting cluster when a Kubernetes manager is configured; the amount of that work therefore grows with the number of hosting clusters. API-side work consists of resource validation, dependency checks, and persistence. The design sets no throughput or latency target, so release capacity must be assessed against the deployment's resource counts and hosting-cluster topology.
+
+### 4.5 Security Considerations
+
+VirtualNetworks define tenant isolation, and SecurityGroups define permitted traffic across workload types. The fabric manager is the enforcement point for those policies, including VM traffic after the Kubernetes manager bridges it to the fabric. Input validation rejects unsupported address families, non-canonical or out-of-range CIDRs, invalid references, and invalid attachment shapes before provider dispatch. ExternalIP allocation is associated with the owning resource UID so retries cannot silently transfer an address reservation to another object.
+
+### 4.6 Failure Handling and Recovery
+
+Fulfillment rejects creates whose referenced resources are missing, deleting, or not ready, and rejects deletes while active dependents remain. The detailed gates and dependency tables are in [Creation Readiness Gates](#creation-readiness-gates) and [Deletion Dependency Guards](#deletion-dependency-guards). Manager failures leave resources non-ready for reconciliation; an ExternalIP allocation is accepted only after the manager result and the provider-owned address annotation pass validation.
+
+#### Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |------|--------|------------|
@@ -1461,20 +1515,7 @@ VirtualNetwork at creation time.
 | ExternalIPAttachment target validation | Target may not exist yet (CaaS) or may be deleted | Pending state for forward references; attachment tracks target lifecycle |
 | CIDR overlap | Overlapping subnets cause routing ambiguity | Operator validates at creation time; rejected with clear error |
 
-### Drawbacks
-
-This design requires K8s-to-fabric connectivity in every deployment that
-hosts VMs. The k8sManager must bridge the OVN overlay to the physical
-fabric for VMs to participate. In deployments without VMs (BM-only, with
-or without CaaS), the k8sManager is not needed and the design reduces to
-fabric-manager-only. MetalLB IPAddressPool creation for CaaS VIP
-allocation is handled by the Subnet controller, not the k8sManager.
-
-The trade-off is justified by infrastructure-agnostic subnets: any resource
-type on any subnet, uniform security enforcement via the fabric, and no
-per-resource-type dispatcher logic for ExternalIP or NATGateway.
-
-### Provider Networking Control
+#### Provider Networking Control
 
 `global.networking.provisioningEnabled` is the shared Helm boolean and
 defaults to `true`. Enclave Wizard presents the same setting during
@@ -1497,7 +1538,7 @@ movement is performed, and OSAC submits no substitute or no-op work. Ordinary
 VM and cluster provisioning, host provisioning, inventory, hardware, and power
 management remain available. [User]
 
-#### Resource operation behavior
+##### Resource operation behavior
 
 API create/read/delete semantics, immutable fields, readiness preconditions,
 and deletion dependency guards apply in both modes. All networking specification
@@ -1561,7 +1602,7 @@ existing disabled-mode `0.0.0.0` records to Pending with an empty address;
 attachments that depended on the placeholder remain waiting until a real
 allocation is confirmed. [User]
 
-#### In-Flight Provider Work and Deletion
+##### In-Flight Provider Work and Deletion
 
 Any provider-network operation already in progress must reach a terminal
 state before OSAC reports work skipped or completes deletion. If an operation
@@ -1588,7 +1629,7 @@ to provider allocation. An automatic attachment is created only after a real
 allocation and workload readiness are confirmed. Deleted OSAC objects are not recreated to
 clean up provider leftovers; those leftovers require provider/manual cleanup.
 
-#### Workload flow boundary
+##### Workload flow boundary
 
 The manager-backed flows below apply when the setting is enabled. When it is
 disabled, ordinary workload provisioning remains available for API-valid
@@ -1636,81 +1677,153 @@ outbound NAT. When provider networking is enabled again, default networking
 creates the missing ExternalIP and NATGateway through the normal allocation
 and readiness gates. [User]
 
-## Alternatives (Not Implemented)
+### 4.7 RBAC / Tenancy
 
-**Original NetworkClass model.** Tenants select a NetworkClass per VN.
-Exposes implementation details. Not viable for multi-service support.
+No new authorization role is introduced. Provider-owned NetworkClass and ExternalIPPool resources remain provider-managed. Tenant networking resources and workload attachments remain scoped to their tenant and owner relationships under the existing fulfillment-service authorization and tenancy model. Fabric policy enforcement applies uniformly after a workload joins the fabric.
 
-**Per-action driver composition.** Separate drivers for each networking
-concern (network, acl, ingress, egress, publicIP) with independent
-registration and composition. Over-engineered — the fabric is one product,
-and splitting it into per-action drivers does not reflect how physical
-networking works. Also creates complexity in the dispatcher and validation.
+### 4.8 Extensibility / Future-Proofing
 
-**Separate k8s ACL driver.** A dedicated k8s.acl driver (e.g.,
-NetworkPolicy) alongside fabric ACLs. Redundant — when VMs are on the
-fabric, the fabric enforces security for all traffic including VM traffic.
-Adding a k8s ACL layer creates dual enforcement with no clear benefit.
+Manager registrations separate provider integrations from the tenant resource model. A deployment can add a supported fabric or Kubernetes manager through installation configuration and its manager role without adding a tenant-facing backend selector. Internal IP pools remain manager-managed with manager-provided defaults; they are not tenant API resources or NetworkClass settings. The capability vocabulary remains operator-defined, so adding a new capability still requires an operator change. The design intentionally uses one fabric manager for physical networking and an optional Kubernetes manager only for the overlay bridge.
 
-**VN scope field (vm/bm).** Require tenants to declare what a network is
-for at creation time. Makes subnets service-specific, prevents mixed
-workloads, and leaks infrastructure details.
+## 5. Interface Changes
 
-**Lazy subnet provisioning.** Defer manager selection to resource placement
-time. Creates ambiguous subnet state and complicates the tenant experience.
+The following interface changes map the technical design to the stable PRD requirements. Full schemas and behavior are defined in Sections 4.2, 4.3, and 4.6.
 
-## Resolved Questions
+### IC-1: Shared networking resource API
 
-1. **Infrastructure-agnostic subnets.** VMs participate in the fabric via
-   k8sManager. No scope/service field on VN. Any resource on any subnet.
+**Requirements:** FR-1, FR-3, FR-4, FR-5, FR-8, FR-9
 
-2. **Cluster endpoint types:** `api` and `ingress` — enum
-   `ExternalIPAttachmentEndpoint`.
+The fulfillment-service public API and operator resource surfaces cover NetworkClass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway. The supported operations and resource lifecycle constraints are defined in [API Changes](#43-api-changes).
 
-3. **ExternalIP ownership:** An ExternalIP can only be consumed by one
-   resource (either ExternalIPAttachment or NATGateway, not both).
+### IC-2: Workload network attachments
 
-4. **One NATGateway per VN.** Multiple gateways are ambiguous. Per-subnet
-   NAT is a future enhancement.
+**Requirements:** FR-2, FR-3, FR-7, FR-9
 
-5. **ExternalIPPool shared.** The fabric manager handles ExternalIP allocation
-   for all resource types. One pool per deployment.
+ComputeInstance, Cluster, and BaremetalInstance accept their resource-specific network attachment at creation. Each accepts at most one tenant attachment; the bare-metal attachment may identify one exposed physical interface.
 
-6. **Multiple hosting clusters.** Subnet creation provisions K8s overlay
-   on each hosting cluster. VMs on different clusters share the subnet
-   via the fabric.
+### IC-3: External access
 
-7. **Internal IP pools.** Managed by managers with sensible defaults. Not
-   part of the tenant API or NetworkClass spec.
+**Requirements:** FR-4, FR-5
 
-8. **ExternalIP naming.** "External" means external to the VirtualNetwork —
-   not necessarily Internet-routable. This applies within the supported
-   connected deployment boundary.
+ExternalIPAttachment exposes inbound access to supported workload endpoints. NATGateway exposes optional outbound source identity. The resource and endpoint shapes are defined in [API Extensions](#api-extensions).
 
-9. **network_attachments immutability and cardinality.** Network attachments
-   are immutable after resource creation, and VMaaS/BMaaS accept at most one
-   entry even though the fields remain repeated for compatibility. Changing
-   network attachment requires recreating the resource.
+### IC-4: Provider manager configuration
 
-10. **Security enforcement.** The fabric is the single enforcement point
-    for SecurityGroups. No separate K8s-level ACL needed — VMs are on the
-    fabric.
+**Requirements:** FR-6
 
-11. **Per-resource NetworkAttachment types.** Separate proto messages
-    (`ComputeNetworkAttachment`, `BareMetalNetworkAttachment`,
-    `ClusterNetworkAttachment`) instead of one shared type. Each resource
-    type has a different selector concept (virtual NIC, physical interface,
-    node set) — a shared type with optional fields would accumulate
-    dead weight per resource type.
+Provider configuration selects a fabric manager and an optional Kubernetes manager through NetworkClass and manager registrations. Tenant APIs do not expose those implementation choices.
 
-12. **Create/read/delete networking API.** Networking resource specifications,
-    metadata, and workload network attachment fields are immutable after
-    creation. The supported change path is delete and recreate; controller
-    status reconciliation is internal and does not expose an update operation.
+### IC-5: Provider networking control
+
+**Requirements:** FR-10
+
+The shared `global.networking.provisioningEnabled` installation setting and Enclave Wizard control select whether OSAC submits provider networking operations. The default is enabled; the setting takes effect through rollout.
+
+## 6. Alternatives Considered
+
+**Keep service-specific networking.** This avoids shared-model changes in the
+short term, but preserves separate tenant workflows and provider integrations
+for VMaaS, CaaS, and BMaaS. It does not meet the shared requirements and is
+rejected.
+
+**Tenant-selected NetworkClass.** This lets tenants choose a NetworkClass per
+VirtualNetwork, but exposes provider implementation choices and makes tenant
+networking depend on infrastructure details. Provider-owned selection keeps
+the tenant contract consistent, so this option is rejected.
+
+**Per-operation manager drivers.** Separate drivers for networks, ACLs,
+address allocation, ingress, and egress could allow different products for
+each task. It does not match the single physical fabric that applies those
+operations and adds composition and validation complexity, so one fabric
+manager is preferred.
+
+**Separate Kubernetes ACL manager.** A Kubernetes NetworkPolicy layer could
+add enforcement inside the overlay, but would duplicate fabric SecurityGroup
+policy for VMs already bridged to the fabric. The design keeps one enforcement
+point and rejects this additional layer.
+
+**Workload-scoped VirtualNetworks.** A VM/BM/cluster scope field could make
+service-specific provisioning explicit, but it would prevent mixed workload
+subnets and couple tenant resources to placement details. Infrastructure-
+agnostic subnets are preferred.
+
+**Lazy subnet provisioning.** Waiting until workload placement to select a
+manager could defer provider setup, but leaves subnet readiness and manager
+selection ambiguous. The design provisions the selected fabric and optional
+Kubernetes overlay when the Subnet is created.
+
+#### Drawbacks
+
+This design requires K8s-to-fabric connectivity in every deployment that
+hosts VMs. The k8sManager must bridge the OVN overlay to the physical
+fabric for VMs to participate. In deployments without VMs (BM-only, with
+or without CaaS), the k8sManager is not needed and the design reduces to
+fabric-manager-only. MetalLB IPAddressPool creation for CaaS VIP
+allocation is handled by the Subnet controller, not the k8sManager.
+
+The trade-off is justified by infrastructure-agnostic subnets: any resource
+type on any subnet, uniform security enforcement via the fabric, and no
+per-resource-type dispatcher logic for ExternalIP or NATGateway.
+
+## 7. Observability and Monitoring
+
+No new standalone metrics, alerts, or tracing spans are specified. Existing resource status and conditions expose logical readiness, provider-operation progress, and disabled-mode skips; the exact status contract is defined in [API Extensions](#api-extensions) and [Provider Networking Control](#provider-networking-control).
+
+## 8. Impact and Compatibility
+
+### Current implementation alignment
+
+The target contract is normative, but the OSAC code reviewed for this revision does not yet enforce two parts of it. Manager capability handling still accepts IPv6 and dual-stack declarations, while this design requires IPv4-only registration and output. The disabled ExternalIP path currently reports a placeholder address (`0.0.0.0`) as allocated and ready, while the target contract requires no synthesized address and a non-ready pending state until a real provider allocation exists. See [`types.go`](https://github.com/osac-project/osac/blob/main/osac-operator/pkg/networkmanager/types.go) and [`externalip_controller.go`](https://github.com/osac-project/osac/blob/main/osac-operator/internal/controller/externalip_controller.go). The design remains the target for implementation and must not be read as a claim that these contracts are already delivered.
+
+### Upgrade / Downgrade Strategy
+
+The provider gate defaults to enabled, preserving the current osac-operator
+umbrella default. BMF deployments that previously inherited the standalone
+chart's disabled default change behavior unless their existing profile or
+upgrade values select and set the desired combined state. When the previous
+operator settings differ, the shared setting necessarily changes one of them.
+Changing the gate requires a
+Helm/Enclave upgrade and rollout of both operators; it is read at startup.
+Disabled behavior is established after both operators use the new
+value and tracked network jobs are terminal. Older pods may still submit work
+during a rolling upgrade, so the disabled contract must not be claimed before
+rollout completes. API availability is independent of this rollout. Previously active provider
+network operations must reach terminal state before disabled status or deletion
+completion is reported. [User]
+
+A downgrade to an operator/chart that does not support the gate restores its
+older provider behavior. Provider resources left by disabled cleanup require
+manual/provider-side reconciliation before re-enabling or downgrading; the
+setting does not reverse previous provider changes. No schema migration is
+introduced by this setting. [User]
+
+### Version Skew Strategy
+
+Both operator versions and their charts must support the same global startup
+setting. Mixed operator versions/settings do not provide the disabled-mode
+guarantee; complete the coordinated rollout before treating provider work as
+disabled. The fulfillment API has no new field or registration dependency.
+[User]
+
+### Support Procedures
+
+Inspect the global Helm value, both operators' startup environments, resource
+conditions, and tracked AAP job states. `Ready=True` with reason
+`ProvisioningDisabled` means only that a non-allocating OSAC object completed
+its logical lifecycle. BM networking-phase conditions with `Status=Unknown` and
+reason `ProvisioningDisabled` identify work that was skipped; neither form proves
+provider connectivity, allocation, or cleanup. Cancellation errors require restoring AAP access and
+waiting for terminal state. Delete provider leftovers or restore host port
+placement using provider/manual procedures before assuming cleanup or baseline
+connectivity. Change the setting through Helm/Enclave rollout. [User]
+
+### Infrastructure Needed
+
+No additional infrastructure beyond existing OSAC components and managers.
+
+---
 
 ## Test Plan
-
-*Section to be completed when targeted at a release.*
 
 ### Provider Networking Control Coverage (FR-10)
 
@@ -1738,69 +1851,3 @@ time. Creates ambiguous subnet state and complicates the tenant experience.
   rollout, while networking API and reconciliation remain available.
 - Verify logical deletion/cascade ordering does not claim provider cleanup;
   existing provider resources may remain after the rollout or deletion.
-
-## Graduation Criteria
-
-*Section to be completed when targeted at a release.*
-
-## Upgrade / Downgrade Strategy
-
-*Section to be completed when targeted at a release.*
-
-The provider gate defaults to enabled, preserving the current osac-operator
-umbrella default. BMF deployments that previously inherited the standalone
-chart's disabled default change behavior unless their existing profile or
-upgrade values select and set the desired combined state. When the previous
-operator settings differ, the shared setting necessarily changes one of them.
-Changing the gate requires a
-Helm/Enclave upgrade and rollout of both operators; it is read at startup.
-Disabled behavior is established after both operators use the new
-value and tracked network jobs are terminal. Older pods may still submit work
-during a rolling upgrade, so the disabled contract must not be claimed before
-rollout completes. API availability is independent of this rollout. Previously active provider
-network operations must reach terminal state before disabled status or deletion
-completion is reported. [User]
-
-A downgrade to an operator/chart that does not support the gate restores its
-older provider behavior. Provider resources left by disabled cleanup require
-manual/provider-side reconciliation before re-enabling or downgrading; the
-setting does not reverse previous provider changes. No schema migration is
-introduced by this setting. [User]
-
-## Version Skew Strategy
-
-*Section to be completed when targeted at a release.*
-
-Both operator versions and their charts must support the same global startup
-setting. Mixed operator versions/settings do not provide the disabled-mode
-guarantee; complete the coordinated rollout before treating provider work as
-disabled. The fulfillment API has no new field or registration dependency.
-[User]
-
-## Support Procedures
-
-*Section to be completed when targeted at a release.*
-
-Inspect the global Helm value, both operators' startup environments, resource
-conditions, and tracked AAP job states. `Ready=True` with reason
-`ProvisioningDisabled` means only that a non-allocating OSAC object completed
-its logical lifecycle. BM networking-phase conditions with `Status=Unknown` and
-reason `ProvisioningDisabled` identify work that was skipped; neither form proves
-provider connectivity, allocation, or cleanup. Cancellation errors require restoring AAP access and
-waiting for terminal state. Delete provider leftovers or restore host port
-placement using provider/manual procedures before assuming cleanup or baseline
-connectivity. Change the setting through Helm/Enclave rollout. [User]
-
-## Infrastructure Needed
-
-No additional infrastructure beyond existing OSAC components and managers.
-
----
-
-## Provenance
-
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82","source_repo_branch":"main","commits_behind_main":58,"commits_ahead_main":0,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
