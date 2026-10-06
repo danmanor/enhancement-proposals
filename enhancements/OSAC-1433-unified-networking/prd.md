@@ -24,6 +24,25 @@ superseded-by:
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
 | Date        | 2026-10-06 |
 
+## Contents
+
+- [Problem Statement](#1-problem-statement)
+- [Goals and Non-Goals](#2-goals-and-non-goals)
+  - [Goals](#21-goals)
+  - [Success Metrics](#22-success-metrics)
+  - [Non-Goals](#23-non-goals)
+  - [Deployment support boundary](#deployment-support-boundary)
+  - [Networking hub support boundary](#networking-hub-support-boundary)
+- [Requirements](#3-requirements)
+  - [Functional Requirements](#31-functional-requirements)
+  - [Non-Functional Requirements](#32-non-functional-requirements)
+- [Acceptance Criteria](#4-acceptance-criteria)
+  - [Shared tenant networking](#shared-tenant-networking)
+  - [External access and provider choice](#external-access-and-provider-choice)
+  - [Resource lifecycle](#resource-lifecycle)
+  - [Provider networking control](#provider-networking-control-fr-10)
+- [Dependencies](#5-dependencies)
+
 ## 1. Problem Statement
 
 OSAC tenants use virtual machines, managed clusters, and bare-metal servers, but networking is not consistent across those workloads. VMaaS has a tenant networking model, while CaaS and BMaaS rely on separate service-specific flows. Tenant Admins and Tenant Users cannot apply one familiar network model across their workloads, and Cloud Infrastructure Admins must support different provider networking paths. A shared set of networking capabilities gives tenants consistent control and gives providers one configurable networking contract to support.

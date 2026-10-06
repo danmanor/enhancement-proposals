@@ -22,6 +22,51 @@ superseded-by:
 
 # Unified Networking API for VMaaS, CaaS, and BMaaS
 
+## Contents
+
+- [1. Overview](#1-overview)
+- [2. Goals and Non-Goals](#2-goals-and-non-goals)
+  - [Goals](#21-goals)
+  - [Non-Goals](#22-non-goals)
+- [3. Motivation / Background](#3-motivation-background)
+- [4. Design](#4-design)
+  - [4.1 Architecture](#41-architecture)
+    - [NetworkClass](#networkclass)
+    - [How VMs Join the Fabric](#how-vms-join-the-fabric)
+    - [Infrastructure- and Backend-Agnostic Resource Model](#infrastructure--and-backend-agnostic-resource-model)
+    - [Dispatcher](#dispatcher-operator-composition-logic)
+    - [Resource Hierarchy](#resource-hierarchy)
+  - [4.2 Data Model / Schema Changes](#42-data-model-schema-changes)
+    - [Resource API Meaning](#resource-api-meaning)
+    - [Backend Effects and Completion Contract](#backend-effects-and-completion-contract)
+    - [ExternalIPPool](#externalippool)
+    - [API Extensions](#api-extensions)
+  - [4.3 API Changes](#43-api-changes)
+    - [Resource lifecycle enforcement](#resource-lifecycle-enforcement)
+    - [API operation constraint](#api-operation-constraint)
+    - [Implementation Details](#implementation-details)
+    - [NetworkClass Examples](#networkclass-examples)
+    - [End-to-End Flows](#end-to-end-flows)
+    - [Auto-provisioning lifecycle](#auto-provisioning-lifecycle-auto_external_ip_attachment)
+  - [4.4 Scalability and Performance](#44-scalability-and-performance)
+  - [4.5 Security Considerations](#45-security-considerations)
+  - [4.6 Failure Handling and Recovery](#46-failure-handling-and-recovery)
+  - [4.7 RBAC / Tenancy](#47-rbac-tenancy)
+  - [4.8 Extensibility / Future-Proofing](#48-extensibility-future-proofing)
+- [5. Interface Changes](#5-interface-changes)
+- [6. Alternatives Considered](#6-alternatives-considered)
+- [7. Observability and Monitoring](#7-observability-and-monitoring)
+- [8. Impact and Compatibility](#8-impact-and-compatibility)
+  - [Current implementation alignment](#current-implementation-alignment)
+  - [Upgrade / Downgrade Strategy](#upgrade-downgrade-strategy)
+  - [Version Skew Strategy](#version-skew-strategy)
+  - [Support Procedures](#support-procedures)
+  - [Infrastructure Needed](#infrastructure-needed)
+- [Test Plan](#test-plan)
+- [Support Boundaries](#support-boundaries)
+  - [Deployment Support Boundary](#deployment-support-boundary)
+  - [Networking Hub Support Boundary](#networking-hub-support-boundary)
+
 ## 1. Overview
 
 This design defines one infrastructure- and backend-agnostic networking resource model for VMaaS, CaaS, and BMaaS. Fulfillment services persist tenant networking intent; the operator dispatches provider operations through role-specific manager contracts to a fabric manager and, where VMs need a fabric bridge, an optional Kubernetes manager. Any manager implementation that fulfills its role's contract can provide that integration without changing the tenant resource model. See the [PRD](prd.md) for the user goals and requirements.
