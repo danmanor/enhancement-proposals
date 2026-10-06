@@ -75,9 +75,9 @@ networking resources are not coordinated across multiple hubs.
 
 Tenants must be able to create isolated VirtualNetworks. Workloads on the same Subnet can communicate directly; workloads on different Subnets in the same VirtualNetwork can communicate when permitted by network policy. Workloads in separate VirtualNetworks remain isolated. These outcomes apply across VMaaS, CaaS, and BMaaS.
 
-#### FR-2: Infrastructure-agnostic subnets (R2)
+#### FR-2: Infrastructure-agnostic networking resources (R2)
 
-A tenant can place a VM, cluster nodes, or a bare-metal server on the same Subnet without selecting a workload-specific kind of network. The resulting network experience does not depend on which supported infrastructure hosts the workload.
+The shared networking resources are not tied to workload infrastructure. The same VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and NATGateway model supports VMs, cluster nodes, and bare-metal servers; provider-managed networking configuration and ExternalIP pools apply across those workloads as well. Workload-specific attachment details, such as a selected bare-metal interface, do not require a separate networking resource model.
 
 #### FR-3: Uniform networking across all service types (R3)
 
@@ -93,7 +93,7 @@ Tenants can configure inbound access to a workload with an ExternalIPAttachment 
 
 #### FR-6: Pluggable networking backends with transparent selection (R6)
 
-Cloud Infrastructure Admins configure which provider networking implementation serves a deployment. Tenants do not select or need to understand that implementation. A provider can introduce another supported implementation without changing the tenant networking model.
+Cloud Infrastructure Admins can use any provider networking manager that fulfills OSAC's requirements for its role. Tenants do not select or need to understand the implementation, and adding a conforming manager does not change the tenant networking model.
 
 #### FR-7: Single network attachment per workload (R7)
 

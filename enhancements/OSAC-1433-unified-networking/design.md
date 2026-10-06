@@ -24,7 +24,7 @@ superseded-by:
 
 ## 1. Overview
 
-This design defines the shared networking architecture and technical contracts used by VMaaS, CaaS, and BMaaS. Fulfillment services persist tenant networking intent; the operator dispatches provider operations to a fabric manager and, where VMs need a fabric bridge, an optional Kubernetes manager. See the [PRD](prd.md) for the user goals and requirements.
+This design defines one infrastructure- and backend-agnostic networking resource model for VMaaS, CaaS, and BMaaS. Fulfillment services persist tenant networking intent; the operator dispatches provider operations through role-specific manager contracts to a fabric manager and, where VMs need a fabric bridge, an optional Kubernetes manager. Any manager implementation that fulfills its role's contract can provide that integration without changing the tenant resource model. See the [PRD](prd.md) for the user goals and requirements.
 
 ## 2. Goals and Non-Goals
 
@@ -106,8 +106,10 @@ The design introduces:
 
 - **NetworkClass** with two fields: `fabricManager` (handles all physical
   networking) and optional `k8sManager` (bridges VMs to the fabric)
-- **Infrastructure-agnostic subnets** where the same subnet can host VMs,
-  BM servers, and cluster nodes
+- **Infrastructure-agnostic networking resources** where the same tenant
+  resource model serves VMs, BM servers, and cluster nodes
+- **Backend-agnostic manager integrations** where any implementation that
+  meets its role's contract can provide the provider operations
 - **ExternalIP** (renamed from PublicIP) to clarify that addresses are
   external to the VirtualNetwork, not necessarily internet-routable
 - **Uniform API** where the same networking resources (VirtualNetwork,
@@ -147,6 +149,17 @@ OSAC networking is handled by two managers:
   bare-metal servers. MetalLB IPAddressPool CRs for CaaS VIP allocation are
   created by the Subnet controller at subnet creation time (gated on
   `NetworkClass.spec.vip_prefix_length`), independent of the k8sManager.
+
+##### Manager Contracts and Selection
+
+Manager implementations are interchangeable within their assigned role when
+they meet that role's operation and capability requirements. The fabric
+manager contract covers the provider networking operations in the dispatcher
+table; the optional Kubernetes manager contract covers creating and bridging
+VM overlays to the fabric. NetworkClass selects registered implementations
+by role, and manager registrations declare their role and capabilities. The
+manager examples below are implementations of these contracts, not choices
+embedded in tenant resources.
 
 ##### Why Two Managers?
 
@@ -342,12 +355,25 @@ resource model are identical regardless of which mechanism is used. All that
 matters is the contract: once the k8sManager has bridged a subnet, VMs on
 that subnet are reachable from the fabric at their subnet IP.
 
-#### Infrastructure-Agnostic Subnets
+#### Infrastructure- and Backend-Agnostic Resource Model
 
-VirtualNetwork and Subnet do not carry a scope or service field. Subnets are
-infrastructure-agnostic — the dispatcher provisions both the fabric segment
-and (if the NetworkClass has a k8sManager) the K8s overlay for every subnet.
-Any resource type can be placed on any subnet.
+All tenant-managed networking resources in this design — VirtualNetwork,
+Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and NATGateway — use
+the same model across VM, cluster, and bare-metal workloads. Provider-managed
+NetworkClass and ExternalIPPool resources also apply across those workloads;
+they do not define separate VM and BM networking models. A workload's
+infrastructure does not select a different tenant resource type or provider
+backend. Workload-specific attachment details, such as a bare-metal interface,
+remain on the workload API because they describe how that workload connects.
+
+Provider operations are backend-agnostic at the resource-model boundary. The
+dispatcher sends each operation to a manager that fulfills the relevant role
+contract: the fabric manager handles the shared provider networking resources,
+and the optional Kubernetes manager supplies the VM overlay bridge. This
+optional bridge changes how VMs reach the fabric; it does not change the
+networking resources or their semantics. Any registered implementation that
+meets its role's operation and capability requirements can serve the same
+resource model.
 
 At subnet creation, the dispatcher runs:
 
@@ -394,7 +420,7 @@ designs at [VMaaS](/enhancements/OSAC-1435-vmaas-networking),
 ```text
 NetworkClass (per deployment, provider-only)
 
-VirtualNetwork (tenant-managed, infrastructure-agnostic)
+VirtualNetwork (tenant-managed, shared across workload types)
   ├── Subnet              → fabricManager + k8sManager
   ├── SecurityGroup       → fabricManager
   └── NATGateway          → fabricManager
@@ -902,7 +928,11 @@ message VirtualNetworkSpec {
 }
 ```
 
-No scope or service field — subnets are infrastructure-agnostic.
+Tenant-facing networking resource specs do not select a workload type or
+concrete provider manager. VirtualNetworks reference the deployment's
+provider-managed NetworkClass, which selects registered manager
+implementations. The same resource model applies across VM, cluster, and BM
+workloads.
 
 ##### HostType and BareMetalInstanceType
 
@@ -1683,7 +1713,7 @@ No new authorization role is introduced. Provider-owned NetworkClass and Externa
 
 ### 4.8 Extensibility / Future-Proofing
 
-Manager registrations separate provider integrations from the tenant resource model. A deployment can add a supported fabric or Kubernetes manager through installation configuration and its manager role without adding a tenant-facing backend selector. Internal IP pools remain manager-managed with manager-provided defaults; they are not tenant API resources or NetworkClass settings. The capability vocabulary remains operator-defined, so adding a new capability still requires an operator change. The design intentionally uses one fabric manager for physical networking and an optional Kubernetes manager only for the overlay bridge.
+Manager registrations separate provider integrations from the tenant resource model. For each manager role, a deployment can use any implementation that meets the role's operation contract and declared capability requirements. A deployment can add a supported fabric or Kubernetes manager through installation configuration and its manager role without adding a tenant-facing backend selector or workload-specific network resources. Internal IP pools remain manager-managed with manager-provided defaults; they are not tenant API resources or NetworkClass settings. The capability vocabulary remains operator-defined, so adding a new capability still requires an operator update. The design intentionally uses one fabric manager for physical networking and an optional Kubernetes manager only for the overlay bridge.
 
 ## 5. Interface Changes
 
@@ -1691,7 +1721,7 @@ The following interface changes map the technical design to the stable PRD requi
 
 ### IC-1: Shared networking resource API
 
-**Requirements:** FR-1, FR-3, FR-4, FR-5, FR-8, FR-9
+**Requirements:** FR-1, FR-2, FR-3, FR-4, FR-5, FR-8, FR-9
 
 The fulfillment-service public API and operator resource surfaces cover NetworkClass, VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, ExternalIP, ExternalIPAttachment, and NATGateway. The supported operations and resource lifecycle constraints are defined in [API Changes](#43-api-changes).
 
@@ -1744,8 +1774,8 @@ point and rejects this additional layer.
 
 **Workload-scoped VirtualNetworks.** A VM/BM/cluster scope field could make
 service-specific provisioning explicit, but it would prevent mixed workload
-subnets and couple tenant resources to placement details. Infrastructure-
-agnostic subnets are preferred.
+subnets and couple tenant resources to placement details. A shared,
+infrastructure-agnostic networking model is preferred.
 
 **Lazy subnet provisioning.** Waiting until workload placement to select a
 manager could defer provider setup, but leaves subnet readiness and manager
@@ -1761,9 +1791,11 @@ or without CaaS), the k8sManager is not needed and the design reduces to
 fabric-manager-only. MetalLB IPAddressPool creation for CaaS VIP
 allocation is handled by the Subnet controller, not the k8sManager.
 
-The trade-off is justified by infrastructure-agnostic subnets: any resource
-type on any subnet, uniform security enforcement via the fabric, and no
-per-resource-type dispatcher logic for ExternalIP or NATGateway.
+The trade-off is justified by infrastructure-agnostic networking resources:
+the same tenant resources serve VM, cluster, and BM workloads; the fabric
+manager contract provides uniform security enforcement; and tenant resources
+do not need per-workload variants. The optional Kubernetes manager remains a
+VM integration detail for bridging overlays to the fabric.
 
 ## 7. Observability and Monitoring
 
