@@ -19,7 +19,7 @@
 
 ##### Preconditions
 
-- A test Fabric Manager registration declares contract v1 and an installed collection role using a new fully qualified name outside the OSAC collection.
+- A test Fabric Manager registration points to an installed collection role using a new fully qualified name outside the OSAC collection.
 - The role implements every Fabric operation and target assigned by contract v1.
 - The AAP execution environment contains the test collection.
 
@@ -51,7 +51,7 @@
 
 ##### Steps
 
-1. Create registrations with an unsupported or missing contractVersion, malformed or missing implementationRef, missing capabilities or compatibleManagers, an unknown role label, an invalid capability such as `ipv6` or `dualStack`, a malformed compatibleManagers value, or duplicate logical names within a role.
+1. Create registrations with a malformed or missing implementationRef, missing capabilities or compatibleManagers, an unknown role label, an invalid capability such as `ipv6` or `dualStack`, a malformed compatibleManagers value, or duplicate logical names within a role.
 2. Select each registration from a NetworkClass.
 3. Observe NetworkClass status and AAP job count.
 
@@ -144,7 +144,7 @@
 ##### Preconditions
 
 - A Fabric Manager and a Kubernetes Manager from different collection sources are installed in the AAP execution environment.
-- Each registration uses contract v1 and names the other in `compatibleManagers`.
+- Each registration names the other in `compatibleManagers`.
 
 ##### Steps
 

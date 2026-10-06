@@ -74,7 +74,7 @@ This design defines the source-neutral registration, compatibility checks, Ansib
 
 ## 3. Motivation / Background
 
-The current operator discovers managers from Kubernetes ConfigMaps and dispatches provider work to Ansible Automation Platform (AAP). A manager registration currently provides a logical name, description, and capabilities, but not a collection role reference, contract version, or peer compatibility declaration. Subnet creation already runs Fabric before Kubernetes and passes Fabric-assigned network-segment identifiers and reserved-address values to the Kubernetes task. The manager resolver does not validate whether a selected Fabric and Kubernetes pair is compatible, AAP dispatch is not yet based on the proposed explicit `implementationRef`, and Subnet teardown currently runs the targets independently. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/pkg/dispatcher/dispatch.go; osac-operator/internal/controller/subnet_controller.go; osac-operator/internal/controller/fabric_output_provider.go; osac-operator/pkg/provisioning/vni_outputs.go]
+The current operator discovers managers from Kubernetes ConfigMaps and dispatches provider work to Ansible Automation Platform (AAP). A manager registration currently provides a logical name, description, and capabilities, but not a collection role reference or peer compatibility declaration. Subnet creation already runs Fabric before Kubernetes and passes Fabric-assigned network-segment identifiers and reserved-address values to the Kubernetes task. The manager resolver does not validate whether a selected Fabric and Kubernetes pair is compatible, AAP dispatch is not yet based on the proposed explicit `implementationRef`, and Subnet teardown currently runs the targets independently. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/pkg/dispatcher/dispatch.go; osac-operator/internal/controller/subnet_controller.go; osac-operator/internal/controller/fabric_output_provider.go; osac-operator/pkg/provisioning/vni_outputs.go]
 
 A provider must be able to declare which manager pairs can consume the same integration data, and reject a pair whose network models cannot interoperate. OSAC needs a declared, checked compatibility boundary and an OSAC-owned handoff protocol, while the managers remain separate implementations. [User]
 
@@ -86,7 +86,7 @@ A Fabric Manager implements the shared networking resource operations and worklo
 
 A Kubernetes Manager implements Kubernetes-side Subnet networking for workloads that need a VM overlay. It does not replace the Fabric Manager and does not implement the shared networking resource operations. A NetworkClass always selects one Fabric Manager. It may select one Kubernetes Manager when the deployment supports workloads that need Kubernetes-side networking.
 
-The OSAC operator resolves the registrations selected by NetworkClass, validates their contract and compatibility, dispatches each operation to its assigned role through Ansible Automation Platform (AAP), and records readiness and job state. Managers remain separate implementations: one manager does not call another or receive its credentials. OSAC owns the integration boundary and orchestration order.
+The OSAC operator resolves the registrations selected by NetworkClass, validates their required fields and pair compatibility, dispatches each operation to its assigned role through Ansible Automation Platform (AAP), and records readiness and job state. Managers remain separate implementations: one manager does not call another or receive its credentials. OSAC owns the integration boundary and orchestration order.
 
 Every networking resource is infrastructure-agnostic: it retains the same meaning for virtual machines, managed clusters, and bare-metal servers. Every manager role is backend-agnostic: any implementation that fulfills its assigned contract can provide that behavior. The [Unified Networking Design](../OSAC-1433-unified-networking/design.md) defines tenant resource semantics; this design defines the provider integration contract.
 
@@ -94,21 +94,18 @@ Every networking resource is infrastructure-agnostic: it retains the same meanin
 
 A **manager registration** is a role-labelled Kubernetes ConfigMap in the operator namespace. The role label identifies a Fabric Manager or Kubernetes Manager. Its `data.name` is the unique logical name selected by NetworkClass. `implementationRef` names the Ansible collection role AAP invokes; the logical name and implementation reference are independent.
 
-Contract v1 requires these registration fields:
+The manager registration requires these fields:
 
 | Field | Required | Meaning |
 |-------|----------|---------|
 | Role label | Yes | Exactly one of `osac.openshift.io/network-fabric-manager: "true"` or `osac.openshift.io/network-k8s-manager: "true"`. |
 | `name` | Yes | Unique logical name within the role, selected by NetworkClass. |
 | `implementationRef` | Yes | Fully qualified Ansible collection role name, such as `acme.networking.fabric_manager`; it must be installed in the AAP execution environment. |
-| `contractVersion` | Yes | Manager contract version implemented by the collection. Contract v1 accepts `v1`. This is a proposed field; current registration parsing does not read it. |
 | `capabilities` | Yes | Comma-separated values from the OSAC-defined vocabulary: `ipv4` (Internet Protocol version 4), `ipv6` (Internet Protocol version 6), `dualStack` (both address families), and `dpuSupport` (data processing unit support). Contract v1 requires `ipv4` from each selected role and rejects `ipv6` and `dualStack`. |
 | `compatibleManagers` | Yes | Comma-separated logical names in the opposite role that can interoperate with this registration. An empty value means no compatible peer. |
 | `description` | No | Human-readable description for provider administration. |
 
-`contractVersion` lets OSAC reject a registration whose task interface or handoff contract it does not understand before dispatch. It is not an API resource version, backend version, or existing registration field.
-
-Compatibility is pair-specific and reciprocal. A Fabric Manager lists compatible Kubernetes Manager names; a Kubernetes Manager lists compatible Fabric Manager names. OSAC accepts a selected pair only when both list each other and both implement the same supported contract version. A manager publisher declares compatibility only when its implementation can consume and produce the shared v1 interface with that peer. No vendor pair is embedded in OSAC code.
+Compatibility is pair-specific and reciprocal. A Fabric Manager lists compatible Kubernetes Manager names; a Kubernetes Manager lists compatible Fabric Manager names. OSAC accepts a selected pair only when both list each other and both implementations satisfy the shared manager contract. A manager publisher declares compatibility only when its implementation can consume and produce the shared handoff with that peer. No vendor pair is embedded in OSAC code.
 
 Compatibility is based on the data exchanged between a pair, not the manager names. In the example below, Netris publishes a Subnet's Layer 2 segment identifier, its VirtualNetwork's Layer 3 identifier, and the reserved-address range; the [CUDN EVPN Kubernetes Manager](/enhancements/OSAC-4291-cudn-evpn-k8s-manager-phase-1-networking/design.md) consumes those values. They identify a Virtual eXtensible Local Area Network (VXLAN) network and are called VXLAN Network Identifiers (VNIs). The [Agentless VLAN Fabric Manager](/enhancements/OSAC-3664-agentless-vlan-fabric-manager/design.md) uses Virtual Local Area Network (VLAN) identifiers, which the v1 handoff does not carry. In this example, that pair cannot claim compatibility because CUDN EVPN does not consume or translate the Agentless VLAN segment identifier. A future pair may declare compatibility only if both implementations satisfy the same published handoff contract.
 
@@ -133,7 +130,6 @@ metadata:
 data:
   name: netris
   implementationRef: acme.networking.fabric_manager
-  contractVersion: "v1"
   capabilities: "ipv4"
   compatibleManagers: "cudn_evpn"
   description: "Fabric integration"
@@ -170,11 +166,11 @@ The `l2_vni` and `l3_vni` values are 24-bit VXLAN Network Identifiers for the Su
 
 OSAC reads the ConfigMap only after Fabric provisioning succeeds. It requires all three values, validates both VNI values as integers in the stated range, normalizes them to integers, and passes these values unchanged in meaning to the Kubernetes AAP launch. OSAC checks that `fabric_reserved_range` is non-empty and passes the string through; it does not parse its internal range syntax. A manager pair can declare compatibility only when the Kubernetes implementation understands the Fabric implementation's v1 reserved-range encoding and applies the exclusion correctly.
 
-The handoff is an internal, namespaced ConfigMap and AAP input, not Subnet status or tenant input. Contract v1 defines no VLAN identifier. A pair that needs a VLAN identifier or another shared value cannot claim v1 compatibility; adding that value requires a platform contract update.
+The handoff is an internal, namespaced ConfigMap and AAP input, not Subnet status or tenant input. The defined handoff includes no VLAN identifier. A pair that needs a VLAN identifier or another shared value cannot claim compatibility; adding that value requires a platform contract update.
 
 #### Common AAP input
 
-OSAC passes a common job envelope in the `osac_job_vars` variable. The task-specific resource is the OSAC resource being reconciled. The manager reference selects the collection role and contract, while the operation names one fixed task from the operation table.
+OSAC passes a common job envelope in the `osac_job_vars` variable. The task-specific resource is the OSAC resource being reconciled. The manager reference selects the collection role, while the operation names one fixed task from the operation table.
 
 ```yaml
 osac_job_vars:
@@ -183,7 +179,6 @@ osac_job_vars:
     name: netris
     role: fabric
     implementationRef: acme.networking.fabric_manager
-    contractVersion: v1
   resource:
     apiVersion: osac.openshift.io/v1alpha1
     kind: Subnet
@@ -232,7 +227,7 @@ osac_result:
   data: {}
 ```
 
-`schemaVersion` identifies the result format and is distinct from the manager registration's `contractVersion`. `operation`, `resourceUID`, and `observedGeneration` must match the operation OSAC dispatched and the resource version it dispatched. In contract v1, `data` is an empty object; operation-specific outputs use their separately defined channels. ExternalIP allocation reports its address through the guarded `osac.openshift.io/allocated-address` annotation, not in `data`. Subnet Fabric outputs use the separate namespaced ConfigMap defined above, not this envelope. `dhcp_lease.query` returns the `leases` artifact instead of `osac_result`. Adding fields or result data requires an OSAC contract update.
+`schemaVersion` identifies the result format. `operation`, `resourceUID`, and `observedGeneration` must match the operation OSAC dispatched and the resource version it dispatched. In contract v1, `data` is an empty object; operation-specific outputs use their separately defined channels. ExternalIP allocation reports its address through the guarded `osac.openshift.io/allocated-address` annotation, not in `data`. Subnet Fabric outputs use the separate namespaced ConfigMap defined above, not this envelope. `dhcp_lease.query` returns the `leases` artifact instead of `osac_result`. Adding fields or result data requires an OSAC contract update.
 
 OSAC validates the artifact name and all required fields before accepting task success. A missing, malformed, unsupported-version, stale, or mismatched envelope is a failed operation and cannot advance resource readiness or release capacity. A manager must not report a successful operation with an envelope for a different operation, resource UID, or generation.
 
@@ -290,7 +285,7 @@ Manager ConfigMaps contain references and compatibility metadata, not credential
 
 - **Missing or invalid registration:** NetworkClass validation reports the role, ConfigMap, and invalid field. OSAC does not dispatch resource work.
 - **Incompatible manager pair:** NetworkClass validation fails with both selected logical names and the missing reciprocal declaration. OSAC starts no AAP job for resources using that NetworkClass.
-- **Unsupported contract version or missing collection role:** OSAC rejects a registration with an unsupported version before dispatch, or AAP fails with the missing fully qualified collection role/task name. The diagnostic names the registration or task.
+- **Missing collection role or task:** AAP fails with the missing fully qualified collection role or task name. The diagnostic names the registration or task.
 - **Missing or malformed Fabric outputs:** A missing output ConfigMap, missing required key, empty reserved-range value, or invalid VNI prevents the Kubernetes stage from starting. OSAC reports the missing or invalid output and retries/fails through the existing provisioning lifecycle.
 - **Kubernetes create failure after Fabric success:** OSAC retains the Fabric output ConfigMap and retries the Kubernetes stage using the same values. Fabric create is idempotent. The Subnet is not Ready until the Kubernetes stage succeeds.
 - **Kubernetes delete failure:** OSAC does not start Fabric deletion, so the output ConfigMap and segment remain available while Kubernetes detachment retries.
@@ -305,15 +300,15 @@ No tenant-facing RBAC changes are required. The fulfillment service continues to
 
 ### 4.9 Extensibility and Future-Proofing
 
-A new manager is onboarded by installing its collection into the AAP execution environment, registering the role with its contract version, capabilities, and compatible peer names, and selecting it in NetworkClass. No manager-specific Go code or tenant API change is required after OSAC implements contract v1. A new operation, workload target, capability with new behavior, segment encapsulation, handoff field, or incompatible task payload changes the OSAC contract and requires platform support before an implementation can use it.
+A new manager is onboarded by installing its collection into the AAP execution environment, registering the role with its capabilities and compatible peer names, and selecting it in NetworkClass. No manager-specific Go code or tenant API change is required after OSAC implements the manager contract. A new operation, workload target, capability with new behavior, segment encapsulation, handoff field, or incompatible task payload changes the OSAC contract and requires platform support before an implementation can use it.
 
 ## 5. Interface Changes
 
-### IC-1: Versioned manager registration
+### IC-1: Manager registration and compatibility
 
 **Requirements:** FR-1, FR-2, FR-3
 
-Manager ConfigMaps require `implementationRef`, `contractVersion`, and `compatibleManagers`; when both roles are selected, the compatibility declarations must be reciprocal. §4.2 specifies the registration fields and validation. `contractVersion` is a proposed new field, not an existing registration field.
+Manager ConfigMaps require `implementationRef` and `compatibleManagers`; when both roles are selected, the compatibility declarations must be reciprocal. §4.2 specifies the registration fields and validation.
 
 ### IC-2: Generic AAP task invocation
 
@@ -369,7 +364,7 @@ No new metrics are required. Existing NetworkClass state/message, resource condi
 
 This is the target contract; the current operator and AAP implementation do not yet enforce all of it. Generic OSAC implementation work is required to parse and validate the proposed registration fields, validate manager compatibility, and invoke the registered collection role. Subnet create already has a generic Fabric-to-Kubernetes output dependency; the contract formalizes its exact data. Generic lifecycle support must add ordered Subnet teardown so Kubernetes cleanup runs before Fabric removes the output ConfigMap. After that support ships, adding a conforming manager requires registration/configuration and Ansible content only; it does not require manager-specific Go changes.
 
-All deployed manager registrations must be updated before contract enforcement is enabled. The current parser accepts only `name`, `description`, and `capabilities`; the proposed `implementationRef`, `contractVersion`, and `compatibleManagers` fields are new. The create-side ConfigMap handoff and validation already exist. Contract v1 adds no tenant-facing resource or API fields; it formalizes the existing output keys and adds ordered teardown. An unsupported version or incompatible manager pair prevents dispatch with a diagnostic.
+All deployed manager registrations must be updated before contract enforcement is enabled. The current parser accepts only `name`, `description`, and `capabilities`; the proposed `implementationRef` and `compatibleManagers` fields are new. The create-side ConfigMap handoff and validation already exist. The manager contract adds no tenant-facing resource or API fields; it formalizes the existing output keys and adds ordered teardown. An incompatible manager pair prevents dispatch with a diagnostic.
 
 Changing manager names in NetworkClass does not automatically migrate backend state for existing resources. Providers must follow an explicit migration or resource replacement procedure before switching manager assignments. Contract v1 guarantees common API behavior for newly reconciled resources, not transparent state transfer between different backends.
 
