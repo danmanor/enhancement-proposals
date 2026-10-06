@@ -69,29 +69,6 @@ flowchart LR
     Status --> Reconcile
 ```
 
-The provider networking control described in [Provider Networking Control](#provider-networking-control) gates provider operations while keeping the OSAC resource APIs available. The target deployment and workload boundaries are:
-
-#### Deployment Support Boundary
-
-The current OSAC networking contract supports connected deployments only.
-Air-gapped and disconnected networking deployments are outside the supported
-boundary and must not be advertised as supported profiles. A connected
-deployment has reachability among the provider-owned hub, selected network
-managers, provider-controlled networking services, and provider-controlled
-address infrastructure. The provider owns this configuration; connectivity is
-not tenant selectable, and these reachability prerequisites must hold before
-the deployment's NetworkClass is accepted. The boundary applies to
-Fabric-only, K8s-only, and combined manager profiles.
-
-#### Networking Hub Support Boundary
-
-OSAC networking supports exactly one provider-owned hub per deployment.
-Multi-hub networking placement, cross-hub resource coordination, and
-cross-hub network connectivity are unsupported. This boundary applies only to
-the networking area and does not define hub behavior for other OSAC areas.
-Multiple hosting/workload clusters remain supported where a networking feature
-explicitly specifies them.
-
 OSAC runs VMs on OpenShift using KubeVirt, which encapsulates each VM in a
 pod. Pod networking is managed by OVN-Kubernetes, meaning VMs live inside an
 OVN overlay that is not directly visible on the physical fabric. The core
@@ -1978,3 +1955,28 @@ No additional infrastructure beyond existing OSAC components and managers.
   rollout, while networking API and reconciliation remain available.
 - Verify logical deletion/cascade ordering does not claim provider cleanup;
   existing provider resources may remain after the rollout or deletion.
+
+## Support Boundaries
+
+The provider networking control described in [Provider Networking Control](#provider-networking-control) gates provider operations while keeping the OSAC resource APIs available. These support limits define the deployment and workload conditions for this proposal.
+
+### Deployment Support Boundary
+
+The current OSAC networking contract supports connected deployments only.
+Air-gapped and disconnected networking deployments are outside the supported
+boundary and must not be advertised as supported profiles. A connected
+deployment has reachability among the provider-owned hub, selected network
+managers, provider-controlled networking services, and provider-controlled
+address infrastructure. The provider owns this configuration; connectivity is
+not tenant selectable, and these reachability prerequisites must hold before
+the deployment's NetworkClass is accepted. The boundary applies to
+Fabric-only, K8s-only, and combined manager profiles.
+
+### Networking Hub Support Boundary
+
+OSAC networking supports exactly one provider-owned hub per deployment.
+Multi-hub networking placement, cross-hub resource coordination, and
+cross-hub network connectivity are unsupported. This boundary applies only to
+the networking area and does not define hub behavior for other OSAC areas.
+Multiple hosting/workload clusters remain supported where a networking feature
+explicitly specifies them.
