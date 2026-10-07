@@ -300,7 +300,7 @@
 
 ##### Preconditions
 
-- Generic catalog loading, schema validation, and model resolution are available.
+- Generic NetworkDataModel loading, schema validation, and model resolution are available.
 - A provider-defined `acme-networking-subnet-segment` model is registered with Subnet owner scope and an object schema.
 - Fabric and Kubernetes test roles can publish and consume the registered model.
 
@@ -316,7 +316,7 @@
 - OSAC accepts the manager pair because both declare the same registered model name.
 - The Fabric JSON value passes generic schema validation and remains owned by the Subnet UID.
 - OSAC passes that value to the Kubernetes role with the same model name; the role maps it to its implementation's backend fields.
-- The new model and manager integration require provider catalog/manager configuration and Ansible content, with no manager-specific Go change or tenant API change.
+- The new model and manager integration require NetworkDataModel and NetworkManager registrations plus Ansible content, with no manager-specific Go change or tenant API change.
 
 ### FR-6: Validate model definitions, scope, and produced values
 

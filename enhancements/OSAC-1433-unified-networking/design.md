@@ -296,7 +296,7 @@ defines the FabricDomain API and the complete validation rules.
 
 ##### NetworkDataModel, NetworkData, and NetworkManager APIs
 
-NetworkDataModel, NetworkManager, and NetworkData are cluster-scoped OSAC resources in `osac.openshift.io/v1alpha1`. The fulfillment service exposes provider-only `NetworkDataModels` and `NetworkManagers` APIs for immutable registrations and a system-managed `NetworkData` API for runtime values. The fulfillment-service database is authoritative; its existing controller path asynchronously projects each object as a Kubernetes custom resource in the networking hub for the operator to watch. The CRD is a projection of the API object, not a second source of truth. OSAC installation bootstraps built-in registrations through the API. A NetworkDataModel's `metadata.name` is its canonical model reference and follows the fulfillment-service RFC 1123 DNS-label rule (1–63 lowercase letters, digits, and hyphens). OSAC reserves the `osac-` prefix; providers use their own hyphenated prefix. A NetworkManager's immutable `spec.managerName` is its logical name stored in NetworkClass; its `metadata.name` is a separate DNS-safe Kubernetes object name. NetworkDataModel and NetworkManager replace ConfigMaps used to define the model catalog and register manager implementations. NetworkData replaces the former runtime output ConfigMaps.
+NetworkDataModel, NetworkManager, and NetworkData are cluster-scoped OSAC resources in `osac.openshift.io/v1alpha1`. The fulfillment service exposes provider-only `NetworkDataModels` and `NetworkManagers` APIs for immutable registrations and a system-managed `NetworkData` API for runtime values. The fulfillment-service database is authoritative; its existing controller path asynchronously projects each object as a Kubernetes custom resource in the networking hub for the operator to watch. The CRD is a projection of the API object, not a second source of truth. OSAC installation bootstraps built-in registrations through the API. A NetworkDataModel's `metadata.name` is its canonical model reference and follows the fulfillment-service RFC 1123 DNS-label rule (1–63 lowercase letters, digits, and hyphens). OSAC reserves the `osac-` prefix; providers use their own hyphenated prefix. A NetworkManager's immutable `spec.managerName` is its logical name stored in NetworkClass; its `metadata.name` is a separate DNS-safe Kubernetes object name. NetworkDataModel and NetworkManager replace ConfigMaps used to define model schemas and register manager implementations. NetworkData replaces the former runtime output ConfigMaps.
 
 The fulfillment service validates NetworkDataModel names, supported owner scopes, and JSON Schemas on Create. It validates NetworkManager field shape, role-specific fields, and references to existing models on Create. It validates each NetworkData value against its model and owner before persistence. The CRD schemas enforce field types, required fields, list uniqueness, immutability, and preservation of dynamic JSON fields on backing objects. The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) defines those schemas and validation rules.
 
@@ -353,6 +353,8 @@ spec:
   networkInputs:
     - acme-networking-subnet-segment
 ~~~
+
+In this model, `additionalProperties: false` means a NetworkData value may contain only the declared `fabric` and `segment` fields. The keyword constrains the JSON value checked against this model's schema; it does not constrain the Kubernetes resource fields. The Network Manager Integration Contract explains schema validation and when a model may allow additional fields.
 
 The provider-created NetworkClass continues to reference the Fabric Manager's logical name and optional Kubernetes Manager's logical name. Its fulfillment-service Create validation resolves each reference from the authoritative NetworkManager records by role and `spec.managerName`, then checks that selected Fabric outputs contain every NetworkDataModel name required by the selected Kubernetes Manager. IPv4 is the fixed address-family contract for every manager role, so no per-manager family negotiation or derived family output is needed. Invalid references or an incompatible pair are rejected before NetworkClass is persisted. If the fulfillment-service registry records cannot be read, validation fails closed. Only a valid profile proceeds to ordinary readiness reconciliation; tenant VirtualNetwork creation continues to require NetworkClass Ready.
 
@@ -860,11 +862,11 @@ After confirming the reservation, the manager writes the address to the
 `osac.openshift.io/allocated-address` annotation on the same ExternalIP resource.
 The patch must be guarded by the supplied resource UID and generation, and
 must not change the spec, status, or other annotations. The manager reports
-success only after the provider reservation and annotation write succeed. The
-common `osac_result` envelope defined by the [Network Manager Integration
-Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
-identifies the operation, resource UID, and generation; it carries no address
-payload.
+success only after the provider reservation and annotation write succeed. It
+returns that success in `artifacts.osac_result`, a structured AAP response
+containing the operation, resource UID, and observed generation. The [Network
+Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
+defines its exact shape and validation; this result carries no address payload.
 
 After AAP reports success, OSAC validates the result envelope against the
 current ExternalIP, reads the annotation, and validates canonical IPv4 form
@@ -1762,7 +1764,7 @@ VirtualNetworks define tenant isolation, and SecurityGroups define permitted tra
 
 Fulfillment rejects creates whose referenced resources are missing, deleting, or not ready, and rejects deletes while active dependents remain. The detailed gates and dependency tables are in [Creation Readiness Gates](#creation-readiness-gates) and [Deletion Dependency Guards](#deletion-dependency-guards). Manager failures leave resources non-ready for reconciliation; an ExternalIP allocation is accepted only after the manager result and the provider-owned address annotation pass validation.
 
-Before persisting NetworkClass, OSAC validates each selected NetworkManager reference, the required Fabric role, and that Fabric outputs cover every Kubernetes Manager input. An invalid selection is rejected with a diagnostic naming the object, field, or unsatisfied model name; no invalid NetworkClass or provider job is created. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the catalog, registration, schema validation, and model matching rules.
+Before persisting NetworkClass, OSAC validates each selected NetworkManager reference, the required Fabric role, and that Fabric outputs cover every Kubernetes Manager input. An invalid selection is rejected with a diagnostic naming the object, field, or unsatisfied model name; no invalid NetworkClass or provider job is created. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines NetworkDataModel and NetworkManager registration, schema validation, and model matching rules.
 
 #### Risks and Mitigations
 
