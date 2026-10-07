@@ -30,13 +30,13 @@
 
 1. Render and apply the operator Helm configuration.
 2. Inspect the generated fabric-manager NetworkManager object and the NetworkClass
-   capability state.
+   manager selection.
 
 ##### Expected Results
 
-- The NetworkManager has metadata.name agentless-net, spec.managerName agentless_net, spec.role Fabric, and capability ipv4.
+- The NetworkManager has metadata.name agentless-net, spec.managerName agentless_net, spec.role Fabric, and `networkOutputs` containing the registered Subnet VLAN model name.
 - The NetworkClass exposes agentless_net as the selected fabric manager.
-- IPv6 and dual-stack capabilities are absent.
+- The NetworkManager has no address-family field; IPv4 is fixed by the shared networking API.
 
 #### TC-FR1-02: Select the backend through the existing provider configuration
 
@@ -793,7 +793,7 @@
   consumer reservation remains held until the service acknowledges cleanup.
 - Pool capacity increases only after the reservation reaches `RELEASED`.
 
-### NFR-1: IPv4-only capability
+### NFR-1: IPv4-only address-family contract
 
 #### TC-NFR1-01: Reject unsupported IPv6 and dual-stack requests
 
@@ -803,7 +803,7 @@
 
 ##### Preconditions
 
-- NetworkClass advertises only the agentless_net ipv4 capability.
+- The manager registration has no address-family declaration.
 
 ##### Steps
 
@@ -824,7 +824,7 @@
 
 ##### Preconditions
 
-- `agentless_net` is Ready with IPv4 capability.
+- A valid NetworkClass selects `agentless_net`, and IPv4 is the fixed address family.
 - A Ready VirtualNetwork has a supernet containing the candidate Subnet CIDRs.
 
 ##### Steps
@@ -971,3 +971,16 @@ All interface changes are exercised by test cases.
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

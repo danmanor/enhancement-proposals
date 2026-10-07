@@ -29,8 +29,8 @@
 1. Apply osac-installer Helm values with cudn_evpn enabled.
 2. Verify a cluster-scoped NetworkManager exists with metadata.name cudn-evpn and spec.managerName cudn_evpn.
 3. Verify spec.role is Kubernetes and the implementation reference points to the CUDN EVPN collection role.
-4. Verify capabilities contains only ipv4.
-5. Verify networkInputs declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR model IDs.
+4. Verify the NetworkManager has no address-family field; IPv4 is fixed by the shared networking API.
+5. Verify networkInputs declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR model names.
 6. Attempt to select cudn_evpn with an incompatible Fabric Manager.
 
 ##### Expected Results
@@ -79,12 +79,12 @@
 ##### Preconditions
 
 - Subnet provisioning in progress, fabric job completed
-- A resource-scoped Fabric artifact is missing a required model ID, has the wrong owner scope, or contains a value that fails the model's JSON Schema
+- A resource-scoped Fabric artifact is missing a required model name, has the wrong owner scope, or contains a value that fails the model's JSON Schema
 
 ##### Steps
 
 1. OSAC validates each resource-scoped Fabric output
-2. Validation fails because a required model ID, owner scope, or schema assertion is invalid
+2. Validation fails because a required model name, owner scope, or schema assertion is invalid
 3. Observe controller emits Kubernetes event "NetworkOutputValidationFailed"
 4. Observe Subnet.status.phase = "Failed"
 5. Observe Subnet.status.conditions shows error message referencing fabric job
@@ -278,7 +278,7 @@
 ##### Steps
 
 1. Verify CUDN `spec.network.layer2.reservedSubnets` includes fabric reserved range (REQUIRED)
-2. Verify `osac_job_vars.network_inputs` contains `osac.networking.subnet.reserved-ipv4-cidrs` as a JSON array scoped to the Subnet UID
+2. Verify `osac_job_vars.network_inputs` contains `osac-networking-subnet-reserved-ipv4-cidrs` as a JSON array scoped to the Subnet UID
 3. Deploy VirtualMachine in CUDN namespace
 4. Verify VM receives IP address via DHCP
 5. Check VM received IP from OVN DHCP (inside VM: check DHCP server IP in lease file)
@@ -446,3 +446,16 @@
 ## Gaps
 
 None identified. All requirements map to test cases, all interface changes exercised.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

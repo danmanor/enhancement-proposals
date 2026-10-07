@@ -256,13 +256,13 @@ defines the associated API and validation.
 
 ##### NetworkDataModel and NetworkManager APIs
 
-NetworkDataModel and NetworkManager are cluster-scoped OSAC resources in osac.openshift.io/v1alpha1 and are exposed through provider-only `NetworkDataModels` and `NetworkManagers` APIs in the fulfillment service. The service is the supported provider management interface; it validates and persists the objects as Kubernetes custom resources, which the operator watches. This is one object store, not separate API and CRD copies. OSAC installation may create built-in registrations directly. A NetworkDataModel's `metadata.name` is its canonical model reference. A NetworkManager's immutable `spec.managerName` is its logical name stored in NetworkClass; its `metadata.name` is a separate DNS-safe Kubernetes object name. The objects replace ConfigMaps used to define the model catalog and register manager implementations. They do not replace the separate owner-scoped ConfigMaps that carry runtime manager output values.
+NetworkDataModel and NetworkManager are cluster-scoped OSAC resources in osac.openshift.io/v1alpha1 and are exposed through provider-only `NetworkDataModels` and `NetworkManagers` APIs in the fulfillment service. The service is the supported provider management interface; it validates and persists the objects as Kubernetes custom resources, which the operator watches. This is one object store, not separate API and CRD copies. OSAC installation may create built-in registrations directly. A NetworkDataModel's `metadata.name` is its canonical model reference and follows the fulfillment-service RFC 1123 DNS-label rule (1–63 lowercase letters, digits, and hyphens). OSAC reserves the `osac-` prefix; providers use their own hyphenated prefix. A NetworkManager's immutable `spec.managerName` is its logical name stored in NetworkClass; its `metadata.name` is a separate DNS-safe Kubernetes object name. The objects replace ConfigMaps used to define the model catalog and register manager implementations. They do not replace the separate owner-scoped ConfigMaps that carry runtime manager output values.
 
 The fulfillment service validates NetworkDataModel names, supported owner scopes, and JSON Schemas on Create. It validates NetworkManager field shape, role-specific fields, and references to existing models on Create. The CRD schemas enforce field types, required fields, list uniqueness, and immutability on backing objects.
 
 Models are referenced by their `metadata.name`. Runtime output values use the owning resource UID, not a model UUID, so deleting and recreating an owner cannot inherit stale values.
 
-Providers submit schemas inline in `spec.schema`. The NetworkDataModel CRD declares this field as an object with `x-kubernetes-preserve-unknown-fields: true`, retaining nested JSON keys including `$schema`; this is data within `spec.schema`, not a top-level Kubernetes field. The fulfillment service accepts only the fixed Draft 2020-12 dialect, validates it with a locally bundled meta-schema, never fetches schemas or resolves remote/file references, and enforces finite schema-size, nesting, and validation-work limits. Kubernetes preserves the raw schema object but does not interpret its JSON Schema keywords. The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) defines the schema and reference restrictions.
+Providers submit schemas inline in `spec.schema`. The NetworkDataModel CRD declares this field as an object with `x-kubernetes-preserve-unknown-fields: true`, retaining nested JSON keys including `$schema`; this is data within `spec.schema`, not a top-level Kubernetes field. The fulfillment service accepts only the fixed Draft 2020-12 dialect, validates it with a locally bundled meta-schema, never fetches schemas or resolves remote/file references, and enforces finite schema-size, nesting, and validation-work limits. Kubernetes preserves the raw schema object but does not interpret its JSON Schema keywords. The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) defines the schema and reference restrictions, including the CRD excerpt that preserves the inline JSON Schema object.
 
 A Fabric Manager declares `networkOutputs`; a Kubernetes Manager declares `networkInputs`. Each field is a list of stable model names, and an empty list is valid when the role has no values to exchange. Provider-facing operations are Create, Read/List, and Delete; Update and Patch are rejected.
 
@@ -272,7 +272,7 @@ NetworkDataModel and NetworkManager specs are immutable. Providers may Create, R
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkDataModel
 metadata:
-  name: acme.networking.subnet.segment
+  name: acme-networking-subnet-segment
 spec:
   description: Provider segment identity consumed by a Kubernetes Manager.
   ownerScope: Subnet
@@ -280,10 +280,13 @@ spec:
     $schema: https://json-schema.org/draft/2020-12/schema
     type: object
     properties:
+      fabric:
+        type: string
+        minLength: 1
       segment:
         type: integer
         minimum: 1
-    required: [segment]
+    required: [fabric, segment]
     additionalProperties: false
 ---
 apiVersion: osac.openshift.io/v1alpha1
@@ -296,7 +299,7 @@ spec:
   implementationRef: acme.networking.fabric_manager
   description: Example Fabric Manager
   networkOutputs:
-    - acme.networking.subnet.segment
+    - acme-networking-subnet-segment
 ---
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkManager
@@ -308,7 +311,7 @@ spec:
   implementationRef: acme.networking.vm_overlay
   description: Example Kubernetes Manager
   networkInputs:
-    - acme.networking.subnet.segment
+    - acme-networking-subnet-segment
 ~~~
 
 The provider-created NetworkClass continues to reference the Fabric Manager's logical name and optional Kubernetes Manager's logical name. Its fulfillment-service Create validation reads NetworkManager objects through a registry client, resolves each reference by role and `spec.managerName`, and checks that selected Fabric outputs contain every NetworkDataModel name required by the selected Kubernetes Manager. IPv4 is the fixed address-family contract for every manager role, so no per-manager family negotiation or derived family output is needed. Invalid references or an incompatible pair are rejected before NetworkClass is persisted. If the registry cannot be read, validation fails closed. Only a valid profile proceeds to ordinary readiness reconciliation; tenant VirtualNetwork creation continues to require NetworkClass Ready.
@@ -927,7 +930,7 @@ broadcast domain with other workloads on that Subnet, while different
 Subnets remain separate L2 domains and communicate through their parent
 VirtualNetwork's L3 routing, subject to SecurityGroup policy.
 
-The K8s Manager is pluggable, but an implementation must provide that same
+The K8s Manager is modular, but an implementation must provide that same
 per-Subnet Layer 2 behavior regardless of the underlying mechanism. CUDN with
 LocalNet can bridge a Subnet's OVN network to the corresponding physical
 VLAN. OVN EVPN is not categorically excluded: the
@@ -2212,11 +2215,11 @@ explicitly specifies them.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
 Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

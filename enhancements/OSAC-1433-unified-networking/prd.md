@@ -128,7 +128,7 @@ An ExternalIP provides an address outside a tenant's VirtualNetwork. The provide
 
 Tenants can configure inbound access to a workload with an ExternalIPAttachment and optional outbound access with a NATGateway. ExternalIPAttachment and NATGateway serve different purposes, and a NATGateway is not required for a workload to have basic connectivity.
 
-#### FR-6: Pluggable networking backends with transparent selection (R6)
+#### FR-6: Modular networking backends with transparent selection (R6)
 
 Cloud Infrastructure Admins can use provider networking implementations that fulfill OSAC's shared networking behavior for the workload types they support. The same resource model works across conforming implementations; tenants do not select or need to understand the provider choice.
 
@@ -194,4 +194,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind orig
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

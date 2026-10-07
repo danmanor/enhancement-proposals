@@ -431,8 +431,8 @@ backends later.
 1. **Cloud Infrastructure Admin** configures NetworkClass with
    `spec.east_west_capabilities.supports_east_west_ethernet=true` and a
    non-empty `spec.east_west_config.ethernet_ew.template_id`. This declaration
-   enables Ethernet FabricDomain requests; OSAC separately derives IP-family
-   capability output from the selected network managers.
+   enables Ethernet FabricDomain requests. The networking API is IPv4-only;
+   it does not derive IP-family output from manager registrations.
 2. **Tenant Admin** (or Cloud Infrastructure Admin) has VirtualNetwork (N-S).
 3. **Cloud Infrastructure Admin** creates FabricDomain (`type=ETHERNET_EW`,
    `servers`, `virtual_networks: [that VN]`). The fulfillment-service
@@ -932,3 +932,14 @@ None. E2E testing uses the existing netris-lab on zeus12 (already provisioned).
 - [NICo NVLink Partitioning](https://docs.nvidia.com/infra-controller/infra-controller/documentation/operations-day-2/nv-link-partitioning)
 - [DGX SuperPOD Network Fabrics (GB200)](https://docs.nvidia.com/dgx-superpod/reference-architecture-scalable-infrastructure-gb200/latest/network-fabrics.html)
 - Netris Server Cluster + UFM/NMX integrations
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
+Phases: manual-edit, revise
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->

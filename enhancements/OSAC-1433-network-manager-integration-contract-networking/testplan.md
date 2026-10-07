@@ -300,7 +300,7 @@
 ##### Preconditions
 
 - Generic catalog loading, schema validation, and model resolution are available.
-- A provider-defined `acme.networking.subnet.segment` model is registered with Subnet owner scope and an object schema.
+- A provider-defined `acme-networking-subnet-segment` model is registered with Subnet owner scope and an object schema.
 - Fabric and Kubernetes test roles can publish and consume the registered model.
 
 ##### Steps
@@ -421,3 +421,14 @@ All design interface changes are exercised by test cases.
 | Manual | 0 |
 | Requirements with test cases | 7 / 7 |
 | Interface changes with test cases | 7 / 7 |
+
+---
+
+## Provenance
+
+Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
+
+> Context changed between draft and revise.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

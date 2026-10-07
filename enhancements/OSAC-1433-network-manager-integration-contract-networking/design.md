@@ -105,7 +105,7 @@ Every networking resource is infrastructure-agnostic: it retains the same meanin
 
 A NetworkDataModel is a cluster-scoped OSAC API object that defines one reusable value exchanged between manager roles. Its Kubernetes `metadata.name` is the canonical name managers reference; the API has no second identifier field.
 
-The name identifies the value's meaning and schema contract, so matching JSON types alone do not make two models interchangeable. For example, a VLAN ID and a VXLAN VNI are different models even when both are represented as integers. The `osac.` prefix is reserved for definitions shipped by OSAC; providers use their own namespace.
+The name identifies the value's meaning and schema contract, so matching JSON types alone do not make two models interchangeable. For example, a VLAN ID and a VXLAN VNI are different models even when both are represented as integers. `metadata.name` follows the fulfillment-service RFC 1123 DNS-label rule: 1–63 lowercase letters, digits, or hyphens, with an alphanumeric first and last character. OSAC reserves the `osac-` prefix; providers use their own hyphenated prefix, such as `acme-`.
 
 Kubernetes generates `metadata.uid` for each object lifetime. Manager declarations reference a model by its stable `metadata.name`; runtime values are keyed by the owning NetworkClass, VirtualNetwork, or Subnet UID so deleting and recreating an owner cannot inherit stale output. [Kubernetes names and UIDs](https://kubernetes.io/docs/concepts/overview/working-with-objects/names/).
 
@@ -115,7 +115,7 @@ NetworkDataModel objects use API version osac.openshift.io/v1alpha1 and are clus
 
 | Field | Required | Meaning |
 |---|---|---|
-| metadata.name | Yes | Stable, unique, lowercase, dot-separated resource name. Managers use this exact name as the reference. |
+| metadata.name | Yes | Stable, unique RFC 1123 DNS label (1–63 lowercase letters, digits, or hyphens). Managers use this exact name as the reference. |
 | spec.description | Yes | Human-readable meaning and intended use of the value. |
 | spec.ownerScope | Yes | One supported data owner: NetworkClass, VirtualNetwork, or Subnet. Adding another owner kind requires OSAC resource-context support. |
 | spec.schema | Yes | Inline JSON Schema Draft 2020-12 object for the value. It may describe any JSON value. The CRD preserves this nested object, including `$schema`; that keyword is data inside `spec.schema`, not a top-level CRD field. The root `$schema` must be `https://json-schema.org/draft/2020-12/schema`; only same-document references and supported standard vocabularies are accepted. |
@@ -128,7 +128,7 @@ For example, this provider-defined model carries an object with two fields:
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkDataModel
 metadata:
-  name: acme.networking.subnet.segment
+  name: acme-networking-subnet-segment
 spec:
   description: Provider segment identity consumed by a Kubernetes Manager.
   ownerScope: Subnet
@@ -148,16 +148,29 @@ spec:
 
 Providers submit each schema inline in `NetworkDataModel.spec.schema`; this is content, not a schema URL or reference to a remote document.
 
-The NetworkDataModel CRD declares `spec.schema` as `type: object` with `x-kubernetes-preserve-unknown-fields: true`. Kubernetes therefore preserves `$schema` as a nested key in the JSON object; it is not a NetworkDataModel or top-level CRD field. Kubernetes validates the outer resource shape but does not interpret JSON Schema keywords.
+The NetworkDataModel CRD declares the outer `spec.schema` field as an object and sets `x-kubernetes-preserve-unknown-fields: true` on that object. This focused excerpt is from the CRD's `openAPIV3Schema`:
+
+```yaml
+type: object
+properties:
+  spec:
+    type: object
+    properties:
+      schema:
+        type: object
+        x-kubernetes-preserve-unknown-fields: true
+```
+
+The Kubernetes API server validates the fields the CRD defines, including that `spec.schema` is an object. It preserves arbitrary JSON members within that object instead of pruning keys such as `type`, `properties`, and `$schema`. In the NetworkDataModel example, `$schema` is the nested JSON key `.spec.schema.$schema`; it is not a top-level Kubernetes field. The API server does not interpret those JSON Schema keywords. The fulfillment service separately validates the preserved object as JSON Schema Draft 2020-12. See the [Kubernetes CRD schema documentation](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#specifying-a-structural-schema).
 
 OSAC accepts only the exact Draft 2020-12 `$schema` dialect identifier, validates the submitted schema against a locally bundled meta-schema, and never fetches a schema or meta-schema over the network. All schema reference keywords, including `$ref` and `$dynamicRef`, must resolve to fragments in the same document. Remote and file references, schema-level `$id` values, unsupported vocabularies and owner scopes, malformed schemas, and duplicate NetworkDataModel names are rejected with an admission diagnostic naming the object and invalid field. Because schemas are provider input, OSAC enforces finite schema-size, nesting, and validation-work limits through the fulfillment-service API on Create. JSON Schema validates structure, types, and expressible constraints. It does not prove that a manager configured its backend correctly or that a value satisfies a relationship with other OSAC resources unless that relationship is encoded in a generic OSAC rule. Managers remain responsible for resource-relative semantics, and conformance verifies they honor the model description and shared networking behavior.
 
 | NetworkDataModel name | Owner scope | JSON Schema assertions | Meaning and additional conformance |
 |---|---|---|---|
-| osac.networking.virtual-network.vxlan-l3-vni | VirtualNetwork | Integer from 1 through 16,777,215. | Identifies the VirtualNetwork Layer 3 VXLAN domain. It may be allocated during the first Subnet operation but remains owned by the VirtualNetwork. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
-| osac.networking.subnet.vxlan-l2-vni | Subnet | Integer from 1 through 16,777,215. | Identifies the Subnet's VXLAN Layer 2 segment. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
-| osac.networking.subnet.vlan-id | Subnet | Integer from 1 through 4094. | Identifies the Subnet's IEEE 802.1Q VLAN segment. [RFC 2674](https://www.rfc-editor.org/rfc/rfc2674.html) |
-| osac.networking.subnet.reserved-ipv4-cidrs | Subnet | JSON array, possibly empty, whose items are strings. | Each value is an IPv4 CIDR reserved by the fabric and contained within the Subnet. Managers validate this resource-relative meaning; an overlay IP address manager excludes every listed range from workload allocation. |
+| osac-networking-virtual-network-vxlan-l3-vni | VirtualNetwork | Integer from 1 through 16,777,215. | Identifies the VirtualNetwork Layer 3 VXLAN domain. It may be allocated during the first Subnet operation but remains owned by the VirtualNetwork. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
+| osac-networking-subnet-vxlan-l2-vni | Subnet | Integer from 1 through 16,777,215. | Identifies the Subnet's VXLAN Layer 2 segment. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
+| osac-networking-subnet-vlan-id | Subnet | Integer from 1 through 4094. | Identifies the Subnet's IEEE 802.1Q VLAN segment. [RFC 2674](https://www.rfc-editor.org/rfc/rfc2674.html) |
+| osac-networking-subnet-reserved-ipv4-cidrs | Subnet | JSON array, possibly empty, whose items are strings. | Each value is an IPv4 CIDR reserved by the fabric and contained within the Subnet. Managers validate this resource-relative meaning; an overlay IP address manager excludes every listed range from workload allocation. |
 
 A NetworkManager is a cluster-scoped OSAC API object that registers one Fabric or Kubernetes Manager implementation. It uses API version osac.openshift.io/v1alpha1. Its `spec.managerName` is the immutable logical name selected by NetworkClass; `metadata.name` is the separate DNS-safe Kubernetes object name. `spec.implementationRef` identifies the fully qualified Ansible collection role AAP invokes. The logical name and implementation reference are independent.
 
@@ -186,9 +199,9 @@ spec:
   implementationRef: acme.networking.fabric_manager
   description: Fabric integration
   networkOutputs:
-    - osac.networking.virtual-network.vxlan-l3-vni
-    - osac.networking.subnet.vxlan-l2-vni
-    - osac.networking.subnet.reserved-ipv4-cidrs
+    - osac-networking-virtual-network-vxlan-l3-vni
+    - osac-networking-subnet-vxlan-l2-vni
+    - osac-networking-subnet-reserved-ipv4-cidrs
 ~~~
 
 ~~~yaml
@@ -202,14 +215,14 @@ spec:
   implementationRef: acme.networking.vm_overlay
   description: Kubernetes VM overlay integration
   networkInputs:
-    - osac.networking.virtual-network.vxlan-l3-vni
-    - osac.networking.subnet.vxlan-l2-vni
-    - osac.networking.subnet.reserved-ipv4-cidrs
+    - osac-networking-virtual-network-vxlan-l3-vni
+    - osac-networking-subnet-vxlan-l2-vni
+    - osac-networking-subnet-reserved-ipv4-cidrs
 ~~~
 
 The selection sequence is NetworkDataModel objects, then NetworkManager objects, then NetworkClass. NetworkClass continues to store the existing logical manager names. When it is created, the fulfillment service resolves each name against cluster-scoped NetworkManager objects by role and `spec.managerName`, then checks that every NetworkDataModel name in the Kubernetes Manager's inputs appears in the selected Fabric Manager's outputs. IPv4 is the fixed address-family contract for all managers; no registration-time family negotiation is needed. The registry reader fails closed if the backing Kubernetes API cannot be read. An invalid or incompatible selection is rejected before NetworkClass is persisted; no tenant networking resource or AAP job can use it.
 
-The comparison uses exact model names, not only JSON shape, because identity, meaning, and owner scope are part of the contract. A matching declaration establishes that the selected implementation advertises required data; it does not prove that either manager preserves the shared VirtualNetwork L3, Subnet L2, attachment, or SecurityGroup behavior. Each implementation and selected path must also pass conformance. OSAC does not contain a manager-name compatibility table.
+The comparison uses exact model names, not only JSON shape, because identity, meaning, and owner scope are part of the contract. A matching declaration establishes that the selected implementation advertises required data; it does not prove that either manager preserves the shared VirtualNetwork L3, Subnet L2, attachment, or SecurityGroup behavior. The conformance harness must verify each implementation against every operation and target in the fixed role table before the provider uses it. Registry validation checks declared data compatibility; it cannot infer behavioral conformance from a schema or implementation reference. OSAC does not contain a manager-name compatibility table.
 
 | Fabric Manager | Kubernetes Manager | Result |
 |---|---|---|
@@ -255,8 +268,8 @@ data:
       "resource_kind": "Subnet",
       "resource_uid": "<subnet-uid>",
       "outputs": [
-        {"model_name": "osac.networking.subnet.vxlan-l2-vni", "value": 40120},
-        {"model_name": "osac.networking.subnet.reserved-ipv4-cidrs", "value": ["192.0.2.0/28", "192.0.2.32/27"]}
+        {"model_name": "osac-networking-subnet-vxlan-l2-vni", "value": 40120},
+        {"model_name": "osac-networking-subnet-reserved-ipv4-cidrs", "value": ["192.0.2.0/28", "192.0.2.32/27"]}
       ]
     }
 ```
@@ -270,15 +283,15 @@ Before dispatching a Kubernetes operation, OSAC resolves the selected manager's 
 ```yaml
 osac_job_vars:
   network_inputs:
-    - model_name: osac.networking.virtual-network.vxlan-l3-vni
+    - model_name: osac-networking-virtual-network-vxlan-l3-vni
       resource_kind: VirtualNetwork
       resource_uid: "<virtual-network-uid>"
       value: 4020
-    - model_name: osac.networking.subnet.vxlan-l2-vni
+    - model_name: osac-networking-subnet-vxlan-l2-vni
       resource_kind: Subnet
       resource_uid: "<subnet-uid>"
       value: 40120
-    - model_name: osac.networking.subnet.reserved-ipv4-cidrs
+    - model_name: osac-networking-subnet-reserved-ipv4-cidrs
       resource_kind: Subnet
       resource_uid: "<subnet-uid>"
       value: ["192.0.2.0/28", "192.0.2.32/27"]
@@ -314,14 +327,14 @@ osac_job_vars:
       resource_kind: VirtualNetwork
       resource_uid: "<virtual-network-uid>"
       config_map_name: network-output-<virtual-network-uid>
-      model_names: [osac.networking.virtual-network.vxlan-l3-vni]
+      model_names: [osac-networking-virtual-network-vxlan-l3-vni]
     - namespace: "<networking-hub-namespace>"
       resource_kind: Subnet
       resource_uid: "<subnet-uid>"
       config_map_name: network-output-<subnet-uid>
       model_names:
-        - osac.networking.subnet.vxlan-l2-vni
-        - osac.networking.subnet.reserved-ipv4-cidrs
+        - osac-networking-subnet-vxlan-l2-vni
+        - osac-networking-subnet-reserved-ipv4-cidrs
 ```
 
 OSAC validates and resolves these values; the Kubernetes task must not read Fabric credentials, call the Fabric Manager directly, or change OSAC resource semantics. The Fabric task uses a separate, job-scoped credential to update only the pre-created output ConfigMaps named in `network_output_targets`. OSAC does not put this credential in `osac_job_vars` or pass it to the Kubernetes Manager. A successful task means that the backend has converged to the requested state unless the operation defines a result artifact below.
@@ -648,4 +661,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind o
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
