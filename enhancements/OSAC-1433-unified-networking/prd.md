@@ -114,7 +114,7 @@ Tenants must be able to create isolated VirtualNetworks. Workloads on the same S
 
 #### FR-2: Infrastructure-agnostic networking resources (R2)
 
-Every networking resource uses the same model across VMs, cluster nodes, and bare-metal servers. The shared model includes tenant resources and provider-managed NetworkClasses and ExternalIP pools. Workload-specific connection details, such as a selected bare-metal interface, do not require a separate networking resource model.
+Every networking resource retains the same meaning and API across virtual machines, managed Kubernetes clusters, and bare-metal servers. Resource semantics do not change with the infrastructure running a workload. Workload-specific connection details, such as a selected bare-metal interface, do not require a separate networking resource model.
 
 #### FR-3: Uniform networking across all service types (R3)
 
@@ -130,7 +130,7 @@ Tenants can configure inbound access to a workload with an ExternalIPAttachment 
 
 #### FR-6: Modular networking backends with transparent selection (R6)
 
-Cloud Infrastructure Admins can use provider networking implementations that fulfill OSAC's shared networking behavior for the workload types they support. The same resource model works across conforming implementations; tenants do not select or need to understand the provider choice.
+Cloud Infrastructure Admins can use any Fabric Manager and, where needed, any Kubernetes Manager that fulfills its OSAC role contract. The same resources retain their meaning across conforming manager implementations and backend technologies; tenants do not select or need to understand the provider choice.
 
 #### FR-7: Single network attachment per workload (R7)
 

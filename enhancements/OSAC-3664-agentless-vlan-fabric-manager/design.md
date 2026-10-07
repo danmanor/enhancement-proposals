@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-10-07
+last-updated: 2026-09-22
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -11,7 +11,6 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking/design.md"
-  - "/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md"
   - "/enhancements/OSAC-1435-vmaas-networking/design.md"
   - "/enhancements/OSAC-1436-caas-networking/design.md"
   - "/enhancements/OSAC-1437-bmaas-networking/design.md"
@@ -26,7 +25,7 @@ superseded-by:
 
 ## Summary
 
-This design registers 'agentless_net' as a modular physical fabric manager and
+This design registers 'agentless_net' as a pluggable physical fabric manager and
 implements the existing OSAC Networking API on managed-switch infrastructure.
 The implementation reuses the NetworkClass/dispatcher lifecycle, maps each
 VirtualNetwork to an isolated Linux routing namespace, maps each Subnet to a
@@ -102,7 +101,7 @@ creating DNAT. [PRD: FR-4] [Codebase: osac-aap/playbook_osac_query_dhcp_lease.ym
 
 The design adds the missing agentless implementation behind the existing
 NetworkClass and dispatcher contracts. A provider registers an
-'agentless_net' fabric-manager NetworkManager object through Helm values and selects it in
+'agentless_net' fabric-manager ConfigMap through Helm values and selects it in
 the existing deployment configuration. The fulfillment-service owns API
 validation, tenancy, durable ExternalIP allocation/consumer reservations, and
 pool capacity accounting; the operator owns CRDs, finalizers, dependency
@@ -119,7 +118,7 @@ implementation strategy and starts generic AAP jobs; the agentless template
 performs the switch and net-node work; status returns through job results and
 existing resource feedback. It does not introduce a second controller path.
 
-The osac-operator dispatcher is the routing layer between a Networking CR and the selected implementation. NetworkClass names the selected NetworkManager objects; the dispatcher resolves each object, reads its role and implementation reference, and lets the existing provisioning lifecycle track retries, finalizers, job history, and status. It does not implement VLAN, DHCP, or NAT behavior itself.
+The osac-operator dispatcher is the routing layer between a Networking CR and the selected implementation. It reads the NetworkClass fabric_manager and k8s_manager values, resolves the corresponding labeled manager ConfigMaps, stamps the implementation strategy used by the generic AAP playbook, and lets the existing provisioning lifecycle track retries, finalizers, job history, and status. It does not implement VLAN, DHCP, or NAT behavior itself.
 ~~~mermaid
 flowchart LR
     Admin[Cloud Infrastructure Admin] --> Helm[Helm values and manager registration]
@@ -159,12 +158,11 @@ state.
    design does not require changing it. [PRD: FR-1] [Codebase: osac-aap/group_vars/all/configuration.yaml]
 2. The admin enables the operator's
    'networkManagers.fabricManagers.agentless_net' Helm entry with
-   description, implementation reference, and
-   `networkOutputs: osac-networking-subnet-vlan-id`.
-   This model is present in the Network Data Model catalog with Subnet owner
-   scope and an integer schema constrained to the valid VLAN range. OSAC checks
-   the manager declaration against that catalog entry.
-3. The installer creates the cluster-scoped NetworkManager object with metadata.name 'agentless-net', spec.managerName 'agentless_net', and role Fabric. The operator validates the manager role and model references during NetworkClass reconciliation. All networking CR projections use the configured
+   capabilities 'ipv4', description, and fabric role.
+3. The installer creates a ConfigMap labeled
+   'osac.openshift.io/network-fabric-manager' with 'data.name=agentless_net'.
+   The operator discovers it and includes the manager in NetworkClass
+   capability reconciliation. All networking CR projections use the configured
    `OSAC_NETWORKING_NAMESPACE` hub namespace; tenant IDs remain annotations,
    not namespaces. [Codebase: osac-operator/charts/operator/templates/network-managers.yaml]
 4. The post-install NetworkClass hook selects 'fabric_manager=agentless_net'.
@@ -209,12 +207,7 @@ Users consume these resources through their workload workflows. [User]
    `osac.templates.agentless_net`.
 4. AgentlessNet reconciles the desired fabric state idempotently: one namespace
    and permit-all forwarding baseline per VirtualNetwork, and one
-   VLAN/interface/gateway/DHCP binding per Subnet. On Subnet create, it writes
-   the allocated VLAN ID as model `osac-networking-subnet-vlan-id` to the
-   OSAC-provided output target scoped to that Subnet UID. This is internal
-   manager data validated against the catalog schema, not a tenant API field,
-   and does not claim a supported
-   Kubernetes Manager consumer in this milestone. Subnet reconciliation never
+   VLAN/interface/gateway/DHCP binding per Subnet. Subnet reconciliation never
    binds a host access port.
 5. ExternalIPPool and ExternalIP remain controller-managed allocation
    resources. ExternalIPAttachment and NATGateway dispatch their owned
@@ -472,7 +465,7 @@ check leaves the consumer non-ready and retains its finalizer and reservation.
 For every operation, the controller records the AAP job target, attempt, and
 failure message in the existing provisioning history and status condition.
 
-- If the manager NetworkManager object is absent, dispatch stops before an external side
+- If the manager ConfigMap is absent, dispatch stops before an external side
   effect and the resource reports a configuration failure.
 - If VLAN allocation or the state sidecar lock fails, the operation is retried
   without changing existing allocations.
@@ -555,7 +548,7 @@ The implementation changes the following existing surfaces:
 
 | ID | Existing surface | Change | Requirements |
 |---|---|---|---|
-| IC-1 | Installer values, manager NetworkManager object, NetworkClass selection | Register and select 'agentless_net' as a fabric manager under the IPv4-only networking API | FR-1, NFR-1 |
+| IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Register and select 'agentless_net' as a fabric manager with IPv4 capability | FR-1, NFR-1 |
 | IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Route existing fabric resources through the agentless dispatcher and realize VLAN, namespace, forwarding baseline, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
 | IC-3 | Fabric network-attachment and DHCP feedback path | Attach and detach BM/CaaS/VM targets through a backend-neutral stable binding contract, restore the provider provisioning network on offboarding, and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
 | IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Persist an ExternalIP-UID reservation in fulfillment-service, allocate provider-side addresses through the locked AAP state file, transport and validate the provider result, install whole-address DNAT, and announce/withdraw the consumer-owned ExternalIP `/32` route | FR-5, FR-7, FR-10, NFR-2, NFR-3 |
@@ -920,27 +913,27 @@ tracked separately in OSAC-4308 and OSAC-4309. [PRD: §2.2] [Codebase: osac-ux/l
 
 #### Manager registration and dispatch
 
-The osac-operator resolves the Fabric Manager selected as agentless_net to the cluster-scoped NetworkManager object whose spec.managerName is agentless_net. Its spec declares the role, Ansible collection implementation reference, and output model names. Before creating this object, the OSAC-provided NetworkDataModel for osac-networking-subnet-vlan-id must exist with Subnet owner scope and an integer schema constrained to the valid VLAN range. The Helm chart renders:
+The osac-operator discovers ConfigMaps labeled
+'osac.openshift.io/network-fabric-manager'. The ConfigMap data includes the
+manager name, description, and comma-separated capabilities. The Helm chart
+entry must render:
 
-~~~yaml
-apiVersion: osac.openshift.io/v1alpha1
-kind: NetworkManager
-metadata:
-  name: agentless-net
-spec:
-  managerName: agentless_net
-  role: Fabric
-  implementationRef: osac.templates.agentless_net
-  networkOutputs:
-    - osac-networking-subnet-vlan-id
-  description: Cumulus-supported agentless VLAN backend
-~~~
+- name: 'agentless_net'
+- role: 'fabric'
+- capabilities: 'ipv4'
+- description identifying the Cumulus-supported agentless VLAN backend
 
-**Manager contract fit:** This phase defers SecurityGroup enforcement and does not specify every operation and workload target required of a conforming Fabric Manager. The registration below shows the object shape, but `agentless_net` cannot be treated as a conforming NetworkManager selection until its design covers the complete fixed role contract. The provider must verify that contract with the conformance harness.
+The manager name must match the NetworkClass 'fabric_manager' value and the
+AAP implementation-strategy annotation. Unknown or disabled manager names must
+produce a status failure rather than selecting another manager. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
 
-#### IPv4 address-family boundary
+#### NetworkClass capability boundary
 
-IPv4 is the fixed address family of the shared networking API. The fulfillment service rejects IPv6 and dual-stack requests before dispatch; NetworkManager has no address-family field. [Locked: D10, D11]
+The agentless registration declares IPv4 support and does not declare IPv6 or
+dual-stack. The fulfillment-service's existing capability validation rejects
+unsupported address-family requests before the provisioning job is launched.
+This keeps the dual-stack-ready API intact while enforcing the milestone
+boundary through NetworkClass capabilities. [Locked: D10, D11]
 
 #### VirtualNetwork and Subnet realization
 
@@ -980,16 +973,6 @@ is:
 
 The VLAN allocation is globally unique within the physical fabric. Reconciliation
 looks up the Subnet UID before allocating, so retries preserve the same VLAN.
-The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
-defines the output channel and catalog. The manager registration declares the
-`osac-networking-subnet-vlan-id` model name in
-`networkOutputs`, and the Fabric task publishes the numeric VLAN ID in the
-standard owner-scoped `outputs.json` artifact supplied by OSAC. OSAC validates
-the value against the registered schema and Subnet owner scope. The output
-artifact follows the Subnet UID through retries. OSAC removes it after any
-declared consumer cleanup and successful Fabric Subnet deletion. No VLAN field
-is added to the tenant API.
-
 VLAN state is protected by an exclusive file lock and persisted before the
 switch or namespace operation is reported complete. [PRD: FR-3] [PRD: Risk 8.5]
 [Research: VLAN-backed L2 with a separate L3 boundary]
@@ -1474,7 +1457,7 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 
 | Failure | Recovery | Observable result |
 |---|---|---|
-| Manager NetworkManager object missing registration or invalid role/model references | Stop before AAP side effects; requeue after manager discovery changes | Resource condition identifies missing manager registration or invalid model reference |
+| Manager ConfigMap missing or capability mismatch | Stop before AAP side effects; requeue after manager discovery changes | Resource condition identifies missing manager/capability |
 | Networking CR lookup uses a tenant namespace, name-only selector, or mismatched tenant/owner attribution | Stop before mutation; reselect `$OSAC_NETWORKING_NAMESPACE` and retry by stable UUID with server-set attribution | Resource condition identifies namespace/attribution mismatch |
 | Invalid NetworkClass, unsupported IPv6 request, or Subnet prefix `/31`/`/32` | API/controller validation rejects before provisioning | Invalid argument or failed condition names the unsupported address family or prefix; no AAP job or fabric state is created |
 | VLAN state sidecar lock unavailable | Retry with backoff; preserve existing allocation and do not use the data-file inode as a lock | Provisioning remains pending with lock diagnostic |
@@ -1578,7 +1561,7 @@ existing controller/AAP boundaries:
 
 | Reason | Type | Emitted when |
 |---|---|---|
-| NetworkManagerUnavailable | Warning | Manager registration lookup or validation fails |
+| NetworkManagerUnavailable | Warning | Manager registration or capability lookup fails |
 | FabricOperationFailed | Warning | AAP create/update/delete job fails |
 | NetNodeUnavailable | Warning | Net-node reachability, state, dnsmasq, or BGP preflight fails |
 | NetNodeRestoreFailed | Warning | Namespace, DHCP, route, or translation rehydration fails |
@@ -1669,7 +1652,7 @@ Unknown provider outcomes fail closed and require an inspect/cleanup retry.
 #### Backend parity
 
 Differences from Netris can change tenant-observable behavior even when API
-responses match. A behavior-by-behavior parity matrix and BMaaS reference
+responses match. A capability-by-capability parity matrix and BMaaS reference
 validation compare the in-scope L2, routing, DHCP, DNAT, SNAT, status, and
 cleanup behavior. SecurityGroup provisioning and policy enforcement are outside
 this milestone and are excluded from the parity claim for both backend paths.
@@ -1744,7 +1727,7 @@ Cumulus documents them as scale alternatives. [Research: NetworkRunner and Cumul
 
 A separate controller could hard-code the backend flow, but it would duplicate
 manager discovery, finalizers, retries, job target tracking, and status logic.
-The existing dispatcher is the intended modularity boundary. [Codebase: osac-operator/pkg/networkmanager]
+The existing dispatcher is the intended pluggability boundary. [Codebase: osac-operator/pkg/networkmanager]
 
 ### Open Questions
 
@@ -1799,10 +1782,7 @@ not a substitute for that testplan.
 
 ### Unit Tests
 
-- Parse and validate the agentless manager NetworkManager role and
-  `networkOutputs` model reference; verify Subnet create publishes an integer
-  `osac-networking-subnet-vlan-id` value that passes the catalog schema and
-  carries the Subnet UID without adding a tenant API field.
+- Parse and validate agentless manager ConfigMap capabilities.
 - Allocate and release VLAN IDs with idempotence, collision rejection, pool
   exhaustion, lock contention, and state-file recovery cases.
 - Exercise state writes interrupted before, during, and after rename; verify
@@ -1840,7 +1820,7 @@ not a substitute for that testplan.
 
 ### Integration Tests
 
-- Render manager NetworkManager object and NetworkClass selection with Helm values.
+- Render manager ConfigMap and NetworkClass selection with Helm values.
 - Reconcile VirtualNetwork and multiple Subnets through envtest/fake AAP
   providers; verify provider-side ExternalIP allocation
   annotations populate status only after a committed reservation event,
@@ -1955,6 +1935,7 @@ The operator, fulfillment-service, installer, and AAP collections must agree on:
 
 - manager name 'agentless_net';
 - configured `OSAC_NETWORKING_NAMESPACE` hub namespace for every networking CR;
+- capability string 'ipv4';
 - implementation-strategy value;
 - generic job names and input shapes;
 - status/lease artifact schema;
@@ -1990,7 +1971,7 @@ Support personnel diagnose failures in this order:
 
 1. Inspect the resource's status conditions and provisioning job history.
 2. Confirm the NetworkClass points to a discovered IPv4-capable
-   'agentless_net' NetworkManager object.
+   'agentless_net' ConfigMap.
 3. Check net-node reachability, state validation, namespace inventory, dnsmasq
    services, and BGP session health before inspecting AAP jobs.
 4. Inspect AAP job status, 'leases' artifacts, provider-result annotations,
@@ -2013,7 +1994,11 @@ Support personnel diagnose failures in this order:
    provisioning-network ID/VLAN, direction, and observed state with
    `port_bindings`; never infer detach behavior from a display name.
 
-To disable new use, drain and delete resources, then delete the NetworkClass before the NetworkManager object. The object cannot be deleted while a NetworkClass still references it. Existing workloads retain their applied fabric state until explicit cleanup. Re-enabling the manager requires recreating the NetworkManager object and then the NetworkClass after dependencies are clear; reconciliation resumes if the state-file schema and network inventory are available.
+To disable new use, remove or change the NetworkClass selection after draining
+resources; do not delete the manager ConfigMap while resources still need
+reconciliation. Existing workloads retain their applied fabric state until
+explicit cleanup. Re-enabling the manager resumes reconciliation if the
+state-file schema and network inventory are available.
 
 ## Infrastructure Needed
 
@@ -2036,11 +2021,11 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
+Authored: revise @ design 0.9.0 - 562b610, workspace main @ 0ae795e37
+Final: respond @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
 
-> Context changed between revise and revise.
+> Context changed between revise and respond.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

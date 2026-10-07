@@ -22,7 +22,7 @@ This enhancement extends the unified networking API to support VMaaS-specific re
 
 ## Summary
 
-This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure- and backend-agnostic networking resources, resource hierarchy); this document defines how this specific service consumes that architecture.
+This enhancement is an expansion of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
 
 VMaaS inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):

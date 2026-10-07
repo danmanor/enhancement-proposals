@@ -111,7 +111,7 @@
 
 - Each collection provides every operation and workload target assigned to its role.
 - Repeated create/apply converges without duplicate backend objects; repeated delete of absent state succeeds.
-- Each successful task returns an `osac_result` artifact whose operation, resource UID, and observed generation match the dispatched operation and whose `data` is empty, except `dhcp_lease.query`, which returns the required `leases` artifact.
+- Each successful task returns an `osac_result` artifact whose operation, resource UID, and observed generation match the dispatched operation. `data.network_data` is empty unless a Fabric task publishes values requested for its operation; `dhcp_lease.query` returns the required `leases` artifact instead.
 - Missing, malformed, stale, or mismatched result envelopes are rejected and do not advance readiness or release capacity.
 - Each task meets the input, result, tenancy, idempotency, and failure requirements.
 
@@ -197,25 +197,26 @@
 
 ##### Preconditions
 
-- The test Fabric task receives pre-created VirtualNetwork and Subnet output targets, including the hub namespace, and a credential restricted to those targets.
-- The Kubernetes test role records its `osac_job_vars.network_inputs` and operation order.
+- The test Fabric Manager declares VirtualNetwork- and Subnet-scoped output models, and the selected Kubernetes Manager declares the applicable model names as inputs.
+- The Fabric task can return `osac_result.data.network_data`; it has no Kubernetes API or fulfillment-service write credential.
+- The Kubernetes test role records its `osac_job_vars.network_data` and operation order.
 
 ##### Steps
 
-1. Create the Subnet and inspect each output ConfigMap, Kubernetes inputs, and readiness.
+1. Create the Subnet and inspect the resulting NetworkData records, Kubernetes inputs, and readiness.
 2. Verify the parent VirtualNetwork VNI is stored under the VirtualNetwork UID and the L2 VNI and reserved CIDR array are stored under the Subnet UID.
-3. Attempt to write an artifact outside the supplied output targets.
-4. Delete the Subnet and inspect Kubernetes and Fabric task order, artifact lifetime, and inputs.
+3. Attempt to return an undeclared model, a duplicate model/owner key, an out-of-context owner UID, and a schema-invalid value; verify each result is rejected before any NetworkData write or Kubernetes dispatch.
+4. Delete the Subnet and inspect Kubernetes and Fabric task order, NetworkData lifetime, and inputs.
 
 ##### Expected Results
 
-- Each output document records the exact resource kind and UID for its target and contains JSON values under the registered model names.
-- The Fabric role can update its named output targets and cannot update another ConfigMap in the networking hub namespace.
+- Each NetworkData object records one model name, owner kind and UID, and a JSON value that matches the registered schema.
+- A manager cannot create or update NetworkData directly; OSAC persists values only after validating the complete result.
 - OSAC validates model name, owner scope, and JSON Schema, then passes only applicable Kubernetes Manager inputs with their owner kind and UID.
 - A Kubernetes Subnet operation receives both parent-VirtualNetwork and current-Subnet values when required; it does not receive unrelated Fabric outputs.
 - The Subnet becomes Ready only after both create stages succeed.
-- Delete runs Kubernetes cleanup before Fabric cleanup and supplies the same required inputs while both artifacts remain available.
-- Subnet output is removed after successful Subnet Fabric deletion; the VirtualNetwork output remains until VirtualNetwork deletion.
+- Delete runs Kubernetes cleanup before Fabric cleanup and supplies the same required inputs while the NetworkData records remain available.
+- Subnet-scoped NetworkData is removed after successful Subnet Fabric deletion; the VirtualNetwork-scoped value remains until VirtualNetwork deletion.
 
 #### TC-FR3-03: Recover from partial Subnet create and delete failures
 
@@ -225,20 +226,20 @@
 
 ##### Preconditions
 
-- Fabric create succeeds and writes valid outputs to both resource scopes.
+- Fabric create succeeds and OSAC stores valid outputs for both resource scopes.
 - The AAP test provider can inject Kubernetes create and Fabric delete failures independently.
 
 ##### Steps
 
 1. Fail the Kubernetes create task after Fabric success, then allow a retry to succeed.
 2. Begin deletion and fail Kubernetes cleanup; later allow cleanup and Fabric delete to succeed.
-3. Observe output artifact lifetime, job history, role order, and final resource state.
+3. Observe NetworkData lifetime, job history, role order, and final resource state.
 
 ##### Expected Results
 
-- Both output artifacts remain available after Kubernetes create failure, and retry uses the same values without creating duplicate Fabric resources.
+- Both NetworkData records remain available after Kubernetes create failure, and retry uses the same values without creating duplicate Fabric resources.
 - Fabric deletion does not begin until Kubernetes cleanup succeeds.
-- Subnet and VirtualNetwork outputs remain available while their consumers may retry; Subnet output is removed after its resource is deleted and VirtualNetwork output persists until parent deletion.
+- Subnet and VirtualNetwork values remain available while their consumers may retry; Subnet data is removed after its resource is deleted and VirtualNetwork data persists until parent deletion.
 - All task retries are idempotent and the resource does not report Ready or deleted prematurely.
 
 ### FR-4: Reject unsatisfied network data or unavailable work before dispatch
@@ -329,21 +330,21 @@
 
 - A valid model with `NetworkClass` owner scope and a JSON object schema is registered.
 - The selected managers both declare the model name.
-- The Fabric test role can write only OSAC-provided output targets.
+- The operator is authorized to create NetworkData from manager results; the Fabric task has no NetworkData write credentials.
 
 ##### Steps
 
-1. During one provisioning attempt, publish the model in its NetworkClass output target but label the artifact as owned by a VirtualNetwork UID.
+1. During one provisioning attempt, return the model with a VirtualNetwork owner UID even though its registered owner scope is NetworkClass.
 2. Observe owner-scope validation and verify that the Kubernetes job does not start.
 3. Retry with the correct NetworkClass UID but an object that violates the registered schema.
 4. Observe schema validation and verify that the Kubernetes job does not start.
-5. Retry with a schema-valid object under the NetworkClass UID and inspect the Kubernetes job's `network_inputs`.
+5. Retry with a schema-valid object under the NetworkClass UID and inspect the Kubernetes job's `network_data`.
 
 ##### Expected Results
 
 - The wrong owner scope and schema-invalid value each fail in separate attempts and block Kubernetes dispatch.
 - The diagnostic identifies the model name and NetworkClass owner UID.
-- The valid JSON value is stored under the NetworkClass UID and resolved with `resource_kind: NetworkClass`.
+- The valid JSON value is stored as one NetworkData object under the NetworkClass UID and resolved with `resource_kind: NetworkClass`.
 - The Kubernetes role receives only the declared input and does not receive the Fabric writer credential.
 
 #### TC-FR6-02: Enforce immutable registry lifecycle and dependency-safe deletion
@@ -354,22 +355,22 @@
 
 ##### Preconditions
 
-- A valid NetworkDataModel is referenced by a NetworkManager, and a retained owner-scoped output artifact contains a valid value under its NetworkDataModel name.
+- A valid NetworkDataModel is referenced by a NetworkManager, and an owner-scoped NetworkData object contains a valid value for that model.
 - A valid NetworkClass selects that manager and has no VirtualNetworks.
 
 ##### Steps
 
 1. Attempt Update and Patch on the NetworkDataModel, NetworkManager, and NetworkClass objects.
-2. Attempt to delete the referenced model and selected manager.
-3. Delete NetworkClass, then delete NetworkManager.
-4. Attempt to delete NetworkDataModel while its output artifact remains; then remove the artifact through normal owner-scoped cleanup and retry deletion.
+2. Attempt to delete the NetworkDataModel while its NetworkManager and NetworkData references remain, and attempt to delete the selected NetworkManager while NetworkClass still selects it.
+3. Delete NetworkClass and verify that its owner-scoped NetworkData is removed through normal owner cleanup.
+4. Delete NetworkManager, then delete NetworkDataModel.
 
 ##### Expected Results
 
 - Provider Update and Patch requests are rejected for each object.
 - Deletion is blocked while a dependent object references the target, and the response identifies the blocking object.
-- NetworkDataModel deletion remains blocked while retained output values require its schema.
-- Reverse-order deletion succeeds after object references and retained output values are gone.
+- NetworkDataModel deletion is blocked while its NetworkManager or NetworkData references remain; NetworkManager deletion is blocked while NetworkClass selects it.
+- Owner cleanup removes NetworkClass-scoped NetworkData only after dependent manager work succeeds. Reverse-order deletion succeeds after owner cleanup and object references are gone.
 
 ### FR-7: Manage provider registrations through OSAC
 
@@ -381,7 +382,7 @@
 
 ##### Preconditions
 
-- The fulfillment-service provider APIs and backing NetworkDataModel and NetworkManager CRDs are deployed.
+- The fulfillment-service APIs and backing NetworkDataModel, NetworkManager, and NetworkData CRDs are deployed.
 - The caller is authorized as a Cloud Infrastructure Admin.
 
 ##### Steps
@@ -389,12 +390,14 @@
 1. Create a NetworkDataModel and use Get and List to inspect it.
 2. Create a NetworkManager that references the model and use Get and List to inspect it.
 3. Attempt Update and Patch through the provider APIs.
-4. Delete the NetworkManager, then delete the NetworkDataModel through the provider APIs.
-5. Repeat a read or delete with an unauthorized tenant identity.
+4. Verify provider administrators may Get/List NetworkData but cannot Create, Update, Patch, or Delete it.
+5. Delete a NetworkData value through OSAC owner cleanup, then delete the NetworkManager and NetworkDataModel through the provider APIs.
+6. Repeat a registry read or delete with an unauthorized tenant identity.
 
 ##### Expected Results
 
-- Create, Get, List, and Delete operate on the same objects the operator reads from Kubernetes.
+- Create, Get, List, and Delete operate on canonical fulfillment-service records; the existing controller path projects the same objects as hub CRDs for the operator.
+- NetworkData is created only by the OSAC service after schema and owner validation; owner cleanup deletes it after dependent manager work completes.
 - Update and Patch are rejected; dependent-object deletion is blocked until dependencies are removed.
 - Unauthorized callers cannot create, read, or delete provider registrations.
 

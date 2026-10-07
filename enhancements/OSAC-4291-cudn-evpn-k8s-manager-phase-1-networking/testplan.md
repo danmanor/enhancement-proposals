@@ -12,7 +12,7 @@
 
 ### R1: K8s manager registration for EVPN fabric bridging (IPv4 only)
 
-#### TC-R1-01: Register cudn_evpn as a NetworkManager object
+#### TC-R1-01: Register cudn_evpn k8s manager via ConfigMap
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -20,25 +20,22 @@
 
 ##### Preconditions
 
-- osac-installer and the NetworkManager CRD are deployed.
-- Required OSAC NetworkDataModel objects exist.
-- No NetworkManager object with spec.managerName cudn_evpn exists.
+- osac-installer deployed to cluster
+- No existing ConfigMap `k8s-manager-cudn-evpn` in osac namespace
 
 ##### Steps
 
-1. Apply osac-installer Helm values with cudn_evpn enabled.
-2. Verify a cluster-scoped NetworkManager exists with metadata.name cudn-evpn and spec.managerName cudn_evpn.
-3. Verify spec.role is Kubernetes and the implementation reference points to the CUDN EVPN collection role.
-4. Verify the NetworkManager has no address-family field; IPv4 is fixed by the shared networking API.
-5. Verify networkInputs declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR model names.
-6. Attempt to select cudn_evpn with an incompatible Fabric Manager.
+1. Apply osac-installer Helm chart with cudn_evpn manager enabled
+2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
+3. Verify ConfigMap data.manager = "cudn_evpn"
+4. Verify ConfigMap data.capabilities includes "supports_ipv4: true"
+5. Verify ConfigMap data.capabilities includes "supports_ipv6: false"
 
 ##### Expected Results
 
-- The NetworkManager object is accepted because all model references resolve.
-- The role-specific fields match the Network Manager Integration Contract.
-- NetworkClass creation rejects an incompatible manager pair and persists no profile.
-- The valid object can be selected by a compatible profile and adds no tenant-facing backend selector.
+- ConfigMap created with label `osac.openshift.io/k8s-manager: "true"`
+- Capabilities reflect IPv4-only support
+- NetworkClass controller loads cudn_evpn as available k8s manager
 
 ### R2: Fabric-to-k8s manager data dependency
 
@@ -52,25 +49,25 @@
 
 - NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
 - VirtualNetwork created with this NetworkClass
-- Mocked Netris Fabric Manager publishing values that pass the registered VNI and reserved-CIDR schemas to the OSAC-provided VirtualNetwork and Subnet targets
+- Mocked Netris fabric returning VNI values
 
 ##### Steps
 
 1. Create Subnet via fulfillment-service API
 2. Observe Subnet controller creates fabric AAP Job first
-3. Fabric job succeeds after writing VirtualNetwork and Subnet `outputs.json` artifacts
-4. Observe controller waits for Fabric success and OSAC validates both owner scopes
-5. Verify OSAC resolves the declared VirtualNetwork L3 VNI and Subnet L2 VNI inputs with their owner UIDs
-6. Observe controller creates the k8s AAP Job with `osac_job_vars.network_inputs`
-7. Verify route targets are not passed; CUDN auto-generates them
+3. Fabric job completes with VNI data in status.extraVars
+4. Observe controller does not create k8s job until fabric job status shows Successful
+5. Controller extracts l2_vni, l3_vni from fabric job
+6. Observe controller creates k8s AAP Job with VNI data in extra_vars
+7. Verify k8s job extra_vars contains: l2_vni, l3_vni (route targets not passed - CUDN auto-generates)
 
 ##### Expected Results
 
 - Fabric job completes before k8s job starts (not concurrent)
-- K8s job receives schema-validated model values from the parent VirtualNetwork and Subnet scopes
+- K8s job receives VNI values extracted from fabric job status
 - Subnet.status.conditions shows "K8sManagerWaitingForFabric" event between jobs
 
-#### TC-R2-02: Reject missing or schema-invalid Fabric outputs
+#### TC-R2-02: VNI extraction failure when fabric job missing data
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -79,13 +76,13 @@
 ##### Preconditions
 
 - Subnet provisioning in progress, fabric job completed
-- A resource-scoped Fabric artifact is missing a required model name, has the wrong owner scope, or contains a value that fails the model's JSON Schema
+- Fabric AAP Job CR exists but status.extraVars missing VNI fields
 
 ##### Steps
 
-1. OSAC validates each resource-scoped Fabric output
-2. Validation fails because a required model name, owner scope, or schema assertion is invalid
-3. Observe controller emits Kubernetes event "NetworkOutputValidationFailed"
+1. Controller attempts to extract VNI from fabric job status
+2. Extraction fails (missing l2_vni field)
+3. Observe controller emits Kubernetes event "VNIExtractionFailed"
 4. Observe Subnet.status.phase = "Failed"
 5. Observe Subnet.status.conditions shows error message referencing fabric job
 
@@ -116,8 +113,8 @@
    - spec.network.topology = "Layer2"
    - spec.network.transport = "EVPN"
    - spec.network.evpn.vtep = "tenant-vtep"
-   - spec.network.evpn.macVRF.vni = the Subnet-scoped VXLAN L2 VNI input
-   - spec.network.evpn.ipVRF.vni = the parent-VirtualNetwork-scoped VXLAN L3 VNI input
+   - spec.network.evpn.macVRF.vni = l2_vni from extra_vars
+   - spec.network.evpn.ipVRF.vni = l3_vni from extra_vars
 3. Wait for CUDN status.conditions Ready=True
 4. Verify CUDN status.vrfName is set (Linux VRF device name)
 
@@ -278,7 +275,7 @@
 ##### Steps
 
 1. Verify CUDN `spec.network.layer2.reservedSubnets` includes fabric reserved range (REQUIRED)
-2. Verify `osac_job_vars.network_inputs` contains `osac-networking-subnet-reserved-ipv4-cidrs` as a JSON array scoped to the Subnet UID
+2. Verify k8s job extra_vars contains fabric_reserved_range from fabric job ConfigMap
 3. Deploy VirtualMachine in CUDN namespace
 4. Verify VM receives IP address via DHCP
 5. Check VM received IP from OVN DHCP (inside VM: check DHCP server IP in lease file)
@@ -289,7 +286,7 @@
 
 ##### Expected Results
 
-- CUDN `reservedSubnets` contains every CIDR from the Subnet-scoped reserved IPv4 CIDR model input; provisioning fails if that required model value is missing
+- CUDN `reservedSubnets` field is populated (k8s job fails if fabric_reserved_range missing from fabric job ConfigMap)
 - VM IP assigned by OVN-Kubernetes DHCP (not Netris DHCP)
 - VM DHCP lease shows OVN DHCP server IP (logical switch IP, not Netris SVI)
 - Netris DHCP logs show no requests from VM MAC (OVN intercepts DHCP inside logical switch)
@@ -446,16 +443,3 @@
 ## Gaps
 
 None identified. All requirements map to test cases, all interface changes exercised.
-
----
-
-## Provenance
-
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (67 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
-
-> Context changed between revise and revise.
-
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
