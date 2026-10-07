@@ -63,7 +63,8 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want one contract that states each manager role's requirements and which implementations can interoperate, so that I can select a supported provider configuration with clear diagnostics when a pairing or operation is unsupported.
-- As a Cloud Infrastructure Admin, I want to register additional shared network data definitions and have OSAC validate manager declarations and produced values against them, so that a new backend integration does not require manager-specific OSAC development.
+- As a Cloud Infrastructure Admin, I want to create, inspect, and remove shared network data definitions and manager registrations through OSAC's provider management interface, so that OSAC can validate configuration before networking work uses it.
+- As a Cloud Infrastructure Admin, I want OSAC to validate manager declarations and produced values against registered definitions, so that a new backend integration does not require manager-specific OSAC development.
 
 ### Tenant User
 
@@ -79,6 +80,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - **FR-4:** When selected implementations cannot meet a required networking dependency, a required role is unavailable, or a request is outside the supported manager contract, the Cloud Infrastructure Admin must receive a clear diagnostic and OSAC must reject the request rather than route it through an unrelated manager. [User]
 - **FR-5:** A provider can define additional shared networking data for existing provider profiles, VirtualNetworks, and Subnets, then exchange it between conforming managers without one-off OSAC changes or a tenant API change. [User]
 - **FR-6:** OSAC must identify invalid data definitions, undefined manager references, missing required data, and values that do not match their definition, and prevent dependent work from starting. [User]
+- **FR-7:** Cloud Infrastructure Admins can create, inspect, list, and remove manager and data-model registrations through OSAC's provider management interface; OSAC rejects attempts to modify an existing registration in place. [User]
 
 ### 3.2 Non-Functional Requirements
 
@@ -99,4 +101,4 @@ Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind orig
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

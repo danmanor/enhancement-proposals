@@ -3,8 +3,8 @@
 ## Overview
 
 - **Feature:** Network Manager Integration Contract
-- **Total test cases:** 14
-- **Requirements covered:** 6 of 6 functional requirements
+- **Total test cases:** 15
+- **Requirements covered:** 7 of 7 functional requirements
 - **Interface changes covered:** 7 of 7
 
 ## Test Cases
@@ -46,21 +46,21 @@
 
 ##### Preconditions
 
-- NetworkDataModel and NetworkManager CRDs and OSAC admission validation are deployed.
+- NetworkDataModel and NetworkManager CRDs and the fulfillment-service provider APIs are deployed.
 - A test AAP provider records whether an AAP job was created.
 
 ##### Steps
 
-1. Create valid OSAC and provider-defined NetworkDataModel objects.
+1. Create valid OSAC and provider-defined NetworkDataModel objects through the fulfillment-service API.
 2. Attempt models with an unsupported owner scope, malformed JSON Schema, unsupported schema dialect or vocabulary, remote reference, or an ID reserved to OSAC.
-3. Create Fabric and Kubernetes NetworkManager objects that reference existing model IDs.
+3. Create Fabric and Kubernetes NetworkManager objects through the fulfillment-service API, each referencing existing model IDs.
 4. Attempt manager objects with an unknown or duplicate model ID, duplicate (role, managerName), invalid role, role-inappropriate input/output field, missing required list, invalid capability, or malformed implementation reference.
 5. Create a NetworkClass that selects the valid pair; observe the create response and AAP job count.
 
 ##### Expected Results
 
-- Valid model and manager objects are accepted and readable by their stable metadata names.
-- Admission rejects every invalid model or manager before it can be selected and identifies the object, invalid field, and model ID when relevant.
+- Valid model and manager objects are returned by provider API Get and List and appear as the same objects in the Kubernetes backing store.
+- The fulfillment service rejects every invalid model or manager before it can be selected and identifies the object, invalid field, and model ID when relevant; Kubernetes schema validation independently rejects malformed backing objects.
 - A role's required declaration may be an empty list; an omitted declaration is rejected.
 - No AAP job is created for an invalid object or profile.
 
@@ -68,23 +68,24 @@
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
-| IC-1 | Unit | high | automated |
+| IC-1 | Integration | high | automated |
 
 ##### Preconditions
 
-- A Fabric Manager and a Kubernetes Manager declare `ipv4`.
-- The operator derives the read-only NetworkClass IP-family capability output from the selected manager registrations.
+- Valid Fabric and Kubernetes NetworkManager objects with `ipv4` are available through the fulfillment-service API.
+- The operator derives the read-only NetworkClass IP-family capability output from the selected registrations.
 
 ##### Steps
 
 1. Create a NetworkClass using both managers and inspect its capability output.
-2. Try registrations with missing `ipv4`, `ipv6`, and `dualStack` declarations.
-3. Submit IPv6 and dual-stack network inputs through the networking API.
+2. Attempt NetworkManager Create requests with missing `ipv4`, `ipv6`, and `dualStack` declarations.
+3. Exercise NetworkClass preflight with a registry fixture that returns a selected manager without required `ipv4`.
+4. Submit IPv6 and dual-stack network inputs through the networking API.
 
 ##### Expected Results
 
 - The valid pair produces `supportsIpv4=true`, `supportsIpv6=false`, and `supportsDualStack=false`.
-- Missing `ipv4` and unsupported `ipv6` or `dualStack` declarations make the selected NetworkClass invalid and no provider job starts.
+- The fulfillment-service API rejects each invalid NetworkManager Create and persists no backing CRD; NetworkClass preflight rejects a selected role without required `ipv4` before persistence.
 - IPv6 and dual-stack API inputs are rejected before provider dispatch.
 
 #### TC-FR2-03: Verify complete role operation and target coverage
@@ -343,30 +344,6 @@
 - The valid JSON value is stored under the NetworkClass UID and resolved with `resource_kind: NetworkClass`.
 - The Kubernetes role receives only the declared input and does not receive the Fabric writer credential.
 
-## Gaps
-
-### Requirement Coverage Gaps
-
-All PRD functional requirements have test cases.
-
-### Interface Change Coverage Gaps
-
-All design interface changes are exercised by test cases.
-
-## Summary
-
-| Metric | Count |
-|--------|-------|
-| Total test cases | 14 |
-| Critical | 8 |
-| High | 5 |
-| Medium | 0 |
-| Low | 0 |
-| Automated | 13 |
-| Manual | 0 |
-| Requirements with test cases | 6 / 6 |
-| Interface changes with test cases | 7 / 7 |
-
 #### TC-FR6-02: Enforce immutable registry lifecycle and dependency-safe deletion
 
 | Interface Change | Test Level | Priority | Automation |
@@ -391,3 +368,54 @@ All design interface changes are exercised by test cases.
 - Deletion is blocked while a dependent object references the target, and the response identifies the blocking object.
 - NetworkDataModel deletion remains blocked while retained output values require its schema.
 - Reverse-order deletion succeeds after object references and retained output values are gone.
+
+### FR-7: Manage provider registrations through OSAC
+
+#### TC-FR7-01: Manage registry objects through the fulfillment-service API
+
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1 | Integration | high | automated |
+
+##### Preconditions
+
+- The fulfillment-service provider APIs and backing NetworkDataModel and NetworkManager CRDs are deployed.
+- The caller is authorized as a Cloud Infrastructure Admin.
+
+##### Steps
+
+1. Create a NetworkDataModel and use Get and List to inspect it.
+2. Create a NetworkManager that references the model and use Get and List to inspect it.
+3. Attempt Update and Patch through the provider APIs.
+4. Delete the NetworkManager, then delete the NetworkDataModel through the provider APIs.
+5. Repeat a read or delete with an unauthorized tenant identity.
+
+##### Expected Results
+
+- Create, Get, List, and Delete operate on the same objects the operator reads from Kubernetes.
+- Update and Patch are rejected; dependent-object deletion is blocked until dependencies are removed.
+- Unauthorized callers cannot create, read, or delete provider registrations.
+
+## Gaps
+
+### Requirement Coverage Gaps
+
+All PRD functional requirements have test cases.
+
+### Interface Change Coverage Gaps
+
+All design interface changes are exercised by test cases.
+
+## Summary
+
+| Metric | Count |
+|--------|-------|
+| Total test cases | 15 |
+| Critical | 8 |
+| High | 7 |
+| Medium | 0 |
+| Low | 0 |
+| Automated | 15 |
+| Manual | 0 |
+| Requirements with test cases | 7 / 7 |
+| Interface changes with test cases | 7 / 7 |
