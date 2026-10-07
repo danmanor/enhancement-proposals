@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-09-22
+last-updated: 2026-10-07
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -11,6 +11,7 @@ prd:
   - "prd.md"
 see-also:
   - "/enhancements/OSAC-1433-unified-networking/design.md"
+  - "/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md"
   - "/enhancements/OSAC-1435-vmaas-networking/design.md"
   - "/enhancements/OSAC-1436-caas-networking/design.md"
   - "/enhancements/OSAC-1437-bmaas-networking/design.md"
@@ -158,7 +159,8 @@ state.
    design does not require changing it. [PRD: FR-1] [Codebase: osac-aap/group_vars/all/configuration.yaml]
 2. The admin enables the operator's
    'networkManagers.fabricManagers.agentless_net' Helm entry with
-   capabilities 'ipv4', description, and fabric role.
+   capabilities 'ipv4', description, implementation reference, and
+   `networkOutputs: osac.networking.subnet.vlan-id`.
 3. The installer creates a ConfigMap labeled
    'osac.openshift.io/network-fabric-manager' with 'data.name=agentless_net'.
    The operator discovers it and includes the manager in NetworkClass
@@ -207,7 +209,11 @@ Users consume these resources through their workload workflows. [User]
    `osac.templates.agentless_net`.
 4. AgentlessNet reconciles the desired fabric state idempotently: one namespace
    and permit-all forwarding baseline per VirtualNetwork, and one
-   VLAN/interface/gateway/DHCP binding per Subnet. Subnet reconciliation never
+   VLAN/interface/gateway/DHCP binding per Subnet. On Subnet create, it writes
+   the allocated VLAN ID as `osac.networking.subnet.vlan-id` to the
+   OSAC-provided output target scoped to that Subnet UID. This is internal
+   manager data, not a tenant API field, and does not claim a supported
+   Kubernetes Manager consumer in this milestone. Subnet reconciliation never
    binds a host access port.
 5. ExternalIPPool and ExternalIP remain controller-managed allocation
    resources. ExternalIPAttachment and NATGateway dispatch their owned
@@ -914,18 +920,21 @@ tracked separately in OSAC-4308 and OSAC-4309. [PRD: §2.2] [Codebase: osac-ux/l
 #### Manager registration and dispatch
 
 The osac-operator discovers ConfigMaps labeled
-'osac.openshift.io/network-fabric-manager'. The ConfigMap data includes the
-manager name, description, and comma-separated capabilities. The Helm chart
-entry must render:
+'osac.openshift.io/network-fabric-manager'. The ConfigMap identifies the manager
+role, logical name, collection `implementationRef`, capabilities, and declared
+network outputs. The Helm chart entry must render:
 
 - name: 'agentless_net'
 - role: 'fabric'
+- `implementationRef: osac.templates.agentless_net`
 - capabilities: 'ipv4'
+- `networkOutputs: osac.networking.subnet.vlan-id`
 - description identifying the Cumulus-supported agentless VLAN backend
 
-The manager name must match the NetworkClass 'fabric_manager' value and the
-AAP implementation-strategy annotation. Unknown or disabled manager names must
-produce a status failure rather than selecting another manager. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
+The manager name must match the NetworkClass 'fabric_manager' value. The
+implementation reference resolves the Ansible role; unknown or disabled
+manager names must produce a status failure rather than selecting another
+manager. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
 
 #### NetworkClass capability boundary
 
@@ -973,6 +982,15 @@ is:
 
 The VLAN allocation is globally unique within the physical fabric. Reconciliation
 looks up the Subnet UID before allocating, so retries preserve the same VLAN.
+The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
+defines the output channel. The manager registration declares
+`osac.networking.subnet.vlan-id` in
+`networkOutputs`, and the Fabric task publishes the numeric VLAN ID in the
+standard resource-scoped `outputs.json` artifact supplied by OSAC. The output
+artifact follows the Subnet UID through retries. OSAC removes it after any
+declared consumer cleanup and successful Fabric Subnet deletion. No VLAN field
+is added to the tenant API.
+
 VLAN state is protected by an exclusive file lock and persisted before the
 switch or namespace operation is reported complete. [PRD: FR-3] [PRD: Risk 8.5]
 [Research: VLAN-backed L2 with a separate L3 boundary]
@@ -1782,7 +1800,10 @@ not a substitute for that testplan.
 
 ### Unit Tests
 
-- Parse and validate agentless manager ConfigMap capabilities.
+- Parse and validate the agentless manager ConfigMap capabilities and
+  `networkOutputs` declaration; verify Subnet create publishes an integer
+  `osac.networking.subnet.vlan-id` value under the Subnet UID without adding a
+  tenant API field.
 - Allocate and release VLAN IDs with idempotence, collision rejection, pool
   exhaustion, lock contention, and state-file recovery cases.
 - Exercise state writes interrupted before, during, and after rename; verify

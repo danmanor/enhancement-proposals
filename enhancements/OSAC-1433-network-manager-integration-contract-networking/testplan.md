@@ -38,7 +38,7 @@
 
 ### FR-2: Exact manager implementation requirements
 
-#### TC-FR2-01: Reject an invalid manager registration
+#### TC-FR2-01: Reject an invalid manager registration or data declaration
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
@@ -51,13 +51,14 @@
 
 ##### Steps
 
-1. Create registrations with a malformed or missing implementationRef, missing capabilities or compatibleManagers, an unknown role label, an invalid capability such as `ipv6` or `dualStack`, a malformed compatibleManagers value, or duplicate logical names within a role.
+1. Create registrations with malformed or missing `implementationRef`, missing role-required `networkOutputs` or `networkInputs`, an unknown or duplicate contract identifier, an unknown role label, an invalid capability, or duplicate logical names within a role.
 2. Select each registration from a NetworkClass.
 3. Observe NetworkClass status and AAP job count.
 
 ##### Expected Results
 
-- OSAC identifies the ConfigMap and invalid field in its diagnostic.
+- OSAC identifies the ConfigMap and invalid field or contract identifier in its diagnostic.
+- An empty declaration is accepted as no outputs or inputs; an omitted required declaration is rejected.
 - The NetworkClass is not Ready while a selected registration is invalid.
 - OSAC creates no AAP job for the invalid registration.
 
@@ -160,7 +161,7 @@
 
 ### FR-3: Provider selection with one tenant networking API
 
-#### TC-FR3-01: Select mutually compatible managers from different sources
+#### TC-FR3-01: Select managers whose declared network data matches
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
@@ -168,22 +169,22 @@
 
 ##### Preconditions
 
-- A Fabric Manager and a Kubernetes Manager from different collection sources are installed in the AAP execution environment.
-- Each registration names the other in `compatibleManagers`.
+- Fabric and Kubernetes Manager collections from different sources are installed in the AAP execution environment.
+- The Fabric registration declares VXLAN L3 VNI, VXLAN L2 VNI, and reserved IPv4 CIDR outputs; the Kubernetes registration declares those same contract identifiers as inputs.
 
 ##### Steps
 
 1. Configure NetworkClass with both logical manager names.
-2. Create a VirtualNetwork and Subnet through the existing tenant API.
-3. Observe the selected AAP roles and backend state.
+2. Create a VirtualNetwork and Subnet through the tenant API.
+3. Observe the selected AAP roles, resolved inputs, and backend state.
 
 ##### Expected Results
 
-- OSAC accepts the mutually declared pair and invokes each registered implementation for its assigned role.
-- Both managers receive the same shared resource shape; the Kubernetes Manager receives `l2_vni`, `l3_vni`, and `fabric_reserved_range` for the Subnet.
+- OSAC accepts the pair because each Kubernetes input identifier is declared by the Fabric Manager.
+- Both managers receive the shared resource shape; the Kubernetes Manager receives typed values from both the parent VirtualNetwork and current Subnet scopes.
 - The tenant API does not expose or require a backend selector.
 
-#### TC-FR3-02: Create and delete a Subnet with shared Fabric outputs
+#### TC-FR3-02: Validate typed, resource-scoped network outputs and inputs
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
@@ -191,22 +192,25 @@
 
 ##### Preconditions
 
-- The test Fabric task writes the namespaced output ConfigMap with string values for `l2_vni`, `l3_vni`, and `fabric_reserved_range`.
-- The Kubernetes test role records its inherited AAP variables and operation order.
+- The test Fabric task receives pre-created VirtualNetwork and Subnet output targets, including the hub namespace, and a credential restricted to those targets.
+- The Kubernetes test role records its `osac_job_vars.network_inputs` and operation order.
 
 ##### Steps
 
-1. Create the Subnet and inspect the Fabric output ConfigMap, Kubernetes AAP input variables, and readiness.
-2. Delete the Subnet and inspect Kubernetes and Fabric task order, ConfigMap lifetime, and their inputs.
+1. Create the Subnet and inspect each output ConfigMap, Kubernetes inputs, and readiness.
+2. Verify the parent VirtualNetwork VNI is stored under the VirtualNetwork UID and the L2 VNI and reserved CIDR array are stored under the Subnet UID.
+3. Attempt to write an artifact outside the supplied output targets.
+4. Delete the Subnet and inspect Kubernetes and Fabric task order, artifact lifetime, and inputs.
 
 ##### Expected Results
 
-- The Fabric role writes the exact flat ConfigMap keys `l2_vni`, `l3_vni`, and `fabric_reserved_range`; no VLAN field or Subnet status handoff is used.
-- OSAC requires all three keys, validates and normalizes both VNI values, and passes those values as top-level AAP extra variables to Kubernetes.
-- Kubernetes receives the exact values returned by Fabric and does not allocate replacement VNIs.
+- Each output document records the exact resource kind and UID for its target and contains typed values under the OSAC contract identifiers.
+- The Fabric role can update its named output targets and cannot update another ConfigMap in the networking hub namespace.
+- OSAC validates identifier, scope, and value type, then passes only the Kubernetes Manager's declared inputs with their owner kind and UID.
+- A Kubernetes Subnet operation receives both parent-VirtualNetwork and current-Subnet values when required; it does not receive unrelated Fabric outputs.
 - The Subnet becomes Ready only after both create stages succeed.
-- Delete runs Kubernetes cleanup before Fabric cleanup and passes the same three values to Kubernetes while the ConfigMap still exists.
-- Fabric removes the output ConfigMap only after Kubernetes cleanup has succeeded.
+- Delete runs Kubernetes cleanup before Fabric cleanup and supplies the same required inputs while both artifacts remain available.
+- Subnet output is removed after successful Subnet Fabric deletion; the VirtualNetwork output remains until VirtualNetwork deletion.
 
 #### TC-FR3-03: Recover from partial Subnet create and delete failures
 
@@ -216,25 +220,25 @@
 
 ##### Preconditions
 
-- Fabric create succeeds and writes a valid output ConfigMap.
+- Fabric create succeeds and writes valid outputs to both resource scopes.
 - The AAP test provider can inject Kubernetes create and Fabric delete failures independently.
 
 ##### Steps
 
 1. Fail the Kubernetes create task after Fabric success, then allow a retry to succeed.
-2. Begin deletion and fail Kubernetes detach; later allow detach and Fabric delete to succeed.
-3. Observe output ConfigMap lifetime, job history, role order, and final resource state.
+2. Begin deletion and fail Kubernetes cleanup; later allow cleanup and Fabric delete to succeed.
+3. Observe output artifact lifetime, job history, role order, and final resource state.
 
 ##### Expected Results
 
-- The output ConfigMap remains available after Kubernetes create failure, and retry uses the same values without creating a second Fabric segment.
-- Fabric deletion does not begin until Kubernetes detach succeeds.
-- The output ConfigMap remains available while Kubernetes cleanup retries; Fabric removes it after both roles succeed.
+- Both output artifacts remain available after Kubernetes create failure, and retry uses the same values without creating duplicate Fabric resources.
+- Fabric deletion does not begin until Kubernetes cleanup succeeds.
+- Subnet and VirtualNetwork outputs remain available while their consumers may retry; Subnet output is removed after its resource is deleted and VirtualNetwork output persists until parent deletion.
 - All task retries are idempotent and the resource does not report Ready or deleted prematurely.
 
-### FR-4: Reject incompatible or unavailable work before dispatch
+### FR-4: Reject unsatisfied network data or unavailable work before dispatch
 
-#### TC-FR4-01: Reject a manager pair without mutual compatibility declarations
+#### TC-FR4-01: Reject a selected pair with an unsatisfied network input
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
@@ -242,21 +246,23 @@
 
 ##### Preconditions
 
-- The Fabric registration lists `cudn_evpn` and the Kubernetes registration lists `netris`.
-- A second configuration selects `agentless_net` with `cudn_evpn`, and a third declares compatibility in only one direction.
+- CUDN EVPN declares VXLAN L3 VNI, VXLAN L2 VNI, and reserved IPv4 CIDR inputs.
+- Netris declares matching outputs; Agentless VLAN declares `osac.networking.subnet.vlan-id` output.
 - The test AAP provider records created jobs.
 
 ##### Steps
 
-1. Select each pair in NetworkClass.
-2. Observe readiness diagnostics and AAP job count.
+1. Select Netris with CUDN EVPN.
+2. Select Agentless VLAN with CUDN EVPN.
+3. Select a registration with an unknown input identifier, and one with a known identifier missing from Fabric outputs.
+4. Observe readiness diagnostics and AAP job count.
 
 ##### Expected Results
 
-- Netris and CUDN EVPN are accepted when both declarations are present.
-- Agentless VLAN and CUDN EVPN are rejected when either side does not list the other.
-- A one-sided declaration is rejected.
-- Diagnostics name the two manager registrations and missing compatibility declaration; no AAP job starts.
+- Netris and CUDN EVPN are accepted when all declared inputs have matching output identifiers.
+- Agentless VLAN and CUDN EVPN are rejected because a VLAN ID does not satisfy either VXLAN VNI contract and Agentless has not declared the reserved CIDR output.
+- Unknown identifiers and known-but-unmatched inputs are rejected before provider dispatch.
+- Diagnostics name the two selected managers and each unsatisfied contract identifier; no AAP job starts.
 
 #### TC-FR4-02: Reject work requiring an unselected or unsupported role/target
 

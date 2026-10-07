@@ -27,14 +27,15 @@
 
 1. Apply osac-installer Helm chart with cudn_evpn manager enabled
 2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
-3. Verify ConfigMap data.manager = "cudn_evpn"
-4. Verify ConfigMap data.capabilities includes "supports_ipv4: true"
-5. Verify ConfigMap data.capabilities includes "supports_ipv6: false"
+3. Verify ConfigMap `data.name` is `cudn_evpn` and `data.implementationRef` points to the CUDN EVPN collection role.
+4. Verify `data.capabilities` is `ipv4`.
+5. Verify `data.networkInputs` declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR contracts.
 
 ##### Expected Results
 
-- ConfigMap created with label `osac.openshift.io/k8s-manager: "true"`
-- Capabilities reflect IPv4-only support
+- ConfigMap created with label `osac.openshift.io/network-k8s-manager: "true"`
+- The registration uses the role-specific fields defined by the Network Manager Integration Contract.
+- Capabilities reflect IPv4-only support and all three required data inputs are declared.
 - NetworkClass controller loads cudn_evpn as available k8s manager
 
 ### R2: Fabric-to-k8s manager data dependency
@@ -49,25 +50,25 @@
 
 - NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
 - VirtualNetwork created with this NetworkClass
-- Mocked Netris fabric returning VNI values
+- Mocked Netris Fabric Manager publishing typed VNI and reserved-CIDR outputs to the OSAC-provided VirtualNetwork and Subnet targets
 
 ##### Steps
 
 1. Create Subnet via fulfillment-service API
 2. Observe Subnet controller creates fabric AAP Job first
-3. Fabric job completes with VNI data in status.extraVars
-4. Observe controller does not create k8s job until fabric job status shows Successful
-5. Controller extracts l2_vni, l3_vni from fabric job
-6. Observe controller creates k8s AAP Job with VNI data in extra_vars
-7. Verify k8s job extra_vars contains: l2_vni, l3_vni (route targets not passed - CUDN auto-generates)
+3. Fabric job succeeds after writing VirtualNetwork and Subnet `outputs.json` artifacts
+4. Observe controller waits for Fabric success and OSAC validates both owner scopes
+5. Verify OSAC resolves the declared VirtualNetwork L3 VNI and Subnet L2 VNI inputs with their owner UIDs
+6. Observe controller creates the k8s AAP Job with `osac_job_vars.network_inputs`
+7. Verify route targets are not passed; CUDN auto-generates them
 
 ##### Expected Results
 
 - Fabric job completes before k8s job starts (not concurrent)
-- K8s job receives VNI values extracted from fabric job status
+- K8s job receives typed contract values from the parent VirtualNetwork and Subnet scopes
 - Subnet.status.conditions shows "K8sManagerWaitingForFabric" event between jobs
 
-#### TC-R2-02: VNI extraction failure when fabric job missing data
+#### TC-R2-02: Reject missing or invalid typed Fabric outputs
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -76,13 +77,13 @@
 ##### Preconditions
 
 - Subnet provisioning in progress, fabric job completed
-- Fabric AAP Job CR exists but status.extraVars missing VNI fields
+- A resource-scoped Fabric artifact is missing a required contract identifier or has the wrong owner scope/value type
 
 ##### Steps
 
-1. Controller attempts to extract VNI from fabric job status
-2. Extraction fails (missing l2_vni field)
-3. Observe controller emits Kubernetes event "VNIExtractionFailed"
+1. OSAC validates each resource-scoped Fabric output
+2. Validation fails because a required identifier, scope, or value is invalid
+3. Observe controller emits Kubernetes event "NetworkOutputValidationFailed"
 4. Observe Subnet.status.phase = "Failed"
 5. Observe Subnet.status.conditions shows error message referencing fabric job
 
@@ -113,8 +114,8 @@
    - spec.network.topology = "Layer2"
    - spec.network.transport = "EVPN"
    - spec.network.evpn.vtep = "tenant-vtep"
-   - spec.network.evpn.macVRF.vni = l2_vni from extra_vars
-   - spec.network.evpn.ipVRF.vni = l3_vni from extra_vars
+   - spec.network.evpn.macVRF.vni = the Subnet-scoped VXLAN L2 VNI input
+   - spec.network.evpn.ipVRF.vni = the parent-VirtualNetwork-scoped VXLAN L3 VNI input
 3. Wait for CUDN status.conditions Ready=True
 4. Verify CUDN status.vrfName is set (Linux VRF device name)
 
@@ -275,7 +276,7 @@
 ##### Steps
 
 1. Verify CUDN `spec.network.layer2.reservedSubnets` includes fabric reserved range (REQUIRED)
-2. Verify k8s job extra_vars contains fabric_reserved_range from fabric job ConfigMap
+2. Verify `osac_job_vars.network_inputs` contains `osac.networking.subnet.reserved-ipv4-cidrs` as a JSON array scoped to the Subnet UID
 3. Deploy VirtualMachine in CUDN namespace
 4. Verify VM receives IP address via DHCP
 5. Check VM received IP from OVN DHCP (inside VM: check DHCP server IP in lease file)
@@ -286,7 +287,7 @@
 
 ##### Expected Results
 
-- CUDN `reservedSubnets` field is populated (k8s job fails if fabric_reserved_range missing from fabric job ConfigMap)
+- CUDN `reservedSubnets` contains every CIDR from the Subnet-scoped reserved IPv4 CIDR input; provisioning fails if that required contract input is missing
 - VM IP assigned by OVN-Kubernetes DHCP (not Netris DHCP)
 - VM DHCP lease shows OVN DHCP server IP (logical switch IP, not Netris SVI)
 - Netris DHCP logs show no requests from VM MAC (OVN intercepts DHCP inside logical switch)
