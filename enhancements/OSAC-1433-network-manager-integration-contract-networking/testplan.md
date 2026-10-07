@@ -3,9 +3,9 @@
 ## Overview
 
 - **Feature:** Network Manager Integration Contract
-- **Total test cases:** 11
-- **Requirements covered:** 4 of 4 functional requirements
-- **Interface changes covered:** 6 of 6
+- **Total test cases:** 13
+- **Requirements covered:** 6 of 6 functional requirements
+- **Interface changes covered:** 7 of 7
 
 ## Test Cases
 
@@ -51,15 +51,17 @@
 
 ##### Steps
 
-1. Create registrations with malformed or missing `implementationRef`, missing role-required `networkOutputs` or `networkInputs`, an unknown or duplicate contract identifier, an unknown role label, an invalid capability, or duplicate logical names within a role.
-2. Select each registration from a NetworkClass.
-3. Observe NetworkClass status and AAP job count.
+1. Create registrations with malformed or missing `implementationRef`, missing role-required `networkOutputs` or `networkInputs`, an unknown or duplicate model ID, an unknown role label, an invalid capability, or duplicate logical names within a role.
+2. Register data models with a duplicate ID, malformed JSON Schema, unsupported owner scope, or remote schema reference.
+3. Select each registration from a NetworkClass.
+4. Observe NetworkClass status and AAP job count.
 
 ##### Expected Results
 
-- OSAC identifies the ConfigMap and invalid field or contract identifier in its diagnostic.
+- OSAC identifies the ConfigMap and invalid field or model ID in its diagnostic.
+- OSAC rejects invalid model definitions and reports the offending ConfigMap and model ID.
 - An empty declaration is accepted as no outputs or inputs; an omitted required declaration is rejected.
-- The NetworkClass is not Ready while a selected registration is invalid.
+- The NetworkClass is not Ready while a selected registration or referenced model is invalid.
 - OSAC creates no AAP job for the invalid registration.
 
 #### TC-FR2-02: Validate manager capabilities and NetworkClass output
@@ -170,7 +172,7 @@
 ##### Preconditions
 
 - Fabric and Kubernetes Manager collections from different sources are installed in the AAP execution environment.
-- The Fabric registration declares VXLAN L3 VNI, VXLAN L2 VNI, and reserved IPv4 CIDR outputs; the Kubernetes registration declares those same contract identifiers as inputs.
+- The Fabric registration declares VXLAN L3 VNI, VXLAN L2 VNI, and reserved IPv4 CIDR model IDs as outputs; the Kubernetes registration declares those same IDs as inputs.
 
 ##### Steps
 
@@ -180,11 +182,11 @@
 
 ##### Expected Results
 
-- OSAC accepts the pair because each Kubernetes input identifier is declared by the Fabric Manager.
-- Both managers receive the shared resource shape; the Kubernetes Manager receives typed values from both the parent VirtualNetwork and current Subnet scopes.
+- OSAC accepts the pair because each Kubernetes input model ID is declared by the Fabric Manager.
+- Both managers receive the shared resource shape; the Kubernetes Manager receives schema-validated values from both the parent VirtualNetwork and current Subnet scopes.
 - The tenant API does not expose or require a backend selector.
 
-#### TC-FR3-02: Validate typed, resource-scoped network outputs and inputs
+#### TC-FR3-02: Validate schema-checked, owner-scoped network outputs and inputs
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
@@ -204,9 +206,9 @@
 
 ##### Expected Results
 
-- Each output document records the exact resource kind and UID for its target and contains typed values under the OSAC contract identifiers.
+- Each output document records the exact resource kind and UID for its target and contains JSON values under the registered model IDs.
 - The Fabric role can update its named output targets and cannot update another ConfigMap in the networking hub namespace.
-- OSAC validates identifier, scope, and value type, then passes only the Kubernetes Manager's declared inputs with their owner kind and UID.
+- OSAC validates model ID, owner scope, and JSON Schema, then passes only applicable Kubernetes Manager inputs with their owner kind and UID.
 - A Kubernetes Subnet operation receives both parent-VirtualNetwork and current-Subnet values when required; it does not receive unrelated Fabric outputs.
 - The Subnet becomes Ready only after both create stages succeed.
 - Delete runs Kubernetes cleanup before Fabric cleanup and supplies the same required inputs while both artifacts remain available.
@@ -254,15 +256,15 @@
 
 1. Select Netris with CUDN EVPN.
 2. Select Agentless VLAN with CUDN EVPN.
-3. Select a registration with an unknown input identifier, and one with a known identifier missing from Fabric outputs.
+3. Select a registration with an unknown input model ID, and one with a registered model ID missing from Fabric outputs.
 4. Observe readiness diagnostics and AAP job count.
 
 ##### Expected Results
 
-- Netris and CUDN EVPN are accepted when all declared inputs have matching output identifiers.
+- Netris and CUDN EVPN are accepted when all declared inputs have matching model IDs.
 - Agentless VLAN and CUDN EVPN are rejected because a VLAN ID does not satisfy either VXLAN VNI contract and Agentless has not declared the reserved CIDR output.
-- Unknown identifiers and known-but-unmatched inputs are rejected before provider dispatch.
-- Diagnostics name the two selected managers and each unsatisfied contract identifier; no AAP job starts.
+- Unknown model IDs and known-but-unmatched inputs are rejected before provider dispatch.
+- Diagnostics name the two selected managers and each unsatisfied model ID; no AAP job starts.
 
 #### TC-FR4-02: Reject work requiring an unselected or unsupported role/target
 
@@ -287,6 +289,63 @@
 - OSAC does not send that work to the Fabric Manager or another unrelated implementation.
 - No AAP job is created for the rejected work.
 
+### FR-5: Add a provider-defined data model without manager-specific OSAC code
+
+#### TC-FR5-01: Exchange a provider-defined structured model
+
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1, IC-3, IC-7 | E2E | high | automated |
+
+##### Preconditions
+
+- Generic catalog loading, schema validation, and model resolution are available.
+- A provider-defined `acme.networking.subnet.segment` model is registered with Subnet owner scope and an object schema.
+- Fabric and Kubernetes test roles can publish and consume the registered model.
+
+##### Steps
+
+1. Register the model and declare its ID in the Fabric Manager's `networkOutputs` and the Kubernetes Manager's `networkInputs`.
+2. Select both managers through NetworkClass and create a Subnet.
+3. Have Fabric publish an object that satisfies the registered schema under the Subnet UID.
+4. Observe the Kubernetes AAP input and its backend mapping.
+
+##### Expected Results
+
+- OSAC accepts the manager pair because both declare the same registered model ID.
+- The Fabric JSON value passes generic schema validation and remains owned by the Subnet UID.
+- OSAC passes that value to the Kubernetes role with the same model ID; the role maps it to its implementation's backend fields.
+- The new model and manager integration require provider catalog/manager configuration and Ansible content, with no manager-specific Go change or tenant API change.
+
+### FR-6: Validate model definitions, scope, and produced values
+
+#### TC-FR6-01: Validate profile-scoped output against its model
+
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-5, IC-7 | Integration | critical | automated |
+
+##### Preconditions
+
+- A valid model with `NetworkClass` owner scope and a JSON object schema is registered.
+- The selected managers both declare the model ID.
+- The Fabric test role can write only OSAC-provided output targets.
+
+##### Steps
+
+1. During one provisioning attempt, publish the model in its NetworkClass output target but label the artifact as owned by a VirtualNetwork UID.
+2. Observe owner-scope validation and verify that the Kubernetes job does not start.
+3. Retry with the correct NetworkClass UID but an object that violates the registered schema.
+4. Observe schema validation and verify that the Kubernetes job does not start.
+5. Retry with a schema-valid object under the NetworkClass UID and inspect the Kubernetes job's `network_inputs`.
+
+##### Expected Results
+
+- The wrong owner scope and schema-invalid value each fail in separate attempts and block Kubernetes dispatch.
+- The diagnostic identifies the model ID and NetworkClass owner UID.
+- The valid JSON value is stored under the NetworkClass UID and resolved with `resource_kind: NetworkClass`.
+- The Kubernetes role receives only the declared input and does not receive the Fabric writer credential.
+
 ## Gaps
 
 ### Requirement Coverage Gaps
@@ -301,12 +360,12 @@ All design interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 11 |
-| Critical | 7 |
-| High | 4 |
+| Total test cases | 13 |
+| Critical | 8 |
+| High | 5 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 10 |
+| Automated | 13 |
 | Manual | 0 |
-| Requirements with test cases | 4 / 4 |
-| Interface changes with test cases | 6 / 6 |
+| Requirements with test cases | 6 / 6 |
+| Interface changes with test cases | 7 / 7 |

@@ -29,13 +29,13 @@
 2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
 3. Verify ConfigMap `data.name` is `cudn_evpn` and `data.implementationRef` points to the CUDN EVPN collection role.
 4. Verify `data.capabilities` is `ipv4`.
-5. Verify `data.networkInputs` declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR contracts.
+5. Verify `data.networkInputs` declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR model IDs.
 
 ##### Expected Results
 
 - ConfigMap created with label `osac.openshift.io/network-k8s-manager: "true"`
 - The registration uses the role-specific fields defined by the Network Manager Integration Contract.
-- Capabilities reflect IPv4-only support and all three required data inputs are declared.
+- Capabilities reflect IPv4-only support and all three required model inputs are declared.
 - NetworkClass controller loads cudn_evpn as available k8s manager
 
 ### R2: Fabric-to-k8s manager data dependency
@@ -50,7 +50,7 @@
 
 - NetworkClass with fabric_manager="netris", k8s_manager="cudn_evpn"
 - VirtualNetwork created with this NetworkClass
-- Mocked Netris Fabric Manager publishing typed VNI and reserved-CIDR outputs to the OSAC-provided VirtualNetwork and Subnet targets
+- Mocked Netris Fabric Manager publishing values that pass the registered VNI and reserved-CIDR schemas to the OSAC-provided VirtualNetwork and Subnet targets
 
 ##### Steps
 
@@ -65,10 +65,10 @@
 ##### Expected Results
 
 - Fabric job completes before k8s job starts (not concurrent)
-- K8s job receives typed contract values from the parent VirtualNetwork and Subnet scopes
+- K8s job receives schema-validated model values from the parent VirtualNetwork and Subnet scopes
 - Subnet.status.conditions shows "K8sManagerWaitingForFabric" event between jobs
 
-#### TC-R2-02: Reject missing or invalid typed Fabric outputs
+#### TC-R2-02: Reject missing or schema-invalid Fabric outputs
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -77,12 +77,12 @@
 ##### Preconditions
 
 - Subnet provisioning in progress, fabric job completed
-- A resource-scoped Fabric artifact is missing a required contract identifier or has the wrong owner scope/value type
+- A resource-scoped Fabric artifact is missing a required model ID, has the wrong owner scope, or contains a value that fails the model's JSON Schema
 
 ##### Steps
 
 1. OSAC validates each resource-scoped Fabric output
-2. Validation fails because a required identifier, scope, or value is invalid
+2. Validation fails because a required model ID, owner scope, or schema assertion is invalid
 3. Observe controller emits Kubernetes event "NetworkOutputValidationFailed"
 4. Observe Subnet.status.phase = "Failed"
 5. Observe Subnet.status.conditions shows error message referencing fabric job
@@ -287,7 +287,7 @@
 
 ##### Expected Results
 
-- CUDN `reservedSubnets` contains every CIDR from the Subnet-scoped reserved IPv4 CIDR input; provisioning fails if that required contract input is missing
+- CUDN `reservedSubnets` contains every CIDR from the Subnet-scoped reserved IPv4 CIDR model input; provisioning fails if that required model value is missing
 - VM IP assigned by OVN-Kubernetes DHCP (not Netris DHCP)
 - VM DHCP lease shows OVN DHCP server IP (logical switch IP, not Netris SVI)
 - Netris DHCP logs show no requests from VM MAC (OVN intercepts DHCP inside logical switch)

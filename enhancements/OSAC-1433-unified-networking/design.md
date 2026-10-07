@@ -144,9 +144,9 @@ A **manager role** is a stable OSAC responsibility boundary. Providers may use i
 - **Fabric Manager:** connects OSAC to the provider's physical network and handles shared network resources, address allocation, inbound and outbound address translation, physical-interface attachment, and policy on physical interfaces.
 - **Kubernetes (K8s) Manager:** handles Kubernetes-side networking. When configured alongside the Fabric Manager, it creates a **VM overlay**, the software network that carries VM traffic inside a hosting cluster (the OpenShift cluster that runs the VMs), connects that overlay to the provider network, and enforces policy on VM interfaces.
 
-A **network data contract** is a stable OSAC identifier for one typed network value, its meaning, and the resource scope that owns it. Fabric Managers declare values they can produce; Kubernetes Managers declare values they need. The manager integration design defines the identifiers and their validation.
+A **network data model** gives a stable identity, meaning, owner scope, and machine-readable schema to a value one manager can produce and another can consume. Fabric Managers declare the model IDs they can produce; Kubernetes Managers declare the model IDs they need. The manager integration design defines the provider-installed model catalog and generic validation.
 
-A **manager registration** is a Kubernetes ConfigMap that identifies one implementation and role. It names the provider's collection role and declares the OSAC-defined network data outputs or inputs that the implementation can produce or requires. When both roles are selected, OSAC checks that every input declared by the Kubernetes Manager is present in the Fabric Manager's outputs. The registrations do not define operation or workload-target subsets; the [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the exact schema and validation. Matching declarations show that required data is available; both managers must still preserve the shared resource and traffic behavior.
+A **manager registration** is a Kubernetes ConfigMap that identifies one implementation and role. It names the provider's collection role and declares the network data model IDs that the implementation can produce or requires. The provider-installed model catalog defines each ID's meaning, JSON Schema, and owner scope. When both roles are selected, OSAC checks that every input declared by the Kubernetes Manager is present in the Fabric Manager's outputs. The registrations do not define operation or workload-target subsets; the [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the exact registration, schema validation, and resolution behavior. Matching declarations show that required data is available; both managers must still preserve the shared resource and traffic behavior.
 
 The **fixed dispatch contract** assigns each operation and its allowed workload targets to a manager role. Every conforming implementation supplies the complete set assigned to its role. A Fabric Manager is required for every deployment and handles shared network, address, NAT, and physical-interface operations. A deployment that supports VMs also assigns a K8s Manager to create and remove VM overlay resources for each Subnet and enforce policy on VM attachments; deployments without VMs may omit that role. The operator rejects requests when a required role is missing before starting provider work; a registered implementation missing a required task is nonconforming and its provider job fails. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the operation entry points, target sets, and results.
 
@@ -283,9 +283,11 @@ Fabric Manager or K8s Manager. Required registration fields are the role label,
 a unique `name`, a fully qualified `implementationRef`, declared
 `capabilities`, and the role-appropriate `networkOutputs` or `networkInputs`;
 `description` is optional. `implementationRef` resolves the provider
-implementation. Fabric Managers list the OSAC contract identifiers they can
-produce in `networkOutputs`; K8s Managers list the identifiers they require in
-`networkInputs`. An empty declaration means no cross-manager outputs or
+implementation. Fabric Managers list registered model IDs they can
+produce in `networkOutputs`; K8s Managers list the model IDs they require in
+`networkInputs`. OSAC resolves these IDs through the provider-installed
+network data model catalog and validates each value against its registered
+schema and owner scope. An empty declaration means no cross-manager outputs or
 requirements. The registration does not list operations or targets; the manager
 contract defines the complete required set for each role. Credentials remain
 in provider-managed AAP credentials or Secrets, not in the registration. See
@@ -309,12 +311,14 @@ data:
   networkOutputs: "osac.networking.virtual-network.vxlan-l3-vni,osac.networking.subnet.vxlan-l2-vni,osac.networking.subnet.reserved-ipv4-cidrs"
 ```
 
-The selected Kubernetes Manager lists its required contract identifiers in
-`networkInputs`. OSAC rejects the NetworkClass if any identifier is absent
+The selected Kubernetes Manager lists its required model IDs in
+`networkInputs`. OSAC rejects the NetworkClass if any ID is absent
 from the Fabric Manager's `networkOutputs`, before provider work starts. The
 [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
-defines typed VXLAN, VLAN, and reserved-IPv4-CIDR contracts. A Kubernetes
-registration can declare its inputs as follows:
+defines the catalog, schemas, owner scopes, and the initial VXLAN, VLAN, and
+reserved-IPv4-CIDR models. Providers may register additional model IDs without
+manager-specific OSAC code when they use supported owner scopes and the
+existing handoff. A Kubernetes registration can declare its inputs as follows:
 
 ```yaml
 apiVersion: v1
@@ -332,12 +336,13 @@ data:
 ```
 
 The operator validates each NetworkClass role assignment against the matching
-registration and checks declared data-contract matching whenever both roles
+registration and checks declared model-ID matching whenever both roles
 are selected. The registration resolves the implementation; the fixed manager
 contract supplies its required operations and targets. A conforming
 implementation from any source can be registered without changing tenant APIs
-or operation dispatch. Adding an OSAC operation, target type, or a new
-input/output contract requires an OSAC contract update. Legacy
+or operation dispatch. Adding a model within the supported owner scopes uses
+the generic catalog; adding an OSAC operation, target type, owner scope, or
+handoff transport requires platform support. Legacy
 implementation-strategy fields or annotations on networking resources do not
 select an implementation and must not alter fixed role dispatch.
 
@@ -1727,7 +1732,7 @@ VirtualNetworks define tenant isolation, and SecurityGroups define permitted tra
 
 Fulfillment rejects creates whose referenced resources are missing, deleting, or not ready, and rejects deletes while active dependents remain. The detailed gates and dependency tables are in [Creation Readiness Gates](#creation-readiness-gates) and [Deletion Dependency Guards](#deletion-dependency-guards). Manager failures leave resources non-ready for reconciliation; an ExternalIP allocation is accepted only after the manager result and the provider-owned address annotation pass validation.
 
-Before dispatch, OSAC validates selected manager registrations, the required Fabric Manager role, and that Fabric outputs cover every declared K8s input. An invalid selection leaves NetworkClass not Ready with a diagnostic naming the invalid field or unsatisfied contract identifier, and OSAC starts no provider job. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the registration and data-contract matching rules.
+Before dispatch, OSAC validates selected manager registrations, the required Fabric Manager role, and that Fabric outputs cover every declared K8s input. An invalid selection leaves NetworkClass not Ready with a diagnostic naming the invalid field or unsatisfied model ID, and OSAC starts no provider job. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the catalog, registration, schema validation, and model matching rules.
 
 #### Risks and Mitigations
 
@@ -1936,7 +1941,7 @@ ExternalIPAttachment exposes inbound access to supported workload endpoints. NAT
 
 **Requirements:** FR-6
 
-Provider configuration selects a Fabric Manager and, when needed, a Kubernetes Manager through NetworkClass and manager registrations. OSAC checks that the selected Fabric Manager declares every network contract required by the Kubernetes Manager; an unsatisfied input is diagnosed before provider work starts. Tenant APIs do not expose these implementation choices. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines manager onboarding and conformance.
+Provider configuration selects a Fabric Manager and, when needed, a Kubernetes Manager through NetworkClass and manager registrations. OSAC checks that the selected Fabric Manager declares every data model required by the Kubernetes Manager; an unsatisfied input is diagnosed before provider work starts. Tenant APIs do not expose these implementation choices. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines manager onboarding and conformance.
 
 ### IC-5: Provider networking control
 
@@ -2030,8 +2035,8 @@ No new standalone metrics, alerts, or tracing spans are specified. Existing reso
 The API and manager contracts in this proposal are the target. The current OSAC code has the following gaps that implementation must close; this section records them so the proposal is not mistaken for a description of already-delivered behavior:
 
 - Current networking controllers can use `k8s_manager` when `fabric_manager` is absent for some shared network operations. The target requires a Fabric Manager in every NetworkClass and routes all shared networking-resource operations to it; the K8s Manager is assigned only the VM overlay work. The current fallback behavior must be removed (see [`virtualnetwork_controller.go`](https://github.com/osac-project/osac/blob/main/osac-operator/internal/controller/virtualnetwork_controller.go), [`securitygroup_controller.go`](https://github.com/osac-project/osac/blob/main/osac-operator/internal/controller/securitygroup_controller.go), [`externalip_controller.go`](https://github.com/osac-project/osac/blob/main/osac-operator/internal/controller/externalip_controller.go), and [`externalippool_controller.go`](https://github.com/osac-project/osac/blob/main/osac-operator/internal/controller/externalippool_controller.go)).
-- Manager registrations currently select `fabric_manager` and `k8s_manager`, but the operator parser and Helm template do not yet validate `implementationRef`, `networkOutputs`, or `networkInputs`. The target contract matches declared network inputs and outputs, validates requests against the fixed role and target matrix, and defines resource-scoped artifacts plus common AAP inputs and results in the [Network Manager Integration Contract Design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md). See [`networkmanager/types.go`](https://github.com/osac-project/osac/blob/main/osac-operator/pkg/networkmanager/types.go) and [`network-managers.yaml`](https://github.com/osac-project/osac/blob/main/osac-operator/charts/operator/templates/network-managers.yaml).
-- Current Subnet creation sequences Fabric work before Kubernetes overlay work and uses a flat output handoff. The target contract replaces that handoff with typed outputs stored under their owning VirtualNetwork and Subnet UIDs, resolves only the Kubernetes Manager's declared inputs, and requires consumer cleanup before an output is removed; current teardown invokes both roles independently. See the [Network Manager Integration Contract Design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
+- Manager registrations currently select `fabric_manager` and `k8s_manager`, but the operator parser and Helm template do not yet validate `implementationRef`, `networkOutputs`, or `networkInputs`. The target contract loads and validates provider-installed model definitions, matches declared network inputs and outputs, validates values against registered schemas, validates requests against the fixed role and target matrix, and defines owner-scoped artifacts plus common AAP inputs and results in the [Network Manager Integration Contract Design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md). See [`networkmanager/types.go`](https://github.com/osac-project/osac/blob/main/osac-operator/pkg/networkmanager/types.go) and [`network-managers.yaml`](https://github.com/osac-project/osac/blob/main/osac-operator/charts/operator/templates/network-managers.yaml).
+- Current Subnet creation sequences Fabric work before Kubernetes overlay work and uses a flat output handoff. The target contract replaces that handoff with schema-validated outputs stored under their registered owner UIDs, resolves only applicable Kubernetes Manager inputs, and requires consumer cleanup before an output is removed; current teardown invokes both roles independently. See the [Network Manager Integration Contract Design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
 - Current networking service protos expose Update RPCs, and some resources allow metadata updates. This proposal's create/read/delete contract rejects resource specification and metadata updates. Current Cluster attachment validation also documents that an ExternalIPAttachment may be created before the Cluster is Ready; the target contract requires the target and selected endpoint to be Ready before the create request is accepted.
 - Current `VirtualNetworkSpec` does not carry the proposed immutable `network_class` reference. The target schema adds it so the VirtualNetwork's selected provider profile is explicit. The current code must add and validate the reference and keep the role implementations hidden from tenant selection.
 - Current manager capability handling accepts IPv6 and dual-stack declarations, while this design requires IPv4-only registration and output. The disabled ExternalIP path currently reports a placeholder address (`0.0.0.0`) as allocated and ready; the target requires an empty address and Pending state until a real provider allocation exists. See [`externalip_controller.go`](https://github.com/osac-project/osac/blob/main/osac-operator/internal/controller/externalip_controller.go).
@@ -2101,7 +2106,7 @@ No additional infrastructure beyond existing OSAC components and managers.
 - **FR-2, FR-3, FR-6, IC-4:** validate registration identity, role,
   `implementationRef`, capabilities, `networkOutputs`, and `networkInputs`; verify
   every selected manager declares IPv4, reject missing IPv4, unsupported
-  IPv6/dual-stack declarations, unknown or duplicate contract IDs, and check the
+  IPv6/dual-stack declarations, unknown or duplicate model IDs, and check the
   read-only capability output. Verify that every NetworkClass requires a
   Fabric Manager, every declared Kubernetes input is provided by the selected
   Fabric Manager, and unmatched inputs or missing roles are rejected before
@@ -2137,7 +2142,7 @@ No additional infrastructure beyond existing OSAC components and managers.
   and consistent tenant-visible behavior across implementations.
 - In a deployment with VM workloads, create and delete a VirtualNetwork and
   Subnet; verify Fabric Manager segment work and K8s Manager overlay work on
-  each applicable hosting cluster, including typed Fabric-to-Kubernetes inputs scoped to the parent VirtualNetwork
+  each applicable hosting cluster, including schema-validated Fabric-to-Kubernetes model inputs scoped to the parent VirtualNetwork
   and Subnet, and output retention through reverse cleanup order. In a deployment without VM
   workloads, verify no K8s overlay operation is submitted. Verify that a
   NetworkClass without a Fabric Manager is rejected and no networking-resource
@@ -2239,10 +2244,10 @@ explicitly specifies them.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (94 behind origin/main, dirty)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":94,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

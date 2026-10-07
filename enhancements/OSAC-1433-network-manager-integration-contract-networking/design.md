@@ -34,7 +34,7 @@ superseded-by:
 - [3. Motivation / Background](#3-motivation--background)
 - [4. Design](#4-design)
   - [4.1 Architecture and Manager Roles](#41-architecture-and-manager-roles)
-  - [4.2 Network Data Contracts and Manager Registration](#42-network-data-contracts-and-manager-registration)
+  - [4.2 Network Data Model Catalog and Manager Registration](#42-network-data-model-catalog-and-manager-registration)
   - [4.3 API and Operation Contract](#43-api-and-operation-contract)
     - [Resource-scoped network outputs and inputs](#resource-scoped-network-outputs-and-inputs)
     - [Common AAP input](#common-aap-input)
@@ -57,17 +57,17 @@ superseded-by:
 
 ## 1. Overview
 
-A **Fabric Manager** is the provider-selected implementation that configures the provider's physical network fabric for OSAC. A **Kubernetes Manager** is the provider-selected implementation that connects Kubernetes-hosted workloads to that fabric. A **NetworkClass** is the provider-managed OSAC resource that selects one manager for each configured role. A **manager registration** is the role-labelled Kubernetes ConfigMap through which OSAC discovers an implementation. A **network data contract** is an OSAC-defined identifier for a typed network value, its meaning, and the networking resource that owns it; Fabric Managers publish these values and Kubernetes Managers declare the values they need. Every networking resource is infrastructure-agnostic: it keeps the same meaning for virtual machine (VM), managed-cluster, and bare-metal workloads. Every manager role is backend-agnostic: any implementation that fulfills this contract can provide its assigned behavior. The [Unified Networking Design](../OSAC-1433-unified-networking/design.md) defines the shared resource semantics.
+A **Fabric Manager** is the provider-selected implementation that configures the provider's physical network fabric for OSAC. A **Kubernetes Manager** is the provider-selected implementation that connects Kubernetes-hosted workloads to that fabric. A **NetworkClass** is the provider-managed OSAC resource that selects one manager for each configured role. A **manager registration** is the role-labelled Kubernetes ConfigMap through which OSAC discovers an implementation. A **network data model** gives a stable identity, meaning, owner scope, and machine-readable schema to a value one manager produces and another may consume. Fabric Managers publish model values and Kubernetes Managers declare the model values they need. Every networking resource is infrastructure-agnostic: it keeps the same meaning for virtual machine (VM), managed-cluster, and bare-metal workloads. Every manager role is backend-agnostic: any implementation that fulfills this contract can provide its assigned behavior. The [Unified Networking Design](../OSAC-1433-unified-networking/design.md) defines the shared resource semantics.
 
-This design defines source-neutral manager registration, typed network data contracts, the Ansible Automation Platform (AAP) task interface, and the OSAC-owned exchange between managers. A Fabric Manager publishes only the declared outputs needed by a selected Kubernetes Manager; OSAC validates and passes matching values at the resource scope that owns them. OSAC coordinates both roles, and one manager does not call another directly. Once OSAC implements the generic contract mechanism, onboarding another conforming implementation requires registration and Ansible content, with no implementation-specific Go code. See the [PRD](prd.md) for goals and user outcomes.
+This design defines source-neutral manager registration, the network data model catalog, the Ansible Automation Platform (AAP) task interface, and the OSAC-owned exchange between managers. A Fabric Manager publishes only the declared model values needed by a selected Kubernetes Manager; OSAC validates schemas and owner scopes before passing matching values to the consumer. OSAC coordinates both roles, and one manager does not call another directly. Once OSAC implements the generic catalog and manager contract, onboarding another conforming implementation requires model/manager registrations and Ansible content, with no implementation-specific Go code. See the [PRD](prd.md) for goals and user outcomes.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- Specify the complete implementation contract for each manager role, including registration, network data contracts, operations, task inputs, results, and retries.
+- Specify the complete implementation contract for each manager role, including registration, the network data model catalog, operations, task inputs, results, and retries.
 - Let OSAC validate selected manager combinations by matching the Kubernetes Manager's declared network inputs to outputs declared by the Fabric Manager.
-- Pass only the required, typed network values through a stable OSAC-owned interface with resource scope and lifetime.
+- Pass only the required, schema-validated JSON values through a stable OSAC-owned interface with owner scope and lifetime.
 - Allow a conforming implementation from any source to use the same tenant networking application programming interface (API) and OSAC dispatch behavior.
 - Keep future manager onboarding within registration and Ansible content after generic OSAC contract support is implemented.
 
@@ -81,7 +81,7 @@ This design defines source-neutral manager registration, typed network data cont
 
 ## 3. Motivation / Background
 
-The operator discovers managers from Kubernetes ConfigMaps and dispatches provider work through Ansible Automation Platform (AAP). The current manager registration parser does not implement the proposed `implementationRef`, `networkOutputs`, or `networkInputs` declarations. The target contract introduces typed, resource-scoped output artifacts and an input resolver so selected managers can share only the network values required by their integration. Current OSAC code does not yet enforce that generic contract; the implementation work must add it. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/pkg/dispatcher/dispatch.go; osac-operator/internal/controller/subnet_controller.go]
+The operator discovers managers from Kubernetes ConfigMaps and dispatches provider work through Ansible Automation Platform (AAP). The current manager registration parser does not implement the proposed `implementationRef`, `networkOutputs`, or `networkInputs` declarations. The target contract introduces a provider-installed model catalog, schema-validated owner-scoped output artifacts, and an input resolver so selected managers can share only the network values required by their integration. Current OSAC code does not yet enforce that generic contract; the implementation work must add it. [Codebase: osac-operator/pkg/networkmanager/types.go; osac-operator/pkg/dispatcher/dispatch.go; osac-operator/internal/controller/subnet_controller.go]
 
 A provider must be able to declare the network data each implementation produces or needs, and OSAC must reject a selected combination when a required input is unavailable. The declarations establish a data boundary; they do not replace conformance to the shared networking behavior. Managers remain separate implementations. [User]
 
@@ -97,18 +97,60 @@ The OSAC operator resolves the registrations selected by NetworkClass, validates
 
 Every networking resource is infrastructure-agnostic: it retains the same meaning for virtual machines, managed clusters, and bare-metal servers. Every manager role is backend-agnostic: any implementation that fulfills its assigned contract can provide that behavior. The [Unified Networking Design](../OSAC-1433-unified-networking/design.md) defines tenant resource semantics; this design defines the provider integration contract.
 
-### 4.2 Network Data Contracts and Manager Registration
+### 4.2 Network Data Model Catalog and Manager Registration
 
-Contract identifiers are stable across manager implementations; the payload value carries no vendor-specific schema. The current identifiers and their exact value shapes are:
+A **network data model** defines one reusable value exchanged between manager roles. Each model has a stable `id`, a human-readable description of its meaning, one `ownerScope`, and a JSON Schema that describes valid values. The model ID identifies both the data's meaning and its schema contract; matching JSON types alone do not make two models interchangeable. For example, a VLAN ID and a VXLAN VNI are different models even when both are represented as integers.
 
-| Contract identifier | Owning resource | Value type and meaning |
+The `ownerScope` identifies the single OSAC resource that owns each value. OSAC stores one value for each model ID and owner UID; a JSON array or object represents a value with multiple members. `NetworkClass` scope means a value is shared by resources using that provider profile; resource scope means each instance of that resource kind owns its own value. OSAC resolves values only from the operation resource and its available networking context. A model whose owner is not present in that context is not applicable to that operation. New resource kinds and operation contexts still require OSAC API and lifecycle support.
+
+OSAC reads a **network data model catalog** from provider-installed ConfigMaps in the operator namespace. Each ConfigMap registers one model with the `osac.openshift.io/network-data-model: "true"` label and these keys. The operator watches catalog changes, reloads definitions, and revalidates affected manager registrations and NetworkClasses before dispatch:
+
+| Key | Required | Meaning |
 |---|---|---|
-| `osac.networking.virtual-network.vxlan-l3-vni` | `VirtualNetwork` | Integer VXLAN Network Identifier (VNI), from 1 through 16,777,215, identifying the VirtualNetwork's Layer 3 routing domain. It may be allocated lazily during the first Subnet operation, but remains owned by the VirtualNetwork. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
-| `osac.networking.subnet.vxlan-l2-vni` | `Subnet` | Integer VNI, from 1 through 16,777,215, identifying that Subnet's VXLAN Layer 2 segment. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
-| `osac.networking.subnet.vlan-id` | `Subnet` | Integer IEEE 802.1Q VLAN identifier, from 1 through 4094, identifying that Subnet's VLAN segment. [RFC 2674](https://www.rfc-editor.org/rfc/rfc2674.html) |
-| `osac.networking.subnet.reserved-ipv4-cidrs` | `Subnet` | JSON array, possibly empty, of canonical IPv4 CIDR strings reserved by the fabric within the Subnet. OSAC parses each prefix and checks that it lies within the Subnet CIDR. An overlay IP address manager must exclude every listed range from workload allocation. |
+| `id` | Yes | Stable, unique within the OSAC installation's network data model catalog, lowercase, dot-separated model ID. Use a provider-controlled namespace; `osac.` is reserved for models shipped by OSAC. |
+| `description` | Yes | Human-readable meaning and intended use of the value. |
+| `ownerScope` | Yes | One currently supported data owner: `NetworkClass`, `VirtualNetwork`, or `Subnet`. Adding another owner kind requires OSAC resource-context support. |
+| `schema.json` | Yes | JSON Schema Draft 2020-12 for the JSON value. Local schema references may be used; remote references and unknown schema vocabularies are rejected. |
 
-A VXLAN VNI and a VLAN ID are different contract values. A manager that consumes a VXLAN VNI cannot satisfy that input with a VLAN ID. Adding a contract identifier or changing its scope, type, or meaning requires an OSAC contract update and conformance update.
+The model identity, meaning, owner scope, and schema are immutable once published. A change to meaning, scope, or incompatible value shape uses a new ID. Manager registrations do not add a `contractVersion` field. A schema may describe any JSON value: null, boolean, number, string, array, or object. Data exchanged through this interface must be JSON-serializable and fit the existing ConfigMap and AAP payload limits; binary data and credentials use their existing separate channels.
+
+For example, this provider-defined model carries an object with two fields. It requires no OSAC-specific Go type or manager-name entry:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: network-data-model-acme-subnet-segment
+  namespace: osac
+  labels:
+    osac.openshift.io/network-data-model: "true"
+data:
+  id: acme.networking.subnet.segment
+  description: Provider segment identity consumed by a Kubernetes Manager.
+  ownerScope: Subnet
+  schema.json: |
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "object",
+      "properties": {
+        "fabric": {"type": "string", "minLength": 1},
+        "segment": {"type": "integer", "minimum": 1}
+      },
+      "required": ["fabric", "segment"],
+      "additionalProperties": false
+    }
+```
+
+OSAC validates catalog IDs, owner scopes, and schemas when loading the catalog. Duplicate IDs, invalid schemas, unsupported schema dialects or vocabularies, remote references, or unsupported owner scopes make that ID invalid and produce an administrative diagnostic; a manager that references it cannot be selected. The OSAC distribution supplies the common networking models below through the same catalog mechanism; their registered schemas enforce the value shapes and ranges in the table. Providers may add models under their own namespace.
+
+| Model ID | Owner scope | JSON Schema assertions | Meaning and additional conformance |
+|---|---|---|---|
+| `osac.networking.virtual-network.vxlan-l3-vni` | `VirtualNetwork` | Integer from 1 through 16,777,215. | Identifies the VirtualNetwork Layer 3 VXLAN domain. It may be allocated during the first Subnet operation but remains owned by the VirtualNetwork. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
+| `osac.networking.subnet.vxlan-l2-vni` | `Subnet` | Integer from 1 through 16,777,215. | Identifies the Subnet's VXLAN Layer 2 segment. [RFC 7348](https://www.rfc-editor.org/rfc/rfc7348.html) |
+| `osac.networking.subnet.vlan-id` | `Subnet` | Integer from 1 through 4094. | Identifies the Subnet's IEEE 802.1Q VLAN segment. [RFC 2674](https://www.rfc-editor.org/rfc/rfc2674.html) |
+| `osac.networking.subnet.reserved-ipv4-cidrs` | `Subnet` | JSON array, possibly empty, whose items are strings. | Each value is an IPv4 CIDR reserved by the fabric and contained within the Subnet. Managers validate this resource-relative meaning; an overlay IP address manager excludes every listed range from workload allocation. |
+
+The registered JSON Schema validates JSON structure, types, and any constraints expressible in that schema. It does not prove that a manager configured its backend correctly or that a value satisfies a relationship with other OSAC resources unless the relationship is encoded in a generic OSAC rule. Managers remain responsible for resource-relative semantics, and conformance verifies that they honor the model description and shared networking behavior.
 
 A **manager registration** is a role-labelled Kubernetes ConfigMap in the operator namespace. Its role label identifies a Fabric Manager or Kubernetes Manager. `data.name` is the unique logical name selected by NetworkClass; `implementationRef` names the Ansible collection role AAP invokes. The logical name and implementation reference are independent.
 
@@ -120,11 +162,11 @@ The registration fields are:
 | `name` | Yes | Unique logical name within the role, selected by NetworkClass. |
 | `implementationRef` | Yes | Fully qualified Ansible collection role name, such as `acme.networking.fabric_manager`; it must be installed in the AAP execution environment. |
 | `capabilities` | Yes | Comma-separated values from the OSAC-defined vocabulary. This proposal accepts exactly `ipv4`; missing `ipv4`, `ipv6`, `dualStack`, and unknown values are rejected. |
-| `networkOutputs` | Yes on Fabric Manager registrations | Comma-separated OSAC contract identifiers this Fabric Manager can produce. An empty string means it publishes none. |
-| `networkInputs` | Yes on Kubernetes Manager registrations | Comma-separated OSAC contract identifiers this Kubernetes Manager requires for its assigned operations. OSAC supplies every declared input with its owner kind and UID; an empty string means the manager requires no Fabric-produced values. |
+| `networkOutputs` | Yes on Fabric Manager registrations | Comma-separated IDs from the network data model catalog that this Fabric Manager can produce. An empty string means it publishes none. |
+| `networkInputs` | Yes on Kubernetes Manager registrations | Comma-separated IDs from the network data model catalog that this Kubernetes Manager requires whenever the model owner is present for one of its assigned operations. OSAC supplies applicable values with their owner kind and UID; an empty string means the manager requires no Fabric-produced values. |
 | `description` | No | Human-readable description for provider administration. |
 
-OSAC rejects missing declaration fields, unknown or duplicate contract identifiers, and malformed comma-separated values. When NetworkClass selects both roles, every identifier in the Kubernetes Manager's `networkInputs` must also appear in the Fabric Manager's `networkOutputs`. The Fabric Manager may publish additional declared outputs. This check establishes that the selected implementation advertises the required data; it does not prove that either manager preserves the shared VirtualNetwork L3, Subnet L2, attachment, or SecurityGroup behavior. Each implementation and the selected path must also pass conformance.
+OSAC rejects missing declaration fields, unknown or duplicate model IDs, and malformed comma-separated values. When NetworkClass selects both roles, every model ID in the Kubernetes Manager's `networkInputs` must also appear in the Fabric Manager's `networkOutputs`. OSAC compares the model ID, not just the JSON shape, because a model's meaning and scope are part of its contract. The Fabric Manager may declare additional outputs. A matching declaration establishes that the selected implementation advertises the required data; it does not prove that either manager preserves the shared VirtualNetwork L3, Subnet L2, attachment, or SecurityGroup behavior. Each implementation and the selected path must also pass conformance.
 
 For example, Netris can declare the following outputs and CUDN EVPN the matching inputs. The values are scoped to their owner resources; a Subnet operation can produce both a parent-VirtualNetwork output and a Subnet output.
 
@@ -135,7 +177,11 @@ For example, Netris can declare the following outputs and CUDN EVPN the matching
 | Fabric `agentless_net` | `networkOutputs: "osac.networking.subnet.vlan-id"` |
 | Future VLAN LocalNet manager | `networkInputs: "osac.networking.subnet.vlan-id"` |
 
-The Agentless VLAN to CUDN EVPN pair is rejected because CUDN's required VXLAN VNI contracts and reserved IPv4 CIDR contract are absent from Agentless' declared outputs. A future LocalNet manager consuming the VLAN contract is only an illustration; this does not claim LocalNet support in the current CUDN proposal. OSAC does not contain a manager-name compatibility table.
+The Agentless VLAN to CUDN EVPN pair is rejected because CUDN's required VXLAN VNI models and reserved IPv4 CIDR model are absent from Agentless' declared outputs. A future LocalNet manager consuming the VLAN model is only an illustration; this does not claim LocalNet support in the current CUDN proposal. OSAC does not contain a manager-name compatibility table.
+
+A provider-defined model is connected in the same way. The Fabric Manager lists `acme.networking.subnet.segment` in `networkOutputs`, and the Kubernetes Manager lists that same ID in `networkInputs`. OSAC places the value in an output artifact as `model_id` plus a JSON `value`, validates it against the model schema, and passes the matching entry to the consumer. The consumer's Ansible role interprets the documented fields and maps them to its backend API. OSAC does not need a Go type or branch for this model; the provider still supplies both managers' Ansible behavior and conformance evidence.
+
+The Fabric Manager may declare outputs that a selected Kubernetes Manager does not consume. OSAC does not request or pass those values in that profile's data handoff. Its `network_output_targets` contain only matched input model IDs that apply to the operation context and do not already have a valid owner-scoped value.
 
 A Fabric registration has this shape:
 
@@ -173,7 +219,7 @@ This contract does not change the tenant-facing networking API. It defines the m
 
 #### Resource-scoped network outputs and inputs
 
-A Fabric Manager publishes its declared values through a durable, OSAC-owned ConfigMap in the networking hub namespace. OSAC creates each target ConfigMap before dispatch and supplies `network_output_targets`; each target identifies the owning resource kind and UID, the namespace, the OSAC-generated ConfigMap name, and the contract identifiers required at that scope for the operation. There is one output artifact per owner resource UID, not one per manager pair or operation. The Fabric task writes the JSON document only to the targets OSAC provides and does not change tenant resource status.
+A Fabric Manager publishes its declared values through a durable, OSAC-owned ConfigMap in the networking hub namespace. OSAC creates each target ConfigMap before dispatch and supplies `network_output_targets`; each target identifies the owning resource kind and UID, the namespace, the OSAC-generated ConfigMap name, and the model IDs required at that scope for the operation. OSAC derives those IDs from the selected Kubernetes Manager's `networkInputs`, the model owner scopes available in the operation context, and values not already published. Thus a provider-defined model uses the same target generation and validation path as a model shipped by OSAC. There is one output artifact per owner resource UID, not one per manager pair or operation. The Fabric task writes the JSON document only to the targets OSAC provides and does not change tenant resource status.
 
 ```yaml
 apiVersion: v1
@@ -187,38 +233,40 @@ data:
       "resource_kind": "Subnet",
       "resource_uid": "<subnet-uid>",
       "outputs": [
-        {"contract_id": "osac.networking.subnet.vxlan-l2-vni", "value": 40120},
-        {"contract_id": "osac.networking.subnet.reserved-ipv4-cidrs", "value": ["192.0.2.0/28", "192.0.2.32/27"]}
+        {"model_id": "osac.networking.subnet.vxlan-l2-vni", "value": 40120},
+        {"model_id": "osac.networking.subnet.reserved-ipv4-cidrs", "value": ["192.0.2.0/28", "192.0.2.32/27"]}
       ]
     }
 ```
 
-The resource kind and UID in the document must match the `network_output_targets` entry. Each output identifier must be declared by the Fabric Manager and permitted for that target scope. For a specific operation, `contract_ids` lists the values required for that resource target; the Fabric task must publish each listed value. OSAC validates the JSON shape, identifier, resource scope, and value type/range after the Fabric job succeeds. Unknown, duplicate, missing-required, wrong-scope, or malformed outputs fail the operation and prevent the Kubernetes stage from starting. The producer may publish one parent-VirtualNetwork artifact and one Subnet artifact during `subnet.create`; a VNI allocated during this operation is still stored under the VirtualNetwork UID when the VirtualNetwork owns it.
+The resource kind and UID in the document must match the `network_output_targets` entry. Each `model_id` must be declared by the Fabric Manager, listed in that target's `model_ids`, and have an `ownerScope` matching the target resource kind. For a specific operation, `model_ids` lists the values required for that resource target; the Fabric task must publish each listed value. OSAC validates the JSON structure, model ID, owner scope, and value against the registered JSON Schema after the Fabric job succeeds. Unknown, duplicate, missing-required, wrong-scope, or schema-invalid outputs fail the operation and prevent the Kubernetes stage from starting. The producer may publish one parent-VirtualNetwork artifact and one Subnet artifact during `subnet.create`; a VNI allocated during this operation is still stored under the VirtualNetwork UID when the VirtualNetwork owns it.
 
-Before dispatching a Kubernetes operation, OSAC resolves every identifier in the selected manager's `networkInputs` from the operation resource and its relevant parents. It fails before dispatch if any declared value is missing or invalid, then passes the normalized typed entries inside `osac_job_vars.network_inputs`. Subnet operations receive values owned by both the Subnet and parent VirtualNetwork; workload-attachment operations resolve them through the selected Subnet. The Fabric Manager's implementation details and credentials are not passed to the Kubernetes Manager. For example:
+OSAC serializes writes to the same owner artifact. After validation, it merges newly requested model values by ID and preserves other valid entries already stored for that owner. A manager cannot replace a value for the same model ID and owner UID during that owner's lifetime. Retries and later operations reuse the stored value; deleting an owner removes its values only after dependent cleanup succeeds.
+
+Before dispatching a Kubernetes operation, OSAC resolves the selected manager's `networkInputs` from the operation resource and its available context. An input applies when its model's `ownerScope` is represented in that context; OSAC requires exactly one valid value for each applicable owner and fails before dispatch if a value is missing or invalid. It then passes the normalized entries inside `osac_job_vars.network_inputs`. A Subnet operation may receive values owned by the Subnet, its parent VirtualNetwork, and its NetworkClass. A workload-attachment operation may receive values owned by the attached Subnet, its parent VirtualNetwork, and the NetworkClass. The Fabric Manager's implementation details and credentials are not passed to the Kubernetes Manager. For example:
 
 ```yaml
 osac_job_vars:
   network_inputs:
-    - contract_id: osac.networking.virtual-network.vxlan-l3-vni
+    - model_id: osac.networking.virtual-network.vxlan-l3-vni
       resource_kind: VirtualNetwork
       resource_uid: "<virtual-network-uid>"
       value: 4020
-    - contract_id: osac.networking.subnet.vxlan-l2-vni
+    - model_id: osac.networking.subnet.vxlan-l2-vni
       resource_kind: Subnet
       resource_uid: "<subnet-uid>"
       value: 40120
-    - contract_id: osac.networking.subnet.reserved-ipv4-cidrs
+    - model_id: osac.networking.subnet.reserved-ipv4-cidrs
       resource_kind: Subnet
       resource_uid: "<subnet-uid>"
       value: ["192.0.2.0/28", "192.0.2.32/27"]
 ```
 
-The Kubernetes Manager receives only values whose identifiers it declared. It validates and translates them into its native API fields; it must not allocate a replacement value or infer one contract from another. Output artifacts remain available while any dependent Kubernetes create or delete operation may consume them. Subnet-scoped output is removed after Kubernetes cleanup and Fabric Subnet deletion succeed. VirtualNetwork-scoped output survives deletion of individual Subnets and is removed only when the VirtualNetwork is deleted after its dependent Subnets.
+The Kubernetes Manager receives only values whose model IDs it declared and whose owner scopes apply to the operation. It validates and translates them into its native API fields; it must not allocate a replacement value or infer one model from another. Output artifacts remain available while any dependent create or delete operation may consume them. An artifact is removed only after its owner is deleted and all dependent manager cleanup that could consume it has succeeded. This applies to NetworkClass-scoped profile data as well as resource-scoped values.
 
 #### Common AAP input
 
-OSAC passes a common job envelope in the `osac_job_vars` variable. The task-specific resource is the OSAC resource being reconciled. The manager reference selects the collection role, while the operation names one fixed task from the operation table. `manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a collection cannot choose or override it. Fabric tasks receive `network_output_targets` when the operation publishes declared outputs. Kubernetes tasks receive every resolved identifier from their registration's `networkInputs`; that list is empty when the selected manager declares no cross-manager data dependency.
+OSAC passes a common job envelope in the `osac_job_vars` variable. The task-specific resource is the OSAC resource being reconciled. The manager reference selects the collection role, while the operation names one fixed task from the operation table. `manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a collection cannot choose or override it. Fabric tasks receive `network_output_targets` for required, not-yet-published model values whose owners are available in the operation context. Kubernetes tasks receive applicable values for model IDs in their registration's `networkInputs`; that list is empty when the selected manager declares no cross-manager data dependency or no declared owner scope applies to the operation.
 
 ```yaml
 osac_job_vars:
@@ -234,7 +282,7 @@ osac_job_vars:
     spec: {}
 ```
 
-For example, the Fabric `subnet.create` task receives these output targets, while a paired Kubernetes task receives the `network_inputs` entries shown above:
+For example, when CUDN declares the three model IDs below as inputs and none of these values has already been published, the Fabric `subnet.create` task receives these output targets. OSAC computes the target list from the model catalog and operation context; the manager registration does not hard-code an operation-to-model mapping. A paired Kubernetes task receives the `network_inputs` entries shown above:
 
 ```yaml
 osac_job_vars:
@@ -244,12 +292,12 @@ osac_job_vars:
       resource_kind: VirtualNetwork
       resource_uid: "<virtual-network-uid>"
       config_map_name: network-output-<virtual-network-uid>
-      contract_ids: [osac.networking.virtual-network.vxlan-l3-vni]
+      model_ids: [osac.networking.virtual-network.vxlan-l3-vni]
     - namespace: "<networking-hub-namespace>"
       resource_kind: Subnet
       resource_uid: "<subnet-uid>"
       config_map_name: network-output-<subnet-uid>
-      contract_ids:
+      model_ids:
         - osac.networking.subnet.vxlan-l2-vni
         - osac.networking.subnet.reserved-ipv4-cidrs
 ```
@@ -362,7 +410,7 @@ Ansible supports role inclusion by a variable role name and the `tasks_from` sel
 
 ### 4.4 Subnet Orchestration and Network Data Lifecycle
 
-For create, OSAC runs Fabric first, validates all declared output artifacts, then resolves the exact values required by the selected Kubernetes Manager. A Subnet operation may publish the parent's VirtualNetwork output even when that value is first allocated while creating the Subnet. During delete, OSAC keeps those outputs available for Kubernetes cleanup and invokes Fabric deletion only after that cleanup succeeds. The VirtualNetwork output remains until the VirtualNetwork and all child Subnets are deleted.
+For create, OSAC runs Fabric first, validates each requested output against its registered model, then resolves the exact values required by the selected Kubernetes Manager. A Subnet operation may publish the parent's VirtualNetwork or NetworkClass output even when that value is first allocated while creating the Subnet. During delete, OSAC keeps those outputs available for Kubernetes cleanup and invokes Fabric deletion only after that cleanup succeeds. Each value remains until its owner and all dependent resources that can consume it have been deleted.
 
 ```mermaid
 sequenceDiagram
@@ -376,10 +424,10 @@ sequenceDiagram
     Operator->>Operator: Match K8s networkInputs against Fabric networkOutputs
     Operator->>AAP: subnet.create for Fabric with resource-scoped output targets
     AAP->>Fabric: create_subnet(resource, network_output_targets)
-    Fabric->>Fabric: Publish typed outputs under VirtualNetwork and Subnet UIDs
+    Fabric->>Fabric: Publish schema-valid outputs under owner UIDs
     AAP-->>Operator: Successful Fabric job
-    Operator->>Operator: Validate output identifiers, scopes, and value types
-    Operator->>Operator: Resolve only K8s-declared inputs from parent and current resources
+    Operator->>Operator: Validate model IDs, owner scopes, and JSON Schemas
+    Operator->>Operator: Resolve applicable K8s-declared inputs from operation context
     Operator->>AAP: subnet.create for Kubernetes with network_inputs
     AAP->>K8s: create_subnet(resource, network_inputs)
     K8s-->>AAP: Converged result
@@ -395,7 +443,7 @@ sequenceDiagram
     AAP->>Fabric: delete_subnet(resource)
     Fabric-->>AAP: Removed result
     AAP-->>Operator: Successful Fabric job
-    Operator->>Operator: Remove Subnet artifact; retain VirtualNetwork artifact
+    Operator->>Operator: Remove owner artifacts after dependent cleanup
     Operator->>Operator: Complete Subnet deletion
 ```
 
@@ -432,22 +480,22 @@ BaremetalInstance and CaaS worker attachments to the Fabric Manager. A failed
 apply leaves the workload non-ready with no workload traffic; a failed delete
 retains its finalizer and blocks teardown until retry succeeds.
 
-The current OSAC implementation does not yet provide the proposed generic resource-scoped output resolver and typed input envelope. Generic lifecycle support must validate Fabric output artifacts before Kubernetes dispatch, preserve each scope through retries, and order Kubernetes cleanup before Fabric removes Subnet outputs. Each manager task remains independently implemented and idempotent; OSAC owns ordering and retries.
+The current OSAC implementation does not yet provide the proposed generic model catalog, schema validator, owner-scoped output resolver, or input envelope. Generic lifecycle support must validate Fabric output artifacts against registered schemas before Kubernetes dispatch, preserve each scope through retries, and order consumer cleanup before the owner removes its outputs. Each manager task remains independently implemented and idempotent; OSAC owns matching, validation, ordering, and retries.
 
 ### 4.5 Scalability and Performance
 
-Manager registration declarations contain small lists of OSAC contract identifiers and are read during manager discovery or NetworkClass validation. The handoff uses small resource-scoped ConfigMaps and requires no new service or backend database. Subnet provisioning adds an ordered AAP stage when a Kubernetes Manager is configured, so readiness waits for both jobs to finish.
+Manager registration declarations contain small lists of catalog model IDs and are read during manager discovery or NetworkClass validation. Model schemas are loaded once and reused to validate runtime values. The handoff uses small owner-scoped ConfigMaps and requires no new service or backend database. Subnet provisioning adds an ordered AAP stage when a Kubernetes Manager is configured, so readiness waits for both jobs to finish.
 
 ### 4.6 Security Considerations
 
-Manager registration ConfigMaps contain references and contract identifiers, not credentials. Kubernetes role-based access control (RBAC) protects registrations in the operator namespace and output artifacts in the networking hub namespace. A Fabric AAP job receives a separate, job-scoped credential that permits updates only to the output ConfigMaps pre-created for that operation; provider backend credentials remain separate. The output targets are generated by OSAC, and managers cannot choose another namespace, name, resource scope, or contract identifier. OSAC validates the published resource kind and UID against the target before accepting outputs. The Kubernetes Manager receives validated values, not the Fabric writer credential. Ansible job artifacts and logs must not disclose secrets. Manager tasks act only on the tenant-scoped resources OSAC passes and must preserve existing tenant and owner-reference boundaries.
+Manager and data model ConfigMaps contain references and schemas, not credentials. Kubernetes role-based access control (RBAC) protects registrations in the operator namespace and output artifacts in the networking hub namespace. A Fabric AAP job receives a separate, job-scoped credential that permits updates only to the output ConfigMaps pre-created for that operation; provider backend credentials remain separate. The output targets are generated by OSAC, and managers cannot choose another namespace, name, resource scope, or model ID. OSAC validates the published resource kind and UID against the target and validates each value against the registered schema before accepting outputs. The Kubernetes Manager receives validated values, not the Fabric writer credential. Model values are JSON data and must not contain credentials or secrets. Ansible job artifacts and logs must not disclose secrets. Manager tasks act only on the tenant-scoped resources OSAC passes and must preserve existing tenant and owner-reference boundaries.
 
 ### 4.7 Failure Handling and Recovery
 
 - **Missing or invalid registration:** NetworkClass validation reports the role, ConfigMap, and invalid field. OSAC does not dispatch resource work.
-- **Unmatched manager input:** NetworkClass validation reports the contract identifier required by the Kubernetes Manager but absent from the Fabric Manager's `networkOutputs`. OSAC starts no AAP job for resources using that NetworkClass.
+- **Unmatched manager input:** NetworkClass validation reports the model ID required by the Kubernetes Manager but absent from the Fabric Manager's `networkOutputs`. OSAC starts no AAP job for resources using that NetworkClass.
 - **Missing collection role or task:** AAP fails with the missing fully qualified collection role or task name. The diagnostic names the registration or task.
-- **Missing or malformed Fabric outputs:** A missing artifact, unknown or duplicate identifier, wrong resource scope, or value that fails its contract type/range validation prevents the Kubernetes stage from starting. OSAC reports the invalid identifier and owner UID and retries/fails through the existing provisioning lifecycle.
+- **Missing or malformed Fabric outputs:** A missing artifact, unknown or duplicate model ID, wrong owner scope, or value that fails the registered JSON Schema prevents the Kubernetes stage from starting. OSAC reports the invalid model ID and owner UID and retries/fails through the existing provisioning lifecycle.
 - **Kubernetes create failure after Fabric success:** OSAC retains all output artifacts and retries the Kubernetes stage using the same values. Fabric create is idempotent. The Subnet is not Ready until the Kubernetes stage succeeds.
 - **Kubernetes delete failure:** OSAC does not start Fabric deletion, so Subnet and parent-VirtualNetwork outputs remain available while Kubernetes cleanup retries.
 - **Fabric delete failure after Kubernetes detach:** OSAC retains job state and retries Fabric cleanup. The Kubernetes target is already detached; repeated Fabric deletion of absent state succeeds.
@@ -462,7 +510,7 @@ No tenant-facing RBAC changes are required. The fulfillment service continues to
 
 ### 4.9 Extensibility and Future-Proofing
 
-A new manager is onboarded by installing its collection into the AAP execution environment, registering the role with its capabilities and declared network input or output contract identifiers, and selecting it in NetworkClass. No manager-specific Go code or tenant API change is required after OSAC implements the manager contract. A new operation, workload target, capability with new behavior, network data contract identifier, contract scope/type change, or incompatible task payload changes the OSAC contract and requires platform support before an implementation can use it.
+A new manager is onboarded by installing its collection into the AAP execution environment, registering any provider-defined data models in the catalog, registering the role with its capabilities and model IDs, and selecting it in NetworkClass. After OSAC has the generic catalog loader, JSON Schema validator, owner-scope resolver, and manager contract, adding a model or manager requires provider configuration and Ansible content only; it does not require manager-specific Go changes. Adding an OSAC resource kind, operation, workload target, capability with new behavior, or data handoff transport requires platform support. A model ID, meaning, scope, and schema remain a provider-level contract and do not require a new OSAC manager integration.
 
 ### 4.10 Risks and Mitigations
 
@@ -485,9 +533,9 @@ implementations without changing workload attachment behavior.
 
 ### IC-1: Manager registration and data declarations
 
-**Requirements:** FR-1, FR-2, FR-3
+**Requirements:** FR-1, FR-2, FR-3, FR-5, FR-6
 
-Fabric and Kubernetes Manager ConfigMaps declare their outputs and required inputs using exact OSAC network contract identifiers. OSAC rejects unknown or duplicate identifiers and rejects a selected pair when a Kubernetes input is not declared by the Fabric Manager. §4.2 specifies the value contracts and registration fields.
+Fabric and Kubernetes Manager ConfigMaps declare their outputs and required inputs by model ID. OSAC resolves each ID through the registered model catalog and rejects unknown or duplicate IDs and a selected pair when a Kubernetes input is not declared by the Fabric Manager. §4.2 specifies the data models and registration fields.
 
 ### IC-2: Generic AAP task invocation
 
@@ -499,7 +547,7 @@ AAP playbooks resolve the role from the registered fully qualified `implementati
 
 **Requirements:** FR-2, FR-3, FR-4
 
-NetworkClass selection requires a Fabric Manager and checks that its declared outputs cover every input declared by a selected Kubernetes Manager. OSAC marks an invalid NetworkClass failed with a diagnostic naming unsatisfied contract identifiers, rejects it before AAP, and routes each operation only to its contract-assigned role.
+NetworkClass selection requires a Fabric Manager and checks that its declared outputs cover every input declared by a selected Kubernetes Manager. OSAC marks an invalid NetworkClass failed with a diagnostic naming unsatisfied model IDs, rejects it before AAP, and routes each operation only to its contract-assigned role.
 
 ### IC-4: Operation results and retry behavior
 
@@ -511,7 +559,7 @@ Manager tasks follow the operation, target, artifact, idempotency, and error rul
 
 **Requirements:** FR-1, FR-2, FR-3, FR-4
 
-The Fabric Manager publishes typed values under the UIDs of their owning VirtualNetwork or Subnet. OSAC validates declared identifiers, scope, and value type, then passes only the Kubernetes Manager's declared inputs on dependent operations. §4.3 defines the artifact and AAP schemas; §4.4 defines their lifetime and ordering.
+The Fabric Manager publishes JSON values under the UIDs of their registered owner resources. OSAC validates each value against its catalog schema and owner scope, then passes only applicable Kubernetes Manager inputs on dependent operations. §4.3 defines the artifact and AAP schemas; §4.4 defines their lifetime and ordering.
 
 ### IC-6: Workload attachment and SecurityGroup enforcement
 
@@ -519,11 +567,17 @@ The Fabric Manager publishes typed values under the UIDs of their owning Virtual
 
 OSAC sends the resolved workload attachment and complete SecurityGroup rules to the manager that owns its interface. The Kubernetes Manager handles ComputeInstance overlays; the Fabric Manager handles BaremetalInstance and CaaS worker interfaces. Apply and delete ordering, payload fields, stateful rule semantics, and failure behavior are specified in §4.3 and §4.4.
 
+### IC-7: Provider-installed network data model catalog
+
+**Requirements:** FR-5, FR-6
+
+Providers register stable model IDs, meanings, supported owner scopes, and JSON Schemas. OSAC validates catalog entries and runtime values through the generic model mechanism, independent of manager names or backend implementation. A provider-defined model may use any JSON value shape supported by its schema and existing OSAC resource context.
+
 ## 6. Alternatives Considered
 
 ### Keep a hard-coded manager-pair table in Go
 
-A central pair table gives OSAC direct control over every combination, but requires a Go change whenever a provider adds a manager or a new pairing. Matching exact OSAC input and output identifiers lets the generic validator assess new implementations without a vendor-specific pair table.
+A central pair table gives OSAC direct control over every combination, but requires a Go change whenever a provider adds a manager or a new pairing. Matching input and output model IDs from the provider-installed catalog lets the generic validator assess new implementations without a vendor-specific pair table.
 
 ### Let managers call each other directly
 
@@ -539,17 +593,17 @@ Name-derived collection roles match the current built-in role convention. An ind
 
 ### Pass an opaque vendor-specific artifact
 
-An opaque vendor map would let each Fabric Manager return its own schema, but the Kubernetes Manager would need vendor-specific parsing. Stable OSAC contract identifiers with fixed types and resource scopes give the managers a common interface while leaving backend-only identifiers inside the Fabric Manager.
+An opaque vendor map would let each Fabric Manager return its own schema, but the Kubernetes Manager and OSAC could not validate the data before use. Registered model IDs, JSON Schemas, and owner scopes let providers extend the data vocabulary while keeping validation generic and backend-only identifiers inside the Fabric Manager.
 
 ## 7. Observability and Monitoring
 
-No new metrics are required. Existing NetworkClass state/message, resource conditions, events, AAP job history, and reconciliation logs report registration, data-contract matching, operation, and backend errors. Diagnostics identify the manager role and logical name, operation stage, contract identifier, owner resource UID, and invalid value or scope. Logs do not include credential values.
+No new metrics are required. Existing NetworkClass state/message, resource conditions, events, AAP job history, and reconciliation logs report manager registration, model catalog validation, operation, and backend errors. Diagnostics identify the manager role and logical name, operation stage, model ID, owner resource UID, and schema or scope failure. Logs do not include credential values.
 
 ## 8. Impact and Compatibility
 
-This is the target contract; the current operator and AAP implementation do not yet enforce all of it. Generic OSAC implementation work is required to parse `implementationRef`, `networkOutputs`, and `networkInputs`; validate identifiers and matching; publish and resolve resource-scoped artifacts; invoke the registered collection role; and retain or remove outputs according to resource lifetime and consumer ordering. After that generic support ships, adding a conforming manager requires registration/configuration and Ansible content only; it does not require manager-specific Go changes.
+This is the target contract; the current operator and AAP implementation do not yet enforce all of it. Generic OSAC implementation work is required to load and validate the model catalog, parse `implementationRef`, `networkOutputs`, and `networkInputs`, validate matching, validate JSON values against registered schemas, publish and resolve owner-scoped artifacts, invoke the registered collection role, and retain or remove outputs according to resource lifetime and consumer ordering. Once this generic support ships, a provider can add a model and conforming managers through catalog and manager registrations plus Ansible content; no manager-specific Go changes are required.
 
-All deployed manager registrations must declare the required `networkOutputs` or `networkInputs` field before contract enforcement is enabled. The current parser does not yet validate the proposed `implementationRef` or data declarations, and the existing flat Subnet output must migrate to the typed, resource-scoped schema. The manager contract adds no tenant-facing resource or API fields. An unmatched required input prevents dispatch with a diagnostic.
+All deployed manager registrations must declare the required `networkOutputs` or `networkInputs` field before contract enforcement is enabled. The current parser does not yet validate the proposed `implementationRef` or data declarations, and the existing flat Subnet output must migrate to the schema-validated, owner-scoped format. The manager contract adds no tenant-facing resource or API fields. An unmatched required input or invalid runtime value prevents dependent dispatch with a diagnostic.
 
 Changing manager names in NetworkClass does not automatically migrate backend state for existing resources. Providers must follow an explicit migration or resource replacement procedure before switching manager assignments. This contract guarantees common API behavior for newly reconciled resources, not transparent state transfer between different backends.
 
@@ -558,8 +612,8 @@ Changing manager names in NetworkClass does not automatically migrate backend st
 ## Provenance
 
 Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (94 behind origin/main, dirty)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":94,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

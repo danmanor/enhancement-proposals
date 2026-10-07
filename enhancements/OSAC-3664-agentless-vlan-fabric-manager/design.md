@@ -161,6 +161,9 @@ state.
    'networkManagers.fabricManagers.agentless_net' Helm entry with
    capabilities 'ipv4', description, implementation reference, and
    `networkOutputs: osac.networking.subnet.vlan-id`.
+   This model is present in the Network Data Model catalog with Subnet owner
+   scope and an integer schema constrained to the valid VLAN range. OSAC checks
+   the manager declaration against that catalog entry.
 3. The installer creates a ConfigMap labeled
    'osac.openshift.io/network-fabric-manager' with 'data.name=agentless_net'.
    The operator discovers it and includes the manager in NetworkClass
@@ -210,9 +213,10 @@ Users consume these resources through their workload workflows. [User]
 4. AgentlessNet reconciles the desired fabric state idempotently: one namespace
    and permit-all forwarding baseline per VirtualNetwork, and one
    VLAN/interface/gateway/DHCP binding per Subnet. On Subnet create, it writes
-   the allocated VLAN ID as `osac.networking.subnet.vlan-id` to the
+   the allocated VLAN ID as model `osac.networking.subnet.vlan-id` to the
    OSAC-provided output target scoped to that Subnet UID. This is internal
-   manager data, not a tenant API field, and does not claim a supported
+   manager data validated against the catalog schema, not a tenant API field,
+   and does not claim a supported
    Kubernetes Manager consumer in this milestone. Subnet reconciliation never
    binds a host access port.
 5. ExternalIPPool and ExternalIP remain controller-managed allocation
@@ -934,7 +938,9 @@ network outputs. The Helm chart entry must render:
 The manager name must match the NetworkClass 'fabric_manager' value. The
 implementation reference resolves the Ansible role; unknown or disabled
 manager names must produce a status failure rather than selecting another
-manager. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
+manager. The `networkOutputs` ID must resolve to a registered Network Data
+Model whose owner scope is Subnet; OSAC validates the published integer against
+that model before making it available to a consumer. [Codebase: osac-operator/pkg/networkmanager; osac-operator/charts/operator/templates/network-managers.yaml]
 
 #### NetworkClass capability boundary
 
@@ -983,10 +989,11 @@ is:
 The VLAN allocation is globally unique within the physical fabric. Reconciliation
 looks up the Subnet UID before allocating, so retries preserve the same VLAN.
 The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
-defines the output channel. The manager registration declares
-`osac.networking.subnet.vlan-id` in
+defines the output channel and catalog. The manager registration declares the
+`osac.networking.subnet.vlan-id` model ID in
 `networkOutputs`, and the Fabric task publishes the numeric VLAN ID in the
-standard resource-scoped `outputs.json` artifact supplied by OSAC. The output
+standard owner-scoped `outputs.json` artifact supplied by OSAC. OSAC validates
+the value against the registered schema and Subnet owner scope. The output
 artifact follows the Subnet UID through retries. OSAC removes it after any
 declared consumer cleanup and successful Fabric Subnet deletion. No VLAN field
 is added to the tenant API.
@@ -1801,9 +1808,9 @@ not a substitute for that testplan.
 ### Unit Tests
 
 - Parse and validate the agentless manager ConfigMap capabilities and
-  `networkOutputs` declaration; verify Subnet create publishes an integer
-  `osac.networking.subnet.vlan-id` value under the Subnet UID without adding a
-  tenant API field.
+  `networkOutputs` model reference; verify Subnet create publishes an integer
+  `osac.networking.subnet.vlan-id` value that passes the catalog schema and
+  carries the Subnet UID without adding a tenant API field.
 - Allocate and release VLAN IDs with idempotence, collision rejection, pool
   exhaustion, lock contention, and state-file recovery cases.
 - Exercise state writes interrupted before, during, and after rename; verify
@@ -2042,11 +2049,11 @@ existing mono-repo and tests/e2e patterns.
 
 ## Provenance
 
-Authored: revise @ design 0.9.0 - 562b610, workspace main @ 0ae795e37
-Final: respond @ design 0.11.1 - f1d6a4b, workspace main @ b9575896d (dirty)
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
 
-> Context changed between revise and respond.
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.1","ai_workflows":"f1d6a4b","source_repo":"b9575896d (dirty)","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","draft","respond","respond","respond","respond","manual-edit","respond","revise","respond","respond","respond"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
