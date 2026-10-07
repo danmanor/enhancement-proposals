@@ -12,7 +12,7 @@
 
 ### R1: K8s manager registration for EVPN fabric bridging (IPv4 only)
 
-#### TC-R1-01: Register cudn_evpn k8s manager via ConfigMap
+#### TC-R1-01: Register cudn_evpn as a NetworkManager object
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -20,23 +20,25 @@
 
 ##### Preconditions
 
-- osac-installer deployed to cluster
-- No existing ConfigMap `k8s-manager-cudn-evpn` in osac namespace
+- osac-installer and the NetworkManager CRD are deployed.
+- Required OSAC NetworkDataModel objects exist.
+- No NetworkManager object with spec.managerName cudn_evpn exists.
 
 ##### Steps
 
-1. Apply osac-installer Helm chart with cudn_evpn manager enabled
-2. Verify ConfigMap `k8s-manager-cudn-evpn` exists in osac namespace
-3. Verify ConfigMap `data.name` is `cudn_evpn` and `data.implementationRef` points to the CUDN EVPN collection role.
-4. Verify `data.capabilities` is `ipv4`.
-5. Verify `data.networkInputs` declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR model IDs.
+1. Apply osac-installer Helm values with cudn_evpn enabled.
+2. Verify a cluster-scoped NetworkManager exists with metadata.name cudn-evpn and spec.managerName cudn_evpn.
+3. Verify spec.role is Kubernetes and the implementation reference points to the CUDN EVPN collection role.
+4. Verify capabilities contains only ipv4.
+5. Verify networkInputs declares the VirtualNetwork L3 VNI, Subnet L2 VNI, and Subnet reserved IPv4 CIDR model IDs.
+6. Attempt to select cudn_evpn with an incompatible Fabric Manager.
 
 ##### Expected Results
 
-- ConfigMap created with label `osac.openshift.io/network-k8s-manager: "true"`
-- The registration uses the role-specific fields defined by the Network Manager Integration Contract.
-- Capabilities reflect IPv4-only support and all three required model inputs are declared.
-- NetworkClass controller loads cudn_evpn as available k8s manager
+- The NetworkManager object is accepted because all model references resolve.
+- The role-specific fields match the Network Manager Integration Contract.
+- NetworkClass creation rejects an incompatible manager pair and persists no profile.
+- The valid object can be selected by a compatible profile and adds no tenant-facing backend selector.
 
 ### R2: Fabric-to-k8s manager data dependency
 

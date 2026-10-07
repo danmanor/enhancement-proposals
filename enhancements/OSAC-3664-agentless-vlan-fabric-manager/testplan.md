@@ -24,17 +24,17 @@
 ##### Preconditions
 
 - The installer values enable the agentless fabric-manager entry.
-- No agentless manager ConfigMap exists.
+- No NetworkManager object with spec.managerName agentless_net exists.
 
 ##### Steps
 
 1. Render and apply the operator Helm configuration.
-2. Inspect the generated fabric-manager ConfigMap and the NetworkClass
+2. Inspect the generated fabric-manager NetworkManager object and the NetworkClass
    capability state.
 
 ##### Expected Results
 
-- The ConfigMap has name agentless_net, role fabric, and capability ipv4.
+- The NetworkManager has metadata.name agentless-net, spec.managerName agentless_net, spec.role Fabric, and capability ipv4.
 - The NetworkClass exposes agentless_net as the selected fabric manager.
 - IPv6 and dual-stack capabilities are absent.
 

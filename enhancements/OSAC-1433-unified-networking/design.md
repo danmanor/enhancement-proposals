@@ -46,7 +46,7 @@ superseded-by:
     - [API Extensions](#api-extensions)
       - [NetworkClass](#networkclass)
         - [Capabilities](#capabilities)
-        - [Manager Registration (ConfigMap)](#manager-registration-configmap)
+      - [NetworkDataModel and NetworkManager APIs](#networkdatamodel-and-networkmanager-apis)
       - [ExternalIPPool](#externalippool-1)
       - [VirtualNetwork](#virtualnetwork)
       - [Subnet](#subnet)
@@ -144,9 +144,9 @@ A **manager role** is a stable OSAC responsibility boundary. Providers may use i
 - **Fabric Manager:** connects OSAC to the provider's physical network and handles shared network resources, address allocation, inbound and outbound address translation, physical-interface attachment, and policy on physical interfaces.
 - **Kubernetes (K8s) Manager:** handles Kubernetes-side networking. When configured alongside the Fabric Manager, it creates a **VM overlay**, the software network that carries VM traffic inside a hosting cluster (the OpenShift cluster that runs the VMs), connects that overlay to the provider network, and enforces policy on VM interfaces.
 
-A **network data model** gives a stable identity, meaning, owner scope, and machine-readable schema to a value one manager can produce and another can consume. Fabric Managers declare the model IDs they can produce; Kubernetes Managers declare the model IDs they need. The manager integration design defines the provider-installed model catalog and generic validation.
+A **NetworkDataModel** is a cluster-scoped OSAC API object whose stable metadata name identifies the meaning, owner scope, and machine-readable schema of one reusable network value. Fabric Managers declare model IDs they can produce; Kubernetes Managers declare IDs they need.
 
-A **manager registration** is a Kubernetes ConfigMap that identifies one implementation and role. It names the provider's collection role and declares the network data model IDs that the implementation can produce or requires. The provider-installed model catalog defines each ID's meaning, JSON Schema, and owner scope. When both roles are selected, OSAC checks that every input declared by the Kubernetes Manager is present in the Fabric Manager's outputs. The registrations do not define operation or workload-target subsets; the [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the exact registration, schema validation, and resolution behavior. Matching declarations show that required data is available; both managers must still preserve the shared resource and traffic behavior.
+A **NetworkManager** is a cluster-scoped OSAC API object that registers one Fabric or Kubernetes implementation. Its immutable spec.managerName is the logical name selected by NetworkClass; metadata.name is a separate DNS-safe Kubernetes object name. It declares the implementation reference, capabilities, and role-specific network input or output model IDs. Models are created before managers, and managers before NetworkClass. The manager integration design defines the object schemas, validation, and lifecycle.
 
 The **fixed dispatch contract** assigns each operation and its allowed workload targets to a manager role. Every conforming implementation supplies the complete set assigned to its role. A Fabric Manager is required for every deployment and handles shared network, address, NAT, and physical-interface operations. A deployment that supports VMs also assigns a K8s Manager to create and remove VM overlay resources for each Subnet and enforce policy on VM attachments; deployments without VMs may omit that role. The operator rejects requests when a required role is missing before starting provider work; a registered implementation missing a required task is nonconforming and its provider job fails. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the operation entry points, target sets, and results.
 
@@ -161,6 +161,8 @@ A **FabricDomain** is a tenant resource for east-west isolation among participat
 | Resource | Owner | Meaning |
 |---|---|---|
 | **NetworkClass** | Provider | The deployment's active networking profile: manager-role selections, defaults, east-west capability declarations and configuration, and status. Manager-derived IP-family capabilities are reported separately from provider-declared east-west capabilities. |
+| **NetworkManager** | Provider | An immutable registration of one Fabric or Kubernetes implementation. NetworkClass selects it by role and spec.managerName; metadata.name is its DNS-safe Kubernetes object name. It declares the implementation reference, capabilities, and model inputs or outputs. |
+| **NetworkDataModel** | Provider | An immutable definition of one shared network value's meaning, owner scope, and JSON Schema. NetworkManager objects reference its stable ID. |
 | **VirtualNetwork** | Tenant | An isolated tenant IP network and the parent of its Subnets, SecurityGroups, FabricDomains, and optional NATGateway. Its Subnets are separate Layer 2 (L2) broadcast domains and are connected by Layer 3 (L3) routing, subject to SecurityGroup policy. |
 | **Subnet** | Tenant | An IP range and network segment within one VirtualNetwork; workloads attached to the same Subnet share an L2 broadcast domain and have L3 connectivity through their parent VirtualNetwork. |
 | **Workload network attachment** | Workload API | Connects one ComputeInstance, Cluster, or BaremetalInstance interface to a Subnet and selects its SecurityGroups. A bare-metal attachment may also name one exposed network interface; it is not a separate provider network resource. Traffic policy is enforced on this attachment. |
@@ -275,77 +277,62 @@ an OSAC contract update. East-west fields are provider declarations under
 [Network Manager Integration Contract](#manager-dispatch-and-integration-contract)
 defines manager registration and operation behavior.
 
-###### Manager Registration (ConfigMap)
+##### NetworkDataModel and NetworkManager APIs
 
-Each implementation registers one manager role through a ConfigMap installed
-in the OSAC operator namespace. The role label determines whether it is a
-Fabric Manager or K8s Manager. Required registration fields are the role label,
-a unique `name`, a fully qualified `implementationRef`, declared
-`capabilities`, and the role-appropriate `networkOutputs` or `networkInputs`;
-`description` is optional. `implementationRef` resolves the provider
-implementation. Fabric Managers list registered model IDs they can
-produce in `networkOutputs`; K8s Managers list the model IDs they require in
-`networkInputs`. OSAC resolves these IDs through the provider-installed
-network data model catalog and validates each value against its registered
-schema and owner scope. An empty declaration means no cross-manager outputs or
-requirements. The registration does not list operations or targets; the manager
-contract defines the complete required set for each role. Credentials remain
-in provider-managed AAP credentials or Secrets, not in the registration. See
-the [Network Manager Integration Contract](#manager-dispatch-and-integration-contract)
-for the normative registration schema, input/output matching, resource-scoped
-artifacts, AAP input, and results.
+NetworkDataModel and NetworkManager are cluster-scoped OSAC custom resources in osac.openshift.io/v1alpha1. A NetworkDataModel's metadata.name is its stable model ID. A NetworkManager's immutable spec.managerName is its logical name stored in NetworkClass; its metadata.name is a separate DNS-safe Kubernetes object name. The objects replace ConfigMaps used to define the model catalog and register manager implementations. They do not replace the separate owner-scoped ConfigMaps that carry runtime manager output values.
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
+The CRD schemas validate field types and required fields. OSAC admission validation additionally checks that a NetworkDataModel uses a supported owner scope and valid JSON Schema, and that each NetworkManager references existing model objects and supplies the fields for its role. A Fabric Manager declares networkOutputs; a Kubernetes Manager declares networkInputs. Each field is a list of stable model IDs, and an empty list is valid when the role has no values to exchange.
+
+NetworkDataModel and NetworkManager specs are immutable. Providers may Create, Read/List, and Delete these objects; OSAC rejects Update and Patch. OSAC blocks model deletion while a NetworkManager references its ID or a retained owner-scoped output artifact contains a value under that ID, and blocks manager deletion while a NetworkClass selects its role and spec.managerName. A manager change requires deleting dependent VirtualNetworks and the NetworkClass, deleting the old registration, then creating the replacement registration and profile.
+
+~~~yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkDataModel
 metadata:
-  name: osac-network-fabric-manager-example
-  namespace: osac
-  labels:
-    osac.openshift.io/network-fabric-manager: "true"
-data:
-  name: example
+  name: acme.networking.subnet.segment
+spec:
+  description: Provider segment identity consumed by a Kubernetes Manager.
+  ownerScope: Subnet
+  schema:
+    $schema: https://json-schema.org/draft/2020-12/schema
+    type: object
+    properties:
+      segment:
+        type: integer
+        minimum: 1
+    required: [segment]
+    additionalProperties: false
+---
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkManager
+metadata:
+  name: example-fabric
+spec:
+  managerName: example_fabric
+  role: Fabric
   implementationRef: acme.networking.fabric_manager
-  description: "Example Fabric Manager implementation"
-  capabilities: "ipv4"
-  networkOutputs: "osac.networking.virtual-network.vxlan-l3-vni,osac.networking.subnet.vxlan-l2-vni,osac.networking.subnet.reserved-ipv4-cidrs"
-```
-
-The selected Kubernetes Manager lists its required model IDs in
-`networkInputs`. OSAC rejects the NetworkClass if any ID is absent
-from the Fabric Manager's `networkOutputs`, before provider work starts. The
-[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
-defines the catalog, schemas, owner scopes, and the initial VXLAN, VLAN, and
-reserved-IPv4-CIDR models. Providers may register additional model IDs without
-manager-specific OSAC code when they use supported owner scopes and the
-existing handoff. A Kubernetes registration can declare its inputs as follows:
-
-```yaml
-apiVersion: v1
-kind: ConfigMap
+  description: Example Fabric Manager
+  capabilities: [ipv4]
+  networkOutputs:
+    - acme.networking.subnet.segment
+---
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkManager
 metadata:
-  name: osac-network-k8s-manager-example
-  namespace: osac
-  labels:
-    osac.openshift.io/network-k8s-manager: "true"
-data:
   name: example-k8s
+spec:
+  managerName: example_k8s
+  role: Kubernetes
   implementationRef: acme.networking.vm_overlay
-  capabilities: "ipv4"
-  networkInputs: "osac.networking.virtual-network.vxlan-l3-vni,osac.networking.subnet.vxlan-l2-vni,osac.networking.subnet.reserved-ipv4-cidrs"
-```
+  description: Example Kubernetes Manager
+  capabilities: [ipv4]
+  networkInputs:
+    - acme.networking.subnet.segment
+~~~
 
-The operator validates each NetworkClass role assignment against the matching
-registration and checks declared model-ID matching whenever both roles
-are selected. The registration resolves the implementation; the fixed manager
-contract supplies its required operations and targets. A conforming
-implementation from any source can be registered without changing tenant APIs
-or operation dispatch. Adding a model within the supported owner scopes uses
-the generic catalog; adding an OSAC operation, target type, owner scope, or
-handoff transport requires platform support. Legacy
-implementation-strategy fields or annotations on networking resources do not
-select an implementation and must not alter fixed role dispatch.
+The provider-created NetworkClass continues to reference the Fabric Manager's logical name and optional Kubernetes Manager's logical name. Its Create validation reads NetworkManager objects through a read-only registry client, resolves each reference by role and spec.managerName, and checks that selected Fabric outputs contain every model required by the selected Kubernetes Manager. Invalid references or an incompatible pair are rejected before NetworkClass is persisted. If the registry cannot be read, validation fails closed. Only a valid profile proceeds to ordinary readiness reconciliation; tenant VirtualNetwork creation continues to require NetworkClass Ready.
 
+A NetworkDataModel cannot be deleted while any NetworkManager lists its ID or while a retained owner-scoped output artifact contains a value under that ID. A NetworkManager cannot be deleted while a NetworkClass selects its role and spec.managerName. Admission and dependency checks identify the blocking object. Changing a model's meaning, owner scope, or JSON Schema requires a new model ID. Replacing a manager implementation requires deleting its dependent NetworkClass and creating the replacement NetworkManager before recreating the NetworkClass. The Network Manager Integration Contract is normative for these schemas, admission rules, exact matching, runtime value validation, and manager lifecycle.
 
 ##### ExternalIPPool
 
@@ -934,7 +921,7 @@ The BMaaS integration uses the per-server `BaremetalInstance` API, aligned with 
 
 #### Manager Roles and Selection
 
-The active NetworkClass always selects a Fabric Manager. If the deployment supports VMs, it also selects a K8s Manager to connect VM overlays to each Subnet. Deployments without VM workloads may omit the K8s Manager. When both roles are selected, the Kubernetes Manager's declared network inputs must be covered by the Fabric Manager's declared outputs. The K8s Manager does not replace or fall back for the Fabric Manager.
+The active NetworkClass selects a Fabric Manager by role and spec.managerName. If the deployment supports VMs, it also selects a Kubernetes Manager this way to connect VM overlays to each Subnet. Deployments without VM workloads may omit that role. NetworkClass creation validates that each reference resolves to an object with the matching role and that every Kubernetes Manager input is covered by the Fabric Manager outputs. The Kubernetes Manager does not replace or fall back for the Fabric Manager.
 
 Each role implementation provides the complete operation and workload-target set assigned to it; a registration cannot advertise a smaller subset. OSAC rejects a missing required role or an unsatisfied declared network input before starting provider work. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) specifies the exact role assignment and validation rules.
 
@@ -1002,6 +989,14 @@ must preserve those resource semantics regardless of infrastructure or backend.
 
 The networking contract exposes create, read, and delete operations, with readiness and dependency checks performed before accepting invalid references. Workload attachment fields are create-time inputs and follow the same one-attachment limit. These technical rules implement [FR-7 through FR-9](prd.md#3-requirements).
 
+#### Provider registry object lifecycle and profile preflight
+
+Cloud Infrastructure Admins create registry objects in dependency order: NetworkDataModel, NetworkManager, then NetworkClass. NetworkDataModel and NetworkManager support Create, Read/List, and Delete; OSAC rejects Update and Patch. Their specifications are immutable. NetworkClass follows the same create/read/delete lifecycle defined in this section.
+
+On NetworkDataModel creation, OSAC validates the stable model ID, supported owner scope, and JSON Schema. On NetworkManager creation, OSAC validates role-specific fields and resolves every declared input or output ID to an existing NetworkDataModel. On NetworkClass creation, the fulfillment service resolves referenced NetworkManager objects, checks role correctness and manager capabilities, and rejects the request unless each selected Kubernetes Manager input is present in the selected Fabric Manager outputs. A failed lookup or mismatch rejects NetworkClass creation before persistence. These checks are generic platform behavior; adding a conforming manager or model after platform support exists requires no manager-specific Go code.
+
+Delete operations are blocked while references remain: NetworkDataModel is retained while a NetworkManager references it or a retained output artifact contains one of its values; NetworkManager is retained while a NetworkClass selects it; NetworkClass remains subject to the existing VirtualNetwork dependency guard. Providers remove dependencies in reverse order and allow owner-scoped value cleanup to finish before deleting a registry object.
+
 #### Resource lifecycle enforcement
 
 The fulfillment service enforces strict dependency constraints on both
@@ -1027,7 +1022,7 @@ defers validation to asynchronous operator reconciliation.
 The unified networking API supports only create, read, and delete operations
 for networking resources. Read means `List` and `Get`; there is no tenant or
 provider `Update`/`Patch` operation for a networking resource's specification
-or metadata. The affected resources are `NetworkClass`, `VirtualNetwork`,
+or metadata. The affected resources are `NetworkClass`, `NetworkManager`, `NetworkDataModel`, `VirtualNetwork`,
 `Subnet`, `SecurityGroup`, `ExternalIPPool`, `ExternalIP`,
 `ExternalIPAttachment`, and `NATGateway`.
 
@@ -1067,6 +1062,8 @@ caller knows what to remove first.
 | NATGateway | (leaf — no dependents, always deletable) |
 | ComputeInstance / Cluster / BaremetalInstance | Manually-created ExternalIPAttachments targeting this resource |
 | NetworkClass | VirtualNetworks referencing this NetworkClass |
+| NetworkManager | NetworkClasses selecting this manager |
+| NetworkDataModel | NetworkManagers or retained output artifacts referencing this model ID |
 
 "Active" means the resource exists and has not been fully deleted (i.e., is
 not archived). A resource that is itself being deleted (has
@@ -1125,7 +1122,13 @@ ExternalIP
 VirtualNetwork
   must be gone before --> NetworkClass
 
-NetworkClass (provider-managed, delete last)
+NetworkClass
+  must be gone before --> NetworkManager
+
+NetworkManager
+  must be gone before --> NetworkDataModel
+
+NetworkDataModel (provider registry, delete last)
 ```
 
 ##### Creation Readiness Gates
@@ -1732,7 +1735,7 @@ VirtualNetworks define tenant isolation, and SecurityGroups define permitted tra
 
 Fulfillment rejects creates whose referenced resources are missing, deleting, or not ready, and rejects deletes while active dependents remain. The detailed gates and dependency tables are in [Creation Readiness Gates](#creation-readiness-gates) and [Deletion Dependency Guards](#deletion-dependency-guards). Manager failures leave resources non-ready for reconciliation; an ExternalIP allocation is accepted only after the manager result and the provider-owned address annotation pass validation.
 
-Before dispatch, OSAC validates selected manager registrations, the required Fabric Manager role, and that Fabric outputs cover every declared K8s input. An invalid selection leaves NetworkClass not Ready with a diagnostic naming the invalid field or unsatisfied model ID, and OSAC starts no provider job. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the catalog, registration, schema validation, and model matching rules.
+Before persisting NetworkClass, OSAC validates each selected NetworkManager reference, the required Fabric role, and that Fabric outputs cover every Kubernetes Manager input. An invalid selection is rejected with a diagnostic naming the object, field, or unsatisfied model ID; no invalid NetworkClass or provider job is created. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines the catalog, registration, schema validation, and model matching rules.
 
 #### Risks and Mitigations
 
@@ -1941,7 +1944,7 @@ ExternalIPAttachment exposes inbound access to supported workload endpoints. NAT
 
 **Requirements:** FR-6
 
-Provider configuration selects a Fabric Manager and, when needed, a Kubernetes Manager through NetworkClass and manager registrations. OSAC checks that the selected Fabric Manager declares every data model required by the Kubernetes Manager; an unsatisfied input is diagnosed before provider work starts. Tenant APIs do not expose these implementation choices. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines manager onboarding and conformance.
+Provider configuration creates NetworkDataModel and NetworkManager objects, then creates a NetworkClass that selects each manager by role and spec.managerName. OSAC validates model references when each registry object is created and validates manager roles and input/output compatibility before persisting NetworkClass. Tenant APIs do not expose these implementation choices. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines manager onboarding, object schemas, immutable lifecycle, and conformance.
 
 ### IC-5: Provider networking control
 
@@ -2250,4 +2253,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

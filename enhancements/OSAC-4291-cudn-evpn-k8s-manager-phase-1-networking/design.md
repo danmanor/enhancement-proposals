@@ -92,7 +92,7 @@ OSAC's NetworkClass dispatcher supports selecting Fabric and Kubernetes Managers
 
 Phase 1 extends an existing Netris VPC and its VNets into OpenShift. **Only single-subnet VirtualNetworks support VMs.** The first Subnet gets a CUDN immediately (on provisioning, not VM creation). If additional Subnets are added, the CUDN persists but VMaaS blocks VMs in all Subnets. Multi-subnet VirtualNetworks are fabric-only until secondary CUDN/multi-NIC support is available.
 
-This design introduces a new k8s manager (`cudn_evpn`) registered via osac-installer ConfigMap, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`.
+This design introduces a new k8s manager (`cudn_evpn`) registered as a NetworkManager API object installed by osac-installer, used when a NetworkClass declares `k8s_manager: "cudn_evpn"`.
 
 **Resource Mapping:**
 
@@ -206,7 +206,7 @@ sequenceDiagram
 ### API Extensions
 
 **New:**
-- osac-installer ConfigMap `k8s-manager-cudn-evpn` (declares `implementationRef`, IPv4 capability, and required `networkInputs`)
+- osac-installer NetworkManager object `cudn-evpn` (`spec.managerName: cudn_evpn`; declares `implementationRef`, IPv4 capability, and required `networkInputs`)
 - osac-aap fabric manager template role `netris` (creates Netris VPC/VNet, returns VNI)
 - osac-aap k8s manager template role `cudn_evpn` (creates CUDN)
 - **Subnet annotation `osac.openshift.io/skip-k8s-manager: "true"`** — optional annotation to explicitly skip k8s manager (fabric-only). If omitted, operator auto-detects: first subnet gets CUDN, second+ subnets are fabric-only.
@@ -438,7 +438,7 @@ Solution: Delete VMs first or create a new VirtualNetwork for bare-metal workloa
 
 OSAC orders producer and consumer jobs through the declared manager data dependency defined in the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md). On a Fabric `subnet.create`, the operator supplies one output target for the parent VirtualNetwork and one for the Subnet. The Fabric role may create the parent VPC and allocate its L3 VNI during this call, but OSAC stores that value under the VirtualNetwork UID. The Subnet target carries the L2 VNI and reserved IPv4 CIDRs. The Fabric job also receives a writer credential scoped to those pre-created targets.
 
-After Fabric succeeds, OSAC reads each `outputs.json`, checks its model IDs, owner kind and UID, and validates each value against its registered JSON Schema. It then resolves only applicable values from the `cudn_evpn` registration's `networkInputs`. The Kubernetes AAP job receives these values inside `osac_job_vars.network_inputs`; OSAC does not merge an opaque flat ConfigMap into arbitrary extra variables. The manager maps the stable model IDs into CUDN's native `macVRF`, `ipVRF`, and `reservedSubnets` fields.
+After Fabric succeeds, OSAC reads each `outputs.json`, checks its model IDs, owner kind and UID, and validates each value against its registered JSON Schema. It then resolves only applicable values from the `cudn_evpn` NetworkManager object's `networkInputs`. The Kubernetes AAP job receives these values inside `osac_job_vars.network_inputs`; OSAC does not merge an opaque flat ConfigMap into arbitrary extra variables. The manager maps the stable model IDs into CUDN's native `macVRF`, `ipVRF`, and `reservedSubnets` fields.
 
 The CUDN Phase 1 restriction remains: only the first Subnet under a VirtualNetwork gets CUDN provisioning. Later Subnets are Fabric-only, and the existing VM validation prevents VM use in the unsupported multi-Subnet case. When the Kubernetes manager is invoked, it receives the parent-VirtualNetwork and current-Subnet values it declared. OSAC retains Subnet-scoped output until Kubernetes cleanup and Fabric Subnet deletion succeed. The VirtualNetwork-scoped output survives individual Subnet deletion and is removed only after the VirtualNetwork is deleted.
 
@@ -665,16 +665,7 @@ capabilities:
   supports_dual_stack: false
 ```
 
-The OSAC Kubernetes Manager registration points to this role and declares the
-three network inputs consumed by `create_subnet`:
-
-```yaml
-data:
-  name: cudn_evpn
-  implementationRef: osac.templates.cudn_evpn
-  capabilities: "ipv4"
-  networkInputs: "osac.networking.virtual-network.vxlan-l3-vni,osac.networking.subnet.vxlan-l2-vni,osac.networking.subnet.reserved-ipv4-cidrs"
-```
+NetworkClass selects this Kubernetes Manager with `k8s_manager: cudn_evpn`. The NetworkManager object described in the osac-installer section below declares the three model IDs consumed by `create_subnet`: `osac.networking.virtual-network.vxlan-l3-vni`, `osac.networking.subnet.vxlan-l2-vni`, and `osac.networking.subnet.reserved-ipv4-cidrs`.
 
 **tasks/create_subnet.yaml:**
 
@@ -1002,23 +993,24 @@ Demo environment confirmed: OVN logical router has no port for the CUDN subnet. 
 
 #### osac-installer: K8s Manager Registration
 
-**New ConfigMap:**
+**New NetworkManager object:**
 
-```yaml
-apiVersion: v1
-kind: ConfigMap
+~~~yaml
+apiVersion: osac.openshift.io/v1alpha1
+kind: NetworkManager
 metadata:
-  name: k8s-manager-cudn-evpn
-  namespace: osac
-  labels:
-    osac.openshift.io/network-k8s-manager: "true"  # Matches OSAC-1433 label path
-data:
-  name: cudn_evpn
+  name: cudn-evpn
+spec:
+  managerName: cudn_evpn
+  role: Kubernetes
   implementationRef: osac.templates.cudn_evpn
-  description: "OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)"
-  capabilities: "ipv4"  # Standard manager capability token per OSAC-1433
-  networkInputs: "osac.networking.virtual-network.vxlan-l3-vni,osac.networking.subnet.vxlan-l2-vni,osac.networking.subnet.reserved-ipv4-cidrs"
-```
+  description: OVN-Kubernetes CUDN with EVPN transport for VM-to-fabric bridging (IPv4 only)
+  capabilities: [ipv4]
+  networkInputs:
+    - osac.networking.virtual-network.vxlan-l3-vni
+    - osac.networking.subnet.vxlan-l2-vni
+    - osac.networking.subnet.reserved-ipv4-cidrs
+~~~
 
 **Capability Fields:**
 - `ipv4` — IPv4 address family supported; IPv6 and dual-stack are not supported
@@ -1055,7 +1047,7 @@ subjects:
 ```
 
 **Rationale:**
-- ConfigMap registration follows existing pattern (cudn_localnet)
+- NetworkManager uses the shared OSAC registration API and adds no CUDN-specific registration fields
 - RBAC grants CUDN create/delete, VTEP read-only
 - No FRRConfiguration RBAC needed (not created by k8s manager)
 - [Codebase: osac/osac-installer/charts/osac/templates/k8s-manager-*.yaml]
@@ -1417,9 +1409,9 @@ Success signals for GA:
 
 **Upgrade (0.2 → 0.3):**
 
-This is a new API — no existing resources to migrate. Upgrade steps:
+The tenant resource API is new, so no tenant resources migrate. Existing manager ConfigMap registrations must be replaced by NetworkManager objects as part of the platform contract rollout. Upgrade steps:
 
-1. Upgrade osac-installer (adds ConfigMap k8s-manager-cudn-evpn, RBAC for CUDN CRDs)
+1. Upgrade osac-installer (installs NetworkManager `cudn-evpn` with `spec.managerName: cudn_evpn`, RBAC for CUDN CRDs)
 2. Upgrade osac-aap (adds netris fabric manager role + cudn_evpn k8s manager role)
 3. Upgrade osac-operator (adds sequential provisioning logic)
 4. Upgrade fulfillment-service (adds single-subnet validation)
@@ -1506,7 +1498,7 @@ If a VRF device persists on a worker node after CUDN deletion:
 
 1. Delete all VirtualNetworks using NetworkClass with k8s_manager="cudn_evpn"
 2. Delete the NetworkClass
-3. Delete ConfigMap k8s-manager-cudn-evpn (prevents new registrations)
+3. Delete NetworkManager `cudn-evpn` with `spec.managerName: cudn_evpn` (prevents new registrations)
 
 **Consequences:**
 - **Cluster health:** No impact (CUDN and FRRConfiguration remain, harmless)
@@ -1515,7 +1507,7 @@ If a VRF device persists on a worker node after CUDN deletion:
 
 **Re-Enabling:**
 
-Recreate ConfigMap and NetworkClass. Existing CUDNs remain orphaned (no owner-reference to Subnet). Consistency maintained: Subnet delete will not cascade to CUDN if CUDN created before re-enable.
+Recreate the NetworkManager and NetworkClass. Existing CUDNs remain orphaned (no owner-reference to Subnet). Consistency maintained: Subnet delete will not cascade to CUDN if CUDN created before re-enable.
 
 ## Infrastructure Needed
 
@@ -1536,4 +1528,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** Network Manager Integration Contract
-- **Total test cases:** 13
+- **Total test cases:** 14
 - **Requirements covered:** 6 of 6 functional requirements
 - **Interface changes covered:** 7 of 7
 
@@ -38,31 +38,31 @@
 
 ### FR-2: Exact manager implementation requirements
 
-#### TC-FR2-01: Reject an invalid manager registration or data declaration
+#### TC-FR2-01: Reject invalid NetworkDataModel and NetworkManager objects
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
-| IC-1 | Integration | critical | automated |
+| IC-1, IC-7 | Integration | critical | automated |
 
 ##### Preconditions
 
-- The operator watches manager registration ConfigMaps.
+- NetworkDataModel and NetworkManager CRDs and OSAC admission validation are deployed.
 - A test AAP provider records whether an AAP job was created.
 
 ##### Steps
 
-1. Create registrations with malformed or missing `implementationRef`, missing role-required `networkOutputs` or `networkInputs`, an unknown or duplicate model ID, an unknown role label, an invalid capability, or duplicate logical names within a role.
-2. Register data models with a duplicate ID, malformed JSON Schema, unsupported owner scope, or remote schema reference.
-3. Select each registration from a NetworkClass.
-4. Observe NetworkClass status and AAP job count.
+1. Create valid OSAC and provider-defined NetworkDataModel objects.
+2. Attempt models with an unsupported owner scope, malformed JSON Schema, unsupported schema dialect or vocabulary, remote reference, or an ID reserved to OSAC.
+3. Create Fabric and Kubernetes NetworkManager objects that reference existing model IDs.
+4. Attempt manager objects with an unknown or duplicate model ID, duplicate (role, managerName), invalid role, role-inappropriate input/output field, missing required list, invalid capability, or malformed implementation reference.
+5. Create a NetworkClass that selects the valid pair; observe the create response and AAP job count.
 
 ##### Expected Results
 
-- OSAC identifies the ConfigMap and invalid field or model ID in its diagnostic.
-- OSAC rejects invalid model definitions and reports the offending ConfigMap and model ID.
-- An empty declaration is accepted as no outputs or inputs; an omitted required declaration is rejected.
-- The NetworkClass is not Ready while a selected registration or referenced model is invalid.
-- OSAC creates no AAP job for the invalid registration.
+- Valid model and manager objects are accepted and readable by their stable metadata names.
+- Admission rejects every invalid model or manager before it can be selected and identifies the object, invalid field, and model ID when relevant.
+- A role's required declaration may be an empty list; an omitted declaration is rejected.
+- No AAP job is created for an invalid object or profile.
 
 #### TC-FR2-02: Validate manager capabilities and NetworkClass output
 
@@ -240,7 +240,7 @@
 
 ### FR-4: Reject unsatisfied network data or unavailable work before dispatch
 
-#### TC-FR4-01: Reject a selected pair with an unsatisfied network input
+#### TC-FR4-01: Reject a NetworkClass with an unsatisfied network input
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
@@ -248,23 +248,20 @@
 
 ##### Preconditions
 
-- CUDN EVPN declares VXLAN L3 VNI, VXLAN L2 VNI, and reserved IPv4 CIDR inputs.
-- Netris declares matching outputs; Agentless VLAN declares `osac.networking.subnet.vlan-id` output.
-- The test AAP provider records created jobs.
+- Two valid NetworkManager objects exist.
+- The Kubernetes Manager requires a model ID that the Fabric Manager does not declare.
 
 ##### Steps
 
-1. Select Netris with CUDN EVPN.
-2. Select Agentless VLAN with CUDN EVPN.
-3. Select a registration with an unknown input model ID, and one with a registered model ID missing from Fabric outputs.
-4. Observe readiness diagnostics and AAP job count.
+1. Create NetworkClass selecting the incompatible Fabric and Kubernetes manager names.
+2. Inspect the create response and NetworkClass store.
+3. Verify the AAP job count.
 
 ##### Expected Results
 
-- Netris and CUDN EVPN are accepted when all declared inputs have matching model IDs.
-- Agentless VLAN and CUDN EVPN are rejected because a VLAN ID does not satisfy either VXLAN VNI contract and Agentless has not declared the reserved CIDR output.
-- Unknown model IDs and known-but-unmatched inputs are rejected before provider dispatch.
-- Diagnostics name the two selected managers and each unsatisfied model ID; no AAP job starts.
+- NetworkClass creation is rejected synchronously with the unsatisfied model ID and both manager names.
+- The invalid NetworkClass is not persisted.
+- No resource operation or AAP job can use the invalid profile.
 
 #### TC-FR4-02: Reject work requiring an unselected or unsupported role/target
 
@@ -360,7 +357,7 @@ All design interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 13 |
+| Total test cases | 14 |
 | Critical | 8 |
 | High | 5 |
 | Medium | 0 |
@@ -369,3 +366,28 @@ All design interface changes are exercised by test cases.
 | Manual | 0 |
 | Requirements with test cases | 6 / 6 |
 | Interface changes with test cases | 7 / 7 |
+
+#### TC-FR6-02: Enforce immutable registry lifecycle and dependency-safe deletion
+
+| Interface Change | Test Level | Priority | Automation |
+|-----------------|------------|----------|------------|
+| IC-1, IC-3, IC-7 | Integration | high | automated |
+
+##### Preconditions
+
+- A valid NetworkDataModel is referenced by a NetworkManager, and a retained owner-scoped output artifact contains a valid value for its ID.
+- A valid NetworkClass selects that manager and has no VirtualNetworks.
+
+##### Steps
+
+1. Attempt Update and Patch on the NetworkDataModel, NetworkManager, and NetworkClass objects.
+2. Attempt to delete the referenced model and selected manager.
+3. Delete NetworkClass, then delete NetworkManager.
+4. Attempt to delete NetworkDataModel while its output artifact remains; then remove the artifact through normal owner-scoped cleanup and retry deletion.
+
+##### Expected Results
+
+- Provider Update and Patch requests are rejected for each object.
+- Deletion is blocked while a dependent object references the target, and the response identifies the blocking object.
+- NetworkDataModel deletion remains blocked while retained output values require its schema.
+- Reverse-order deletion succeeds after object references and retained output values are gone.
