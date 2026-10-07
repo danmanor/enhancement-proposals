@@ -236,7 +236,33 @@ Manager and data model specs are immutable. Providers may Create, Read/List, and
 
 #### East-West capability boundary
 
-NetworkManager registrations do not declare generic feature or IP-family capabilities. The provider's `NetworkClass.spec.east_west_capabilities` remains the explicit declaration of supported FabricDomain types; its behavior and validation are defined by the Unified Networking and Multi-Fabric East-West designs. Manager-pair validation uses the exact NetworkDataModel names required and produced by the selected roles.
+`NetworkManager` has no generic capability field. Its role and
+`implementationRef` identify the implementation contract it must fulfill;
+`networkInputs` and `networkOutputs` declare the named data it needs or
+produces. This avoids treating manager compatibility as a provider-asserted
+feature list. `IPv4` is fixed by the shared networking contract, and manager
+behavior is verified through conformance rather than inferred from capability
+metadata.
+
+`NetworkClass.spec.east_west_capabilities` is a separate, fixed OSAC API
+declaration for deployment-level FabricDomain behavior. Fulfillment-service
+validates those fields and their required east-west configuration; the
+[Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md)
+and [Multi-Fabric East-West Networking
+Design](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md)
+define their functional effects and errors. East-west declarations do not
+participate in manager-pair compatibility.
+
+When NetworkClass is created, fulfillment-service resolves the selected
+NetworkManager objects by role and logical name and compares their declared
+data models. Each input model name required by the Kubernetes Manager must
+also appear in the selected Fabric Manager's output names. A missing model,
+wrong role, or unresolved manager rejects NetworkClass before persistence.
+Exact model-name matching validates declared data availability; it does not
+prove that either implementation honors the shared networking behavior.
+Conformance tests validate that behavior. OSAC does not maintain a
+manager-name compatibility matrix.
+
 ### 4.3 API and Operation Contract
 
 #### Provider registry API operations
@@ -661,4 +687,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind o
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

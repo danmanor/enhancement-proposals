@@ -244,15 +244,54 @@ message NetworkClassEastWestCapabilities {
 
 ###### East-West Capability Declaration
 
-`NetworkClass.spec.east_west_capabilities` is the provider's declaration of
-which east-west FabricDomain types its deployment supports. It is the only
-capability declaration in the target networking API; manager registrations do
-not advertise IP-family or other generic capabilities. A true Ethernet field
-requires a non-empty `east_west_config.ethernet_ew.template_id` and permits
-Ethernet FabricDomain requests. InfiniBand and NVLink remain unsupported and
-their east-west fields must be false. The [Multi-Fabric East-West Networking
+A **capability** here is an OSAC-defined, deployment-level declaration that
+gates an optional networking behavior. The API has a predefined, finite set
+of typed fields on `NetworkClass.spec.east_west_capabilities`. It is not a
+free-form list, and providers cannot register new capability names.
+Fulfillment-service validates this declaration when creating NetworkClass
+and when a FabricDomain request uses it. This lets the provider expose which
+east-west resource types its configured deployment offers and lets OSAC reject
+unsupported requests before backend provisioning starts.
+
+These declarations gate optional east-west FabricDomain behavior only. They
+do not describe the shared north-south VirtualNetwork and Subnet contract,
+address-family support, or whether two managers can exchange data. Manager
+compatibility is validated separately when NetworkClass is created: every
+NetworkDataModel name required by the selected Kubernetes Manager must also
+be declared as an output by the selected Fabric Manager. That check establishes
+declared data compatibility, not behavioral conformance; see the
+[Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
+
+An omitted capability message or a false field means that the corresponding
+FabricDomain type is unavailable. The predefined fields and their Phase 1
+effects are:
+
+- **Ethernet** (`supports_east_west_ethernet`): false by default. It may be
+  true only when `east_west_config.ethernet_ew.template_id` is non-empty.
+  A true value permits `ETHERNET_EW` FabricDomain requests. The selected
+  Fabric Manager receives the configured template and provisions the
+  Ethernet east-west deployment in the associated VirtualNetwork's fabric
+  context.
+- **InfiniBand** (`supports_east_west_infiniband`): must remain false; a true
+  declaration is rejected with `INVALID_ARGUMENT`. `INFINIBAND_EW` is not
+  implemented in this proposal, so its FabricDomain request returns
+  `UNIMPLEMENTED`.
+- **NVLink** (`supports_nvlink`): must remain false; a true declaration is
+  rejected with `INVALID_ARGUMENT`. `NVLINK` is not implemented in this
+  proposal, so its FabricDomain request returns `UNIMPLEMENTED`.
+
+A true Ethernet declaration without its template is rejected with
+`INVALID_ARGUMENT`. Supplying a template while the Ethernet capability is
+false does not enable Ethernet FabricDomain requests. At FabricDomain create,
+a false or missing Ethernet capability returns `FAILED_PRECONDITION`. A
+provider must configure the selected Fabric Manager and template to implement
+any behavior it declares. OSAC validates the declaration and required
+configuration; it does not infer or prove backend support from manager
+registration.
+
+The [Multi-Fabric East-West Networking
 Design](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md)
-defines the associated API and validation.
+defines the FabricDomain API and the complete validation rules.
 
 ##### NetworkDataModel and NetworkManager APIs
 
@@ -2087,9 +2126,14 @@ No additional infrastructure beyond existing OSAC components and managers.
   policy and its manager routing for VM overlay, BMaaS, and CaaS interfaces;
   ensure policy is installed before traffic is enabled and removed before
   attachment teardown.
-- **OSAC-1382:** validate that Ethernet east-west capability declarations
-  require their template configuration and gate matching FabricDomain types;
-  reject unsupported InfiniBand and NVLink declarations and requests.
+- **OSAC-1382:** through fulfillment-service, verify that an omitted
+  capability block and false fields disable their FabricDomain types; a true
+  Ethernet declaration requires a non-empty template and enables only
+  `ETHERNET_EW`; a template alone does not enable it; unsupported true
+  InfiniBand/NVLink declarations are rejected at NetworkClass creation, and
+  requests for those types return `UNIMPLEMENTED`. Verify a disabled
+  Ethernet request returns `FAILED_PRECONDITION`, and that tenant ownership
+  and VirtualNetwork readiness checks still apply before provider dispatch.
 - **FR-4, FR-5:** validate ExternalIP allocation result and annotation against
   UID, generation, address family, and pool; ensure retry returns the same
   reservation; ensure release does not free API capacity before confirmed
@@ -2222,4 +2266,4 @@ Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind o
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

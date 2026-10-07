@@ -110,26 +110,38 @@ without redesign.
 
 ## Proposal
 
+### East-West capability semantics
+
+`NetworkClass` is the provider-managed networking profile described by
+[Unified Networking](/enhancements/OSAC-1433-unified-networking/design.md).
+Its east-west capability declaration is a predefined set of OSAC API fields
+that gates which optional `FabricDomain` types the deployment offers. It
+is not a provider-extensible list and does not describe manager-to-manager
+compatibility. In Phase 1, only Ethernet east-west may be enabled; InfiniBand
+and NVLink are future scope. Fulfillment-service validates the declaration
+and its required configuration both when NetworkClass is created and when a
+FabricDomain request is made. The declaration is a provider assertion about
+the configured implementation, not support inferred from manager metadata.
+
+The capability gate is separate from NetworkClass manager-pair validation.
+The latter compares the selected Kubernetes Manager's required
+NetworkDataModel names with the selected Fabric Manager's produced names,
+as defined in the [Network Manager Integration
+Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
+
 ### Core model
 
 ```text
 FabricDomain
-  type: ethernet_ew | infiniband_ew | nvlink | …
+  type: east-west fabric type
   servers: [hostname, …]
   virtual_networks: [vn]         # Phase 1: exactly one (required)
   status: conditions, backend_id, vpc_id
   # NetworkClass inherited from the associated VirtualNetwork
 
 NetworkClass
-  spec:
-    east_west_capabilities:
-      supports_east_west_ethernet: true/false
-      supports_east_west_infiniband: false      # unsupported in this proposal
-      supports_nvlink: false                    # unsupported in this proposal
-    east_west_config:
-      ethernet_ew: { template_id, … }
-      infiniband_ew: { … }                      # Phase 2
-      nvlink: { … }                             # Phase 3
+  # Provider-managed profile; east-west capability fields and config are
+  # defined in the API section below.
 
 VirtualNetwork   # existing — N-S / IP isolation boundary
   └── Subnet     # existing — IP segments
@@ -236,16 +248,38 @@ message NVLinkEastWestConfig {
 **Immutability:** `type` and `virtual_networks` are immutable after creation.
 Changing them requires delete + re-create. `servers` is mutable (resize).
 
-**NetworkClass capability validation:** `spec.east_west_capabilities` is the
-provider's declaration of which FabricDomain types the active implementation
-offers. A true Ethernet declaration enables Ethernet FabricDomain requests and
-requires a non-empty `spec.east_west_config.ethernet_ew.template_id`; an
-inconsistent NetworkClass is rejected with `INVALID_ARGUMENT`. InfiniBand and
-NVLink are unsupported in this proposal, so setting either capability to true
-is also rejected with `INVALID_ARGUMENT`. OSAC checks these declarations when
-validating NetworkClass and FabricDomain requests; it does not infer east-west
-support from manager-registration metadata. The provider must only advertise
-Ethernet when its selected Fabric Manager and template implement the behavior.
+**NetworkClass capability meaning and validation:** The API fields form the
+predefined east-west capability set described above. Fulfillment-service
+enforces them at NetworkClass creation and FabricDomain creation. An omitted
+`spec.east_west_capabilities` message or a false field means the
+corresponding type is unavailable. In Phase 1, only Ethernet may be enabled:
+
+- **Ethernet** (`supports_east_west_ethernet`): false by default. If true,
+  `spec.east_west_config.ethernet_ew.template_id` must be non-empty;
+  otherwise NetworkClass creation is rejected with `INVALID_ARGUMENT`.
+  Enabling it permits `ETHERNET_EW` requests. The selected Fabric Manager
+  uses the configured template to create the Ethernet east-west deployment
+  in the VirtualNetwork's fabric context. A missing or false declaration
+  rejects a request with `FAILED_PRECONDITION`.
+- **InfiniBand** (`supports_east_west_infiniband`): must remain false;
+  setting it true is rejected at NetworkClass creation with
+  `INVALID_ARGUMENT`. `INFINIBAND_EW` requests return `UNIMPLEMENTED`.
+- **NVLink** (`supports_nvlink`): must remain false; setting it true is
+  rejected at NetworkClass creation with `INVALID_ARGUMENT`. `NVLINK`
+  requests return `UNIMPLEMENTED`.
+
+Providing an Ethernet template while `supports_east_west_ethernet` is false
+does not enable the type. Fulfillment-service validates the declared fields
+and their configuration but does not infer actual manager or backend support.
+Manager-pair compatibility is validated separately when NetworkClass is
+created by comparing the selected managers' exact NetworkDataModel output and
+input names; see the [Network Manager Integration
+Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
+Other FabricDomain checks remain in force, including a recognized type,
+non-empty server membership, the Phase 1 one-VirtualNetwork constraint, and
+same-tenant and Ready VirtualNetwork validation. A request proceeds to
+provider reconciliation only after both the capability gate and those
+resource checks pass.
 
 **Validation (Phase 1)**
 
@@ -708,8 +742,15 @@ equivalent to "create a Server Cluster in a VPC" with an additional resource.
 - FD-VAL-07: reject `ETHERNET_EW` when VN's NetworkClass has a false or missing
   `spec.east_west_capabilities.supports_east_west_ethernet` declaration →
   `FAILED_PRECONDITION`.
-- NetworkClass validation: reject an enabled Ethernet declaration without a
-  template, or enabled InfiniBand/NVLink declarations, with `INVALID_ARGUMENT`.
+- NetworkClass capability validation: an omitted capability message and
+  all-false fields disable their types; a template by itself does not enable
+  Ethernet; true Ethernet with no non-empty template and true InfiniBand or
+  NVLink declarations are rejected with `INVALID_ARGUMENT`.
+- FabricDomain gating: with Ethernet enabled, a valid `ETHERNET_EW` request
+  reaches provisioning; a missing or false Ethernet declaration is rejected
+  with `FAILED_PRECONDITION` before provider dispatch; `INFINIBAND_EW` and
+  `NVLINK` requests return `UNIMPLEMENTED`. Manager-pair compatibility is
+  covered by the Network Manager Integration Contract test plan.
 - FD-VAL-06: reject `INFINIBAND_EW` and `NVLINK` types → `UNIMPLEMENTED`.
 - Template resolution: operator resolves NetworkClass from VN, then
   `template_id` from `spec.east_west_config.ethernet_ew`.
@@ -938,8 +979,8 @@ None. E2E testing uses the existing netris-lab on zeus12 (already provisioned).
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
-Phases: manual-edit, revise
+Phases: manual-edit, revise, revise, revise, revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":false,"origin_untracked":true} -->
