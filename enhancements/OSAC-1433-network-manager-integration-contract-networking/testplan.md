@@ -48,46 +48,48 @@
 
 - NetworkDataModel and NetworkManager CRDs and the fulfillment-service provider APIs are deployed.
 - A test AAP provider records whether an AAP job was created.
+- A controlled HTTP endpoint records whether schema validation attempts a network fetch.
 
 ##### Steps
 
-1. Create valid OSAC and provider-defined NetworkDataModel objects through the fulfillment-service API.
-2. Attempt models with an unsupported owner scope, malformed JSON Schema, unsupported schema dialect or vocabulary, remote reference, or an ID reserved to OSAC.
-3. Create Fabric and Kubernetes NetworkManager objects through the fulfillment-service API, each referencing existing model IDs.
-4. Attempt manager objects with an unknown or duplicate model ID, duplicate (role, managerName), invalid role, role-inappropriate input/output field, missing required list, invalid capability, or malformed implementation reference.
+1. Create valid OSAC and provider-defined NetworkDataModel objects through the fulfillment-service API, including a schema with the required `$schema` key and a local fragment reference. Read the object back and verify the schema is preserved unchanged.
+2. Attempt models with an unsupported owner scope, malformed JSON Schema, missing or unsupported `$schema` dialect, unsupported vocabulary, remote or file `$ref`/`$dynamicRef`, an external `$id`, a schema beyond OSAC's size, nesting, or evaluation-work limits, or a name reserved to OSAC.
+3. Create Fabric and Kubernetes NetworkManager objects through the fulfillment-service API, each referencing existing model names.
+4. Attempt manager objects with an unknown or duplicate model name, duplicate (role, managerName), invalid role, role-inappropriate input/output field, missing required list, malformed implementation reference.
 5. Create a NetworkClass that selects the valid pair; observe the create response and AAP job count.
 
 ##### Expected Results
 
 - Valid model and manager objects are returned by provider API Get and List and appear as the same objects in the Kubernetes backing store.
-- The fulfillment service rejects every invalid model or manager before it can be selected and identifies the object, invalid field, and model ID when relevant; Kubernetes schema validation independently rejects malformed backing objects.
+- The fulfillment service rejects every invalid model or manager before it can be selected and identifies the object, invalid field, and model name when relevant. Kubernetes preserves the inline schema object and independently validates the outer CRD fields; it does not interpret JSON Schema keywords.
+- Rejected remote references cause no request to the controlled endpoint.
 - A role's required declaration may be an empty list; an omitted declaration is rejected.
 - No AAP job is created for an invalid object or profile.
 
-#### TC-FR2-02: Validate manager capabilities and NetworkClass output
+#### TC-FR2-02: Enforce IPv4-only behavior without per-manager family declarations
 
 | Interface Change | Test Level | Priority | Automation |
 |-----------------|------------|----------|------------|
-| IC-1 | Integration | high | automated |
+| IC-3, IC-4 | Integration | high | automated |
 
 ##### Preconditions
 
-- Valid Fabric and Kubernetes NetworkManager objects with `ipv4` are available through the fulfillment-service API.
-- The operator derives the read-only NetworkClass IP-family capability output from the selected registrations.
+- Valid Fabric and optional Kubernetes NetworkManager registrations exist without any IP-family field.
+- The tenant networking API and provider dispatch are available.
 
 ##### Steps
 
-1. Create a NetworkClass using both managers and inspect its capability output.
-2. Attempt NetworkManager Create requests with missing `ipv4`, `ipv6`, and `dualStack` declarations.
-3. Exercise NetworkClass preflight with a registry fixture that returns a selected manager without required `ipv4`.
-4. Submit IPv6 and dual-stack network inputs through the networking API.
+1. Create a NetworkClass using the registered managers, with no per-manager address-family declarations.
+2. Inspect the NetworkClass API response for manager-derived IP-family output.
+3. Submit valid IPv4 networking input.
+4. Submit IPv6 and dual-stack values through the networking API.
 
 ##### Expected Results
 
-- The valid pair produces `supportsIpv4=true`, `supportsIpv6=false`, and `supportsDualStack=false`.
-- The fulfillment-service API rejects each invalid NetworkManager Create and persists no backing CRD; NetworkClass preflight rejects a selected role without required `ipv4` before persistence.
-- IPv6 and dual-stack API inputs are rejected before provider dispatch.
-
+- The NetworkClass is accepted based on valid role references and data-model compatibility; manager IP-family declarations are not required.
+- The NetworkClass exposes no manager-derived IP-family fields.
+- IPv4 input is accepted and reaches the assigned manager.
+- IPv6 and dual-stack input is rejected before provider dispatch.
 #### TC-FR2-03: Verify complete role operation and target coverage
 
 | Interface Change | Test Level | Priority | Automation |
@@ -173,7 +175,7 @@
 ##### Preconditions
 
 - Fabric and Kubernetes Manager collections from different sources are installed in the AAP execution environment.
-- The Fabric registration declares VXLAN L3 VNI, VXLAN L2 VNI, and reserved IPv4 CIDR model IDs as outputs; the Kubernetes registration declares those same IDs as inputs.
+- The Fabric registration declares VXLAN L3 VNI, VXLAN L2 VNI, and reserved IPv4 CIDR model names as outputs; the Kubernetes registration declares those same NetworkDataModel names as inputs.
 
 ##### Steps
 
@@ -183,7 +185,7 @@
 
 ##### Expected Results
 
-- OSAC accepts the pair because each Kubernetes input model ID is declared by the Fabric Manager.
+- OSAC accepts the pair because each Kubernetes input model name is declared by the Fabric Manager.
 - Both managers receive the shared resource shape; the Kubernetes Manager receives schema-validated values from both the parent VirtualNetwork and current Subnet scopes.
 - The tenant API does not expose or require a backend selector.
 
@@ -207,9 +209,9 @@
 
 ##### Expected Results
 
-- Each output document records the exact resource kind and UID for its target and contains JSON values under the registered model IDs.
+- Each output document records the exact resource kind and UID for its target and contains JSON values under the registered model names.
 - The Fabric role can update its named output targets and cannot update another ConfigMap in the networking hub namespace.
-- OSAC validates model ID, owner scope, and JSON Schema, then passes only applicable Kubernetes Manager inputs with their owner kind and UID.
+- OSAC validates model name, owner scope, and JSON Schema, then passes only applicable Kubernetes Manager inputs with their owner kind and UID.
 - A Kubernetes Subnet operation receives both parent-VirtualNetwork and current-Subnet values when required; it does not receive unrelated Fabric outputs.
 - The Subnet becomes Ready only after both create stages succeed.
 - Delete runs Kubernetes cleanup before Fabric cleanup and supplies the same required inputs while both artifacts remain available.
@@ -250,7 +252,7 @@
 ##### Preconditions
 
 - Two valid NetworkManager objects exist.
-- The Kubernetes Manager requires a model ID that the Fabric Manager does not declare.
+- The Kubernetes Manager requires a model name that the Fabric Manager does not declare.
 
 ##### Steps
 
@@ -260,7 +262,7 @@
 
 ##### Expected Results
 
-- NetworkClass creation is rejected synchronously with the unsatisfied model ID and both manager names.
+- NetworkClass creation is rejected synchronously with the unsatisfied model name and both manager names.
 - The invalid NetworkClass is not persisted.
 - No resource operation or AAP job can use the invalid profile.
 
@@ -303,16 +305,16 @@
 
 ##### Steps
 
-1. Register the model and declare its ID in the Fabric Manager's `networkOutputs` and the Kubernetes Manager's `networkInputs`.
+1. Register the model and declare its name in the Fabric Manager's `networkOutputs` and the Kubernetes Manager's `networkInputs`.
 2. Select both managers through NetworkClass and create a Subnet.
 3. Have Fabric publish an object that satisfies the registered schema under the Subnet UID.
 4. Observe the Kubernetes AAP input and its backend mapping.
 
 ##### Expected Results
 
-- OSAC accepts the manager pair because both declare the same registered model ID.
+- OSAC accepts the manager pair because both declare the same registered model name.
 - The Fabric JSON value passes generic schema validation and remains owned by the Subnet UID.
-- OSAC passes that value to the Kubernetes role with the same model ID; the role maps it to its implementation's backend fields.
+- OSAC passes that value to the Kubernetes role with the same model name; the role maps it to its implementation's backend fields.
 - The new model and manager integration require provider catalog/manager configuration and Ansible content, with no manager-specific Go change or tenant API change.
 
 ### FR-6: Validate model definitions, scope, and produced values
@@ -326,7 +328,7 @@
 ##### Preconditions
 
 - A valid model with `NetworkClass` owner scope and a JSON object schema is registered.
-- The selected managers both declare the model ID.
+- The selected managers both declare the model name.
 - The Fabric test role can write only OSAC-provided output targets.
 
 ##### Steps
@@ -340,7 +342,7 @@
 ##### Expected Results
 
 - The wrong owner scope and schema-invalid value each fail in separate attempts and block Kubernetes dispatch.
-- The diagnostic identifies the model ID and NetworkClass owner UID.
+- The diagnostic identifies the model name and NetworkClass owner UID.
 - The valid JSON value is stored under the NetworkClass UID and resolved with `resource_kind: NetworkClass`.
 - The Kubernetes role receives only the declared input and does not receive the Fabric writer credential.
 
@@ -352,7 +354,7 @@
 
 ##### Preconditions
 
-- A valid NetworkDataModel is referenced by a NetworkManager, and a retained owner-scoped output artifact contains a valid value for its ID.
+- A valid NetworkDataModel is referenced by a NetworkManager, and a retained owner-scoped output artifact contains a valid value under its NetworkDataModel name.
 - A valid NetworkClass selects that manager and has no VirtualNetworks.
 
 ##### Steps

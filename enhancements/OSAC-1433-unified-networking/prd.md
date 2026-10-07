@@ -49,13 +49,13 @@ superseded-by:
 
 ## 1. Problem Statement
 
-OSAC tenants use virtual machines, managed clusters, and bare-metal servers, but networking is not consistent across those workloads. VMaaS has a tenant networking model, while CaaS and BMaaS rely on separate service-specific flows. Tenant Admins and Tenant Users cannot apply one familiar network model across their workloads, and Cloud Infrastructure Admins must support different provider networking paths. A shared set of networking capabilities gives tenants consistent control and gives providers one configurable networking contract to support.
+OSAC tenants use virtual machines, managed clusters, and bare-metal servers, but networking is not consistent across those workloads. VMaaS has a tenant networking model, while CaaS and BMaaS rely on separate service-specific flows. Tenant Admins and Tenant Users cannot apply one familiar network model across their workloads, and Cloud Infrastructure Admins must support different provider networking paths. A shared networking model gives tenants consistent control and gives providers one configurable networking contract to support.
 
 ## 2. Goals and Non-Goals
 
 ### 2.1 Goals
 
-- Tenant Admins and Tenant Users can use the same networking capabilities with VMs, clusters, and bare-metal servers.
+- Tenant Admins and Tenant Users can use the same networking resources and workflows with VMs, clusters, and bare-metal servers.
 - Tenants can isolate workloads, connect workloads on their networks, and control inbound and outbound external access.
 - Cloud Infrastructure Admins choose the provider networking implementation without requiring tenants to understand or select it.
 - Cloud Provider Admins can control whether OSAC performs provider networking operations during installation or upgrade while ordinary workload provisioning remains available.
@@ -94,7 +94,7 @@ OSAC tenants use virtual machines, managed clusters, and bare-metal servers, but
 ### Cloud Infrastructure Admin
 
 - As a Cloud Infrastructure Admin, I want to choose a provider networking service that meets OSAC's requirements and manage shared external address capacity, so that the provider can change implementations without changing the tenant resource model.
-- As a Cloud Infrastructure Admin, I want to view NetworkClasses and ExternalIP pools in the unified UI, so that I can inspect configured manager capabilities and address capacity.
+- As a Cloud Infrastructure Admin, I want to view NetworkClasses and ExternalIP pools in the unified UI, so that I can inspect configured manager roles, east-west support, and address capacity.
 
 ### Cloud Provider Admin
 
@@ -118,7 +118,7 @@ Every networking resource uses the same model across VMs, cluster nodes, and bar
 
 #### FR-3: Uniform networking across all service types (R3)
 
-Tenant Admins and Tenant Users can use the shared VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and NATGateway capabilities with VMaaS, CaaS, and BMaaS. Provider-managed address pools make ExternalIPs available to all three workload types.
+Tenant Admins and Tenant Users can use the shared VirtualNetwork, Subnet, SecurityGroup, ExternalIP, ExternalIPAttachment, and NATGateway resources with VMaaS, CaaS, and BMaaS. Provider-managed address pools make ExternalIPs available to all three workload types.
 
 #### FR-4: ExternalIP is external to the VirtualNetwork (R4)
 
@@ -126,11 +126,11 @@ An ExternalIP provides an address outside a tenant's VirtualNetwork. The provide
 
 #### FR-5: Clear ingress/egress separation (R5)
 
-Tenants can configure inbound access to a workload with an ExternalIPAttachment and optional outbound access with a NATGateway. These capabilities have distinct purposes, and a NATGateway is not required for a workload to have basic connectivity.
+Tenants can configure inbound access to a workload with an ExternalIPAttachment and optional outbound access with a NATGateway. ExternalIPAttachment and NATGateway serve different purposes, and a NATGateway is not required for a workload to have basic connectivity.
 
 #### FR-6: Pluggable networking backends with transparent selection (R6)
 
-Cloud Infrastructure Admins can use any provider networking implementation that meets OSAC's requirements for the capabilities it supplies. The same resource model works with any conforming implementation; tenants do not select or need to understand the provider choice.
+Cloud Infrastructure Admins can use provider networking implementations that fulfill OSAC's shared networking behavior for the workload types they support. The same resource model works across conforming implementations; tenants do not select or need to understand the provider choice.
 
 #### FR-7: Single network attachment per workload (R7)
 
@@ -164,7 +164,7 @@ No non-functional requirements were specified for this proposal.
 - **Default Networking:** [/enhancements/OSAC-1433-default-networking](/enhancements/OSAC-1433-default-networking) defines tenant default-resource automation.
 - **BareMetal Instance API:** [/enhancements/OSAC-1118-baremetal-instance-api](/enhancements/OSAC-1118-baremetal-instance-api) defines the BaremetalInstance resource used by BMaaS.
 - **Per-service networking proposals:** [VMaaS](/enhancements/OSAC-1435-vmaas-networking), [CaaS](/enhancements/OSAC-1436-caas-networking), and [BMaaS](/enhancements/OSAC-1437-bmaas-networking) define how each service consumes the shared networking model.
-- **Network Manager Integration Contract:** Its [PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md) defines how providers determine whether manager implementations and selected pairs meet OSAC's requirements while preserving the shared tenant networking model.
+- **Network Manager Integration Contract:** Its [PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md) defines how providers add networking implementations that work together while preserving the shared tenant networking model.
 - **Unified Networking UI (OSAC-2226):** Tracks the standalone networking UI and shared resource pickers required by FR-11.
 - **User documentation:** API, CLI, and UI guidance must reflect the shared resource lifecycle and the support limits in this PRD.
 - **Three-Layer Networking Model:** [Architecture reference](https://docs.google.com/document/d/1MwBjpmYoZoUN3PVjeIRZ2Y6mBuf0lu1uvTtN6XXPPTM).
@@ -187,9 +187,11 @@ networking resources are not coordinated across multiple hubs.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
-Phases: revise, revise, revise, revise, revise
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"d165396","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
