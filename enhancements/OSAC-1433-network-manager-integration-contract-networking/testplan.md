@@ -24,7 +24,8 @@ service.
    limits.
 3. Create a NetworkData value that matches the model, then submit a value that
    violates its schema or owner scope.
-4. Try Update/Patch and try deleting a model while it is referenced.
+4. Try Update/Patch on the NetworkDataModel and runtime NetworkData, then try
+   deleting a model while it is referenced.
 
 **Expected results**
 
@@ -35,7 +36,9 @@ service.
 - NetworkData uniqueness is enforced by model name, owner kind, and owner UID;
   an identical retry returns the existing record and a different value is
   rejected.
-- Update/Patch are rejected. Delete is blocked while dependencies remain.
+- Update/Patch are rejected for NetworkDataModel and NetworkData. Delete is
+  blocked while dependencies remain; only the OSAC service identity may
+  create or delete runtime NetworkData.
 
 ### TC-2: Validate NetworkManager and NetworkClass compatibility
 
@@ -53,7 +56,8 @@ service.
 4. Enable Ethernet east-west first with a Fabric Manager that lacks
    `EAST_WEST_ETHERNET`, then with one that declares it. Also leave the
    NetworkClass capability false while the manager declares it.
-5. Try Update/Patch and delete registrations while referenced.
+5. Try Update/Patch on NetworkManager and NetworkClass, then delete a manager
+   while it is referenced.
 
 **Expected results**
 
@@ -65,7 +69,8 @@ service.
   Manager. NetworkClass may enable Ethernet east-west only when its selected
   Fabric Manager declares that capability. A manager declaration alone does
   not enable tenant requests.
-- Immutable objects reject Update/Patch and block Delete while referenced.
+- NetworkManager and NetworkClass reject Update/Patch. Delete is blocked while
+  dependencies remain.
 
 ### TC-3: Dispatch AAP roles with shared group settings and secrets
 
@@ -233,3 +238,16 @@ optional capability. Retain the test output, AAP job details with secret
 values redacted, and observations of the resulting backend behavior. The
 registration APIs validate declarations and data shapes; passing registration
 validation alone is not evidence of behavioral conformance.
+
+---
+
+## Provenance
+
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
+Final: revise @ design 0.11.3 - 2bd6607, workspace docs/network-manager-provider-guide @ af7e4e348 (dirty)
+
+> Context changed between revise and revise.
+
+> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"af7e4e348 (dirty)","source_repo_branch":"docs/network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
