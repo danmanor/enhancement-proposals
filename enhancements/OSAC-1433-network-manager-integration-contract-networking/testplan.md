@@ -44,12 +44,10 @@ service.
 **Steps**
 
 1. Create Fabric and Kubernetes NetworkManager registrations with valid roles,
-   globally unique role names, model declarations, configuration, and
-   credential IDs.
+   globally unique role names, model declarations, and capabilities.
 2. Try duplicate `managerName` values across roles, invalid role-name format,
    a missing model reference, a model
-   declared in the wrong role direction, invalid credential IDs, and unknown
-   capability enum values.
+   declared in the wrong role direction, and unknown capability enum values.
 3. Create NetworkClasses with unresolved or wrong-role manager names and with
    Kubernetes input model names absent from Fabric outputs.
 4. Enable Ethernet east-west first with a Fabric Manager that lacks
@@ -69,7 +67,7 @@ service.
   not enable tenant requests.
 - Immutable objects reject Update/Patch and block Delete while referenced.
 
-### TC-3: Dispatch the generic AAP role with isolated settings and credentials
+### TC-3: Dispatch AAP roles with shared group settings and secrets
 
 **Requirements:** FR-1, FR-2, FR-8; IC-2, IC-3
 
@@ -78,10 +76,15 @@ service.
 1. Install a test `osac.networking` collection in the configured AAP execution
    environment. It contains roles named for each registration's `managerName`
    and the task files listed in the resource action table.
-2. Run representative Fabric and Kubernetes operations using different
-   `configuration` objects and different AAP Credential IDs.
-3. Inspect the generic playbook invocation, AAP launch request, and each
-   manager's `osac_job_vars`.
+2. Put a non-secret backend endpoint in the networking fulfillment group's
+   ConfigMap and a test token in its Secret. Run representative Fabric and
+   Kubernetes operations in that fulfillment group.
+3. Inspect the job environment, generic playbook invocation,
+   `osac_job_vars`, `osac_result`, and logs. Confirm both selected roles can
+   read the group values.
+4. Configure a test public CA bundle through the group ConfigMap and verify a
+   manager task can use it for its backend client while certificate
+   verification remains enabled.
 
 **Expected results**
 
@@ -91,9 +94,22 @@ service.
 - AAP job variables contain `osac_network_task_from`, but neither
   `osac_job_vars` nor `osac_result` contains an operation identifier. The
   provider cannot select a different task, role, or manager stage.
-- `manager.configuration` contains the selected manager's non-secret values.
-  AAP receives only that registration's credential IDs; credential values do
-  not appear in job variables, NetworkData, or result artifacts.
+- Every manager job receives the networking fulfillment group's ConfigMap and
+  Secret keys as environment variables. The values are shared across all
+  manager roles in that group; the design provides no per-manager secret
+  isolation. The selected role reads only the environment-variable names it
+  requires.
+- Backend settings and secrets are not fields on NetworkManager or
+  NetworkClass and do not appear in `osac_job_vars`, NetworkData, or
+  `osac_result`. Secret values do not appear in task logs or AAP result
+  artifacts.
+- A role reports a clear failure when a required environment variable is
+  missing or malformed, and does not report the resource Ready. For a custom
+  backend CA, the role writes the configured bundle to a job-local file and
+  passes that file to its backend client with certificate verification
+  enabled; this does not change the pod-wide trust store. Any private key
+  material comes from the Secret, is written with restrictive permissions,
+  and is removed after use.
 - OSAC derives expected output model/owner keys from the Fabric Manager's
   `networkOutputs`, the owner scopes in the operation context, and existing
   NetworkData. The provider-authored Fabric role knows its manager's declared
@@ -102,8 +118,8 @@ service.
 - `network_owner_context` contains the live owner kinds and hub UIDs for the
   operation. The manager result uses those identities, and OSAC rejects an
   owner that is not in that context.
-- Missing role/task content, denied credentials, or invalid manager-specific
-  settings fail the operation and do not report the resource Ready.
+- Missing role/task content or invalid manager-specific environment settings
+  fail the operation and do not report the resource Ready.
 - The manager cannot choose a different operation or target.
 
 ### TC-4: Validate manager results, NetworkData exchange, and job identity

@@ -80,7 +80,7 @@ superseded-by:
   - [IC-1: Shared networking resource API](#ic-1-shared-networking-resource-api)
   - [IC-2: Workload network attachments](#ic-2-workload-network-attachments)
   - [IC-3: External access](#ic-3-external-access)
-  - [IC-4: Provider manager configuration](#ic-4-provider-manager-configuration)
+  - [IC-4: Provider manager registration and settings](#ic-4-provider-manager-registration-and-settings)
   - [IC-5: Provider networking control](#ic-5-provider-networking-control)
   - [IC-6: Unified networking UI and documentation](#ic-6-unified-networking-ui-and-documentation)
   - [IC-7: SecurityGroup enforcement on workload attachments](#ic-7-securitygroup-enforcement-on-workload-attachments)
@@ -133,7 +133,7 @@ This section defines the provider configuration, manager roles, and networking r
 
 #### Provider Profile and Manager Roles
 
-A **NetworkClass** is a provider-managed configuration container for one deployment. It holds manager-role selections, provider defaults, the east-west capability enabled for the deployment, and readiness status; it is not a tenant network and tenants do not select it. Backend-specific settings belong to the selected NetworkManager registration, not NetworkClass. The active NetworkClass and its role assignments form the deployment's **networking profile**.
+A **NetworkClass** is a provider-managed configuration container for one deployment. It holds manager-role selections, provider defaults, the east-west capability enabled for the deployment, and readiness status; it is not a tenant network and tenants do not select it. It contains no backend settings or credentials. Providers supply backend endpoints, settings, and credentials to AAP jobs through the existing networking fulfillment group's ConfigMap and Secret. The networking instance-group pod exposes those keys as environment variables to every manager job in the group, so the group is a shared trust boundary rather than per-manager isolation. The active NetworkClass and its role assignments form the deployment's **networking profile**.
 
 Each deployment's **networking hub** is the provider-designated OSAC management cluster where networking resource objects are stored and reconciled. Resource status records that hub so reconciliation stays in the same cluster.
 
@@ -215,7 +215,7 @@ message NetworkClassSpec {
   NetworkDefaults defaults = 1;
   reserved 2; // Legacy field number retained; this API does not use it.
   optional int32 vip_prefix_length = 3; // virtual IP (VIP) reservation prefix; valid range 1 through 32
-  reserved 4; // Backend-specific east-west settings belong to NetworkManager.configuration.
+  reserved 4; // Backend settings and credentials are supplied through the networking fulfillment group.
   NetworkClassEastWestCapabilities east_west_capabilities = 5; // enabled FabricDomain behavior
 }
 
@@ -267,12 +267,15 @@ declare `NETWORK_MANAGER_CAPABILITY_EAST_WEST_ETHERNET` in its immutable
 `supports_east_west_ethernet` to true.
 Fulfillment-service rejects NetworkClass creation if the enabled behavior is
 absent from the selected manager. Backend-specific settings, such as a
-provider template name, belong in that manager's `spec.configuration`. OSAC
-passes the configuration to the Fabric Manager but does not interpret its
-keys; the manager validates its required settings when it executes the
-`create_fabric_domain` task. A missing or invalid backend setting fails that
-operation and leaves the FabricDomain non-ready. A manager capability alone
-does not enable the behavior.
+provider template name, are supplied through the networking fulfillment
+group's ConfigMap or Secret and arrive in the manager job as environment
+variables. They are not stored on NetworkClass or NetworkManager. Every
+manager job in the group can read these values, so providers must treat all
+installed roles as trusted. The Fabric Manager validates its required
+environment values when it executes the `create_fabric_domain` task. A
+missing or invalid backend setting fails that operation and leaves the
+FabricDomain non-ready. A manager capability alone does not enable the
+behavior.
 
 The [Multi-Fabric East-West Networking
 Design](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md)
@@ -1433,11 +1436,11 @@ ComputeInstance, Cluster, and BaremetalInstance accept their resource-specific n
 
 ExternalIPAttachment exposes inbound access to supported workload endpoints. NATGateway exposes optional outbound source identity. The resource and endpoint shapes are defined in [API Extensions](#api-extensions).
 
-### IC-4: Provider manager configuration
+### IC-4: Provider manager registration and settings
 
 **Requirements:** FR-6
 
-Provider configuration uses fulfillment-service APIs to create NetworkDataModel and NetworkManager objects, then creates a NetworkClass that selects each manager by role and spec.managerName. The fulfillment service validates model references when each registry object is created and checks manager roles and input/output compatibility before persisting NetworkClass. Tenant APIs do not expose these implementation choices. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines manager onboarding, object schemas, immutable lifecycle, and conformance.
+Provider registration uses the fulfillment-service APIs to create NetworkDataModel and NetworkManager objects, then creates a NetworkClass that selects each manager by role and spec.managerName. The fulfillment service validates model references when each registry object is created and checks manager roles and input/output compatibility before persisting NetworkClass. Providers supply backend settings and secrets through the networking fulfillment group's ConfigMap and Secret, which are exposed as environment variables to every manager job in that group; NetworkManager does not carry a separate configuration field or AAP credential references. A manager role validates and uses the environment variables it requires. Tenant APIs do not expose manager choices or provider settings. The [Network Manager Integration Contract](#manager-dispatch-and-integration-contract) defines manager onboarding, object schemas, immutable lifecycle, the shared group environment, and conformance.
 
 ### IC-5: Provider networking control
 
