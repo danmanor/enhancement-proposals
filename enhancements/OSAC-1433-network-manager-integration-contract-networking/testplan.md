@@ -44,9 +44,10 @@ service.
 **Steps**
 
 1. Create Fabric and Kubernetes NetworkManager registrations with valid roles,
-   implementation references, model declarations, configuration, and
+   globally unique role names, model declarations, configuration, and
    credential IDs.
-2. Try duplicate `(role, managerName)`, a missing model reference, a model
+2. Try duplicate `managerName` values across roles, invalid role-name format,
+   a missing model reference, a model
    declared in the wrong role direction, invalid credential IDs, and unknown
    capability enum values.
 3. Create NetworkClasses with unresolved or wrong-role manager names and with
@@ -74,9 +75,9 @@ service.
 
 **Steps**
 
-1. Install a test collection in the configured AAP execution environment. Its
-   fully qualified role reference implements the task files listed in the
-   operation table.
+1. Install a test `osac.networking` collection in the configured AAP execution
+   environment. It contains roles named for each registration's `managerName`
+   and the task files listed in the resource action table.
 2. Run representative Fabric and Kubernetes operations using different
    `configuration` objects and different AAP Credential IDs.
 3. Inspect the generic playbook invocation, AAP launch request, and each
@@ -84,8 +85,12 @@ service.
 
 **Expected results**
 
-- OSAC's generic playbook dynamically includes the registered FQCN and the
-  task entry point selected from the fixed operation table.
+- OSAC derives the role FQCN as `osac.networking.<managerName>` and passes the
+  exact task filename stem selected from the resource kind and lifecycle
+  action. AAP launches the one generic networking job template.
+- AAP job variables contain `osac_network_task_from`, but neither
+  `osac_job_vars` nor `osac_result` contains an operation identifier. The
+  provider cannot select a different task, role, or manager stage.
 - `manager.configuration` contains the selected manager's non-secret values.
   AAP receives only that registration's credential IDs; credential values do
   not appear in job variables, NetworkData, or result artifacts.
@@ -105,14 +110,14 @@ service.
    schema-invalid output entries in separate attempts.
 3. Verify the Kubernetes Manager starts only after valid values have been
    persisted, and receives only its declared, applicable inputs.
-4. Retry a running operation and an operation whose prior attempt failed;
+4. Retry a running task and a task whose prior attempt failed;
    inspect the AAP job IDs and returned artifacts.
 5. Delete the Subnet and inspect cleanup ordering and retained NetworkData.
 
 **Expected results**
 
-- Every successful manager operation returns `artifacts.osac_result` with
-  `operation`, `resourceUID`, `observedGeneration`, and `data.network_data`.
+- Every successful manager task returns `artifacts.osac_result` with
+  `resourceUID`, `observedGeneration`, and `data.network_data`.
   `data.network_data` is an empty list when no value is requested. DHCP lease
   lookup and ExternalIP allocation use this same envelope.
 - OSAC validates the entire result before creating NetworkData. It creates
@@ -121,8 +126,9 @@ service.
 - A failed validation prevents NetworkData writes and dependent Kubernetes
   dispatch. Subnet create runs Fabric then Kubernetes; delete runs Kubernetes
   then Fabric, retaining values until cleanup succeeds.
-- OSAC polls the exact job ID it recorded. A result from another job, resource,
-  generation, or manager target cannot complete the attempt. Retried manager
+- OSAC polls the exact job ID it recorded. It checks the result against that
+  job's resource context, manager stage, and task name. A result from another
+  job, resource, generation, or manager target cannot complete the attempt. Retried manager
   operations reuse the same owner-scoped values and are idempotent by resource
   UID.
 
@@ -157,9 +163,8 @@ service.
 
 **Steps**
 
-1. With Ethernet east-west disabled, request a FabricDomain operation. Repeat
-   with it enabled and the selected Fabric Manager declaring
-   `EAST_WEST_ETHERNET`.
+1. Try creating a FabricDomain with Ethernet east-west disabled. Repeat with
+   it enabled and the selected Fabric Manager declaring `EAST_WEST_ETHERNET`.
 2. Allocate and release an ExternalIP, retrying allocation for the same
    ExternalIP UID. Submit a malformed address and an address outside the pool.
 3. Query DHCP leases for Cluster and BaremetalInstance attachments, including
@@ -172,19 +177,19 @@ service.
   selected generic Fabric Manager; its implementation preserves
   VirtualNetwork routing and Subnet broadcast domains.
 - ExternalIP allocation returns the canonical IPv4 address in
-  `osac_result.data.external_ip.address`. OSAC validates it against the
-  resource UID, generation, and selected pool, then writes
+  `osac_result.data.external_ip.address`. OSAC validates the result against
+  its tracked job context and the address against the selected pool, then writes
   `ExternalIP.status.address`. Managers have no Kubernetes write credential.
   Retrying the same UID returns the same reservation; invalid results are
   rejected and capacity is released only after confirmed provider release.
 - DHCP leases are returned in `osac_result.data.dhcp_leases`, with one
   unambiguous entry per requested attachment. Missing or ambiguous results
-  fail the operation.
+  fail the task.
 
 ## Provider Evidence
 
 Before production selection, the Cloud Infrastructure Admin verifies every
-base operation and target assigned to each selected role, plus each enabled
+base task set and target assigned to each selected role, plus each enabled
 optional capability. Retain the test output, AAP job details with secret
 values redacted, and observations of the resulting backend behavior. The
 registration APIs validate declarations and data shapes; passing registration
