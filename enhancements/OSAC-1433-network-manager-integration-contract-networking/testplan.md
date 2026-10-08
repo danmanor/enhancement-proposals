@@ -94,6 +94,14 @@ service.
 - `manager.configuration` contains the selected manager's non-secret values.
   AAP receives only that registration's credential IDs; credential values do
   not appear in job variables, NetworkData, or result artifacts.
+- OSAC derives expected output model/owner keys from the Fabric Manager's
+  `networkOutputs`, the owner scopes in the operation context, and existing
+  NetworkData. The provider-authored Fabric role knows its manager's declared
+  model names; OSAC does not pass the declaration or derived key set to AAP.
+  The task must return each expected key exactly once and no other key.
+- `network_owner_context` contains the live owner kinds and hub UIDs for the
+  operation. The manager result uses those identities, and OSAC rejects an
+  owner that is not in that context.
 - Missing role/task content, denied credentials, or invalid manager-specific
   settings fail the operation and do not report the resource Ready.
 - The manager cannot choose a different operation or target.
@@ -104,12 +112,19 @@ service.
 
 **Steps**
 
-1. Provision a Subnet whose Fabric Manager must publish values for the
-   NetworkClass, VirtualNetwork, and Subnet owner scopes.
-2. Return valid, missing, duplicate, undeclared, wrong-owner, and
-   schema-invalid output entries in separate attempts.
-3. Verify the Kubernetes Manager starts only after valid values have been
-   persisted, and receives only its declared, applicable inputs.
+1. Create a VirtualNetwork and then a Subnet with a Fabric Manager that
+   declares VirtualNetwork- and Subnet-scoped outputs. Verify that a
+   Subnet-scoped model is not expected during VirtualNetwork creation, and
+   that the already stored VirtualNetwork value is not expected again during
+   Subnet creation.
+2. Inspect the Subnet AAP input and confirm it contains existing NetworkData
+   and the live NetworkClass, VirtualNetwork, and Subnet identities in
+   `network_owner_context`, but no expected-output list. Return exactly the
+   missing Subnet-scoped values. In separate attempts, omit an expected
+   value, duplicate a key, return an unexpected key, use a wrong owner, or
+   violate a schema.
+3. Verify the Kubernetes Manager starts only after all expected values have
+   been persisted, and receives only its declared, applicable inputs.
 4. Retry a running task and a task whose prior attempt failed;
    inspect the AAP job IDs and returned artifacts.
 5. Delete the Subnet and inspect cleanup ordering and retained NetworkData.
@@ -118,19 +133,27 @@ service.
 
 - Every successful manager task returns `artifacts.osac_result` with
   `resourceUID`, `observedGeneration`, and `data.network_data`.
-  `data.network_data` is an empty list when no value is requested. DHCP lease
-  lookup and ExternalIP allocation use this same envelope.
+  `data.network_data` is an empty list when no new outputs are expected. DHCP
+  lease lookup and ExternalIP allocation use this same envelope.
+- OSAC derives the expected Fabric model/owner keys internally. A successful
+  Fabric task returns every expected key exactly once and no other key; each
+  value matches its owner scope and JSON Schema. Existing values and values
+  whose owner scope is not in the operation context are not expected again.
 - OSAC validates the entire result before creating NetworkData. It creates
   runtime records through the fulfillment-service API; managers do not write
   Kubernetes objects or call that API.
-- A failed validation prevents NetworkData writes and dependent Kubernetes
-  dispatch. Subnet create runs Fabric then Kubernetes; delete runs Kubernetes
-  then Fabric, retaining values until cleanup succeeds.
+- A missing or invalid expected value, duplicate key, or unexpected key
+  prevents all NetworkData writes and dependent Kubernetes dispatch. Subnet
+  create runs Fabric then Kubernetes; delete runs Kubernetes then Fabric,
+  retaining values until cleanup succeeds.
+- OSAC also checks that every applicable Kubernetes input exists after
+  persistence. If one is absent, it reports the missing model and does not
+  launch the Kubernetes job.
 - OSAC polls the exact job ID it recorded. It checks the result against that
   job's resource context, manager stage, and task name. A result from another
-  job, resource, generation, or manager target cannot complete the attempt. Retried manager
-  operations reuse the same owner-scoped values and are idempotent by resource
-  UID.
+  job, resource, generation, or manager target cannot complete the attempt.
+  Retried manager operations reuse the same owner-scoped values and are
+  idempotent by resource UID.
 
 ### TC-5: Verify the shared resource behavior across workload targets
 

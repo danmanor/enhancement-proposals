@@ -265,7 +265,7 @@ A NetworkManager is a cluster-scoped OSAC API object that registers one Fabric o
 | metadata.name | Yes | DNS-safe Kubernetes object name, unique across NetworkManager objects. It need not match the logical manager name. |
 | spec.managerName | Yes | Immutable manager name referenced by NetworkClass and used as the Ansible role directory name. It must be a lowercase role identifier beginning with a letter and containing only lowercase letters, digits, or underscores. It is globally unique across Fabric and Kubernetes managers. |
 | spec.role | Yes | `NETWORK_MANAGER_ROLE_FABRIC` or `NETWORK_MANAGER_ROLE_KUBERNETES`. These are the Fabric and Kubernetes manager roles. |
-| spec.networkOutputs | Fabric only | List, possibly empty, of model names this Fabric Manager can produce. |
+| spec.networkOutputs | Fabric only | List, possibly empty, of model names this Fabric Manager can produce. It supports compatibility checks and expected-result validation; the provider keeps it aligned with the Fabric role's implementation. For each create or reconcile action, OSAC expects one value for each listed model whose owner scope is in the operation context and whose value is not already stored. |
 | spec.networkInputs | Kubernetes only | List, possibly empty, of model names this Kubernetes Manager requires whenever the model owner is present for one of its assigned operations. |
 | spec.description | No | Human-readable description for provider administration. |
 | spec.configuration | No | Provider-defined JSON object of non-secret backend settings. OSAC preserves and passes it through without interpreting vendor-specific keys. |
@@ -463,9 +463,9 @@ name.
 
 The fulfillment service exposes NetworkData through its internal API. Its database is authoritative, and its existing controller path projects each record as a cluster-scoped `NetworkData` CRD into the networking hub. `Get` and `List` are available to authorized Cloud Infrastructure Admins and OSAC components. Only the operator's authenticated service identity may `Create` values from manager results; only OSAC owner cleanup may `Delete` them. Provider callers cannot create, update, patch, or directly delete runtime values. OSAC resolves values from the fulfillment-service API and passes them in AAP job variables; manager roles do not read or write the CRDs directly. Every operation is scoped to a model and owner UID. For tenant-owned VirtualNetwork and Subnet records, OSAC copies the tenant and owner-reference annotations from the owner; NetworkClass-scoped records are provider-owned.
 
-On `Create`, the fulfillment service verifies that the model exists, the owner kind matches `NetworkDataModel.spec.ownerScope`, the caller is authorized for that owner, and the JSON value validates against the registered schema. Before calling the service, the OSAC operator verifies that the owner UID is the live hub object's `metadata.uid` and validates the complete manager result: every requested output is present exactly once, no undeclared model or owner is returned, and every value matches its schema. The fulfillment service enforces uniqueness for the model/owner key and treats an identical retry as success while rejecting a different value for the same key. Kubernetes validates the NetworkData CRD's outer fields and preserves the arbitrary JSON `value`; the fulfillment service performs the cross-resource schema validation. NetworkDataModel deletion is blocked while either a NetworkManager or a NetworkData object references the model. An owner cleanup removes its NetworkData only after all manager operations that may consume it have succeeded.
+On `Create`, the fulfillment service verifies that the model exists, the owner kind matches `NetworkDataModel.spec.ownerScope`, the caller is authorized for that owner, and the JSON value validates against the registered schema. Before calling the service, the OSAC operator verifies that the owner UID is the live hub object's `metadata.uid` and validates the complete Fabric result. For a create or reconcile action, it derives the expected `(model_name, owner.kind, owner.uid)` keys from the selected Fabric Manager's `networkOutputs`, matching owners in `network_owner_context`, and values not already stored. The task must return each expected key exactly once and no other key. OSAC also verifies that every returned owner matches an entry in `network_owner_context`, matches the model's `ownerScope`, and has a value matching the registered schema. Delete tasks have no expected new outputs; they receive existing NetworkData and owner context for cleanup. Before a Kubernetes stage starts, OSAC separately verifies that each applicable model declared in that manager's `networkInputs` has exactly one valid stored value. The fulfillment service enforces uniqueness for the model/owner key and treats an identical retry as success while rejecting a different value for the same key. Kubernetes validates the NetworkData CRD's outer fields and preserves the arbitrary JSON `value`; the fulfillment service performs the cross-resource schema validation. NetworkDataModel deletion is blocked while either a NetworkManager or a NetworkData object references the model. An owner cleanup removes its NetworkData only after all manager operations that may consume it have succeeded.
 
-For a Fabric create or reconcile operation, OSAC derives `network_output_models` from the selected Fabric Manager's declared `networkOutputs`, the model owner scopes present in the operation context, and values that do not yet exist. This requests every declared output applicable to the operation, including values used by the Fabric Manager itself. The Fabric Manager also receives existing NetworkData values in that context, so retries and delete tasks can reuse the identifiers allocated for the same owners. Delete operations receive existing values for cleanup and do not request new outputs. The Fabric task does not write to Kubernetes or call the fulfillment API. It returns output values in the standard `osac_result` envelope:
+For a Fabric create or reconcile operation, OSAC passes the task's resource, `network_owner_context`, and existing NetworkData values for owners in that context. `network_owner_context.owners` lists each applicable live owner as `{kind, uid}`; it may contain NetworkClass, VirtualNetwork, and Subnet entries, with at most one entry per kind. The UIDs are the hub objects' `metadata.uid` values. OSAC computes the expected model/owner keys internally; it does not pass that list to the job. The provider authors both the NetworkManager registration and its Fabric role, so the task has manager-specific logic for the model names declared in `networkOutputs`. It produces each applicable value, uses the owner context to label it, and uses existing NetworkData to skip values already stored. OSAC independently derives the required keys and verifies the task returned each exactly once. Delete tasks receive existing values and owner context for cleanup and return no new NetworkData values. The Fabric task does not write to Kubernetes or call the fulfillment API. It returns output values in the standard `osac_result` envelope:
 
 ```yaml
 osac_result:
@@ -473,9 +473,6 @@ osac_result:
   observedGeneration: 3
   data:
     network_data:
-      - model_name: osac-networking-virtual-network-vxlan-l3-vni
-        owner: {kind: VirtualNetwork, uid: "<virtual-network-uid>"}
-        value: 4020
       - model_name: osac-networking-subnet-vxlan-l2-vni
         owner: {kind: Subnet, uid: "<subnet-uid>"}
         value: 40120
@@ -484,7 +481,7 @@ osac_result:
         value: ["192.0.2.0/28", "192.0.2.32/27"]
 ```
 
-The Fabric Manager may return only model names in `network_output_models` and owner kinds and UIDs available in the operation context. It may return at most one value for each `(model_name, owner.kind, owner.uid)` key. The result's resource UID and generation must match the dispatched Subnet even when an output belongs to its parent VirtualNetwork or NetworkClass. OSAC validates the complete result envelope and every output before writing any value, then creates one NetworkData object per `(model_name, owner)` through the fulfillment service API. It does not start the Kubernetes stage until all requested NetworkData database records have been created successfully. The operator resolves those authoritative values for AAP job inputs; CRD projection is handled by the fulfillment service's existing controller path. If persistence fails partway through, a retry reuses identical records; a changed value for an existing key fails rather than replacing it.
+The Fabric Manager may return only expected model/owner keys and at most one value for each key. The result's resource UID and generation must match the dispatched Subnet even when an output belongs to its parent VirtualNetwork or NetworkClass. OSAC validates the complete result envelope and verifies that every expected key appears exactly once before writing any value. It then creates one NetworkData object per `(model_name, owner)` through the fulfillment service API. Before starting the Kubernetes stage, the operator confirms that every applicable model in the Kubernetes Manager's `networkInputs` has a stored value; if one is missing, it reports the missing model and does not launch the consumer job. The operator resolves authoritative values for AAP job inputs; CRD projection is handled by the fulfillment service's existing controller path. If persistence fails partway through, a retry reuses identical records; a changed value for an existing key fails rather than replacing it.
 
 For example, the stored Subnet-scoped value is a first-class API object:
 
@@ -527,7 +524,7 @@ The Kubernetes Manager receives only values whose model names it declared and wh
 
 #### Common AAP input
 
-OSAC launches the generic playbook with an `osac_job_vars` envelope and an `osac_network_task_from` value. The operator derives the task name from the resource kind and lifecycle action; providers do not set an operation or choose a task. The task-specific resource is the OSAC resource being reconciled. The `manager.name` field carries the selected NetworkManager's `spec.managerName` and selects the same-named role in the `osac.networking` collection; `metadata.name` identifies the Kubernetes object only. `manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a collection cannot choose or override it. `manager.configuration` contains that registration's non-secret provider settings. A Fabric task receives existing `network_data` values owned by resources in its request context and a `network_output_models` list naming required values not yet stored. A Kubernetes task receives only applicable NetworkData values whose model names appear in its `networkInputs`; this list is empty when no declared owner scope applies to the request. AAP credentials are attached to the selected manager's job separately and are not copied into `osac_job_vars`.
+OSAC launches the generic playbook with an `osac_job_vars` envelope and an `osac_network_task_from` value. The operator derives the task name from the resource kind and lifecycle action; providers do not set an operation or choose a task. The task-specific resource is the OSAC resource being reconciled. The `manager.name` field carries the selected NetworkManager's `spec.managerName` and selects the same-named role in the `osac.networking` collection; `metadata.name` identifies the Kubernetes object only. `manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a collection cannot choose or override it. `manager.configuration` contains that registration's non-secret provider settings. `network_owner_context.owners` contains the live owner identities applicable to the action, each with `kind` and hub-object `uid`. A Fabric role implements the output models declared by its manager: its task uses the owner context to label values and existing `network_data` to skip values already stored. OSAC derives the expected new model/owner keys internally and does not pass that set to the task; it validates that the task returns every expected key exactly once. A Kubernetes task receives only applicable NetworkData values whose model names appear in its `networkInputs`; this list is empty when no declared owner scope applies to the request. AAP credentials are attached to the selected manager's job separately and are not copied into `osac_job_vars`.
 
 ```yaml
 osac_network_task_from: create_subnet
@@ -538,7 +535,16 @@ osac_job_vars:
     configuration:
       ethernet_east_west:
         server_cluster_template: spectrum-x-gpu-template
-  network_data: []
+  network_owner_context:
+    owners:
+      - {kind: NetworkClass, uid: "<networkclass-uid>"}
+      - {kind: VirtualNetwork, uid: "<virtual-network-uid>"}
+      - {kind: Subnet, uid: "<subnet-uid>"}
+  network_data:
+    - model_name: osac-networking-virtual-network-vxlan-l3-vni
+      resource_kind: VirtualNetwork
+      resource_uid: "<virtual-network-uid>"
+      value: 4020
   resource:
     apiVersion: osac.openshift.io/v1alpha1
     kind: Subnet
@@ -546,18 +552,7 @@ osac_job_vars:
     spec: {}
 ```
 
-For example, when CUDN declares the three model names below as inputs and none of these values has already been stored, the Fabric `create_subnet` task receives those names in `network_output_models`. OSAC computes the list from the registered NetworkDataModels and the Subnet create context; the manager registration does not declare a task-to-model mapping. A paired Kubernetes task receives the corresponding `network_data` entries shown above:
-
-```yaml
-osac_network_task_from: create_subnet
-osac_job_vars:
-  network_output_models:
-    - {model_name: osac-networking-virtual-network-vxlan-l3-vni, owner_kind: VirtualNetwork, owner_uid: "<virtual-network-uid>"}
-    - {model_name: osac-networking-subnet-vxlan-l2-vni, owner_kind: Subnet, owner_uid: "<subnet-uid>"}
-    - {model_name: osac-networking-subnet-reserved-ipv4-cidrs, owner_kind: Subnet, owner_uid: "<subnet-uid>"}
-```
-
-The Fabric task returns those values inside `osac_result.data.network_data`; it has no fulfillment-service or Kubernetes write credential. The operator validates the complete result before it calls the fulfillment-service NetworkData API. The Kubernetes task receives validated values in `osac_job_vars.network_data`, not Fabric credentials, and cannot change OSAC resource semantics. A successful task means that the backend has converged to the requested state unless that task defines another result below.
+For example, the CUDN manager declares the VirtualNetwork VNI and the two Subnet-scoped models as inputs. The VirtualNetwork VNI is already present in the Fabric task's `network_data`, so OSAC internally expects only the two missing Subnet-scoped values from `create_subnet`. The Netris task returns those values without receiving their model names as job inputs. OSAC validates them against the internally derived keys, Netris's `networkOutputs`, the owner context, and the registered schemas. After persisting them, OSAC resolves all three CUDN inputs and launches its task. A task that omits an expected value or returns an extra value fails before any NetworkData writes. Manager tasks have no fulfillment-service or Kubernetes write credential, and a Kubernetes task cannot change OSAC resource semantics. A successful task means that the backend has converged to the requested state unless that task defines another result below.
 
 #### Workload attachment policy input
 
@@ -610,6 +605,11 @@ osac_job_vars:
     kind: ComputeInstance
     metadata: {uid: "<workload UID>", generation: 3}
     spec: {}
+  network_owner_context:
+    owners:
+      - {kind: NetworkClass, uid: "<networkclass UID>"}
+      - {kind: VirtualNetwork, uid: "<VirtualNetwork UID>"}
+      - {kind: Subnet, uid: "<subnet UID>"}
   workload_attachment:
     subnet:
       uid: "<subnet UID>"
@@ -768,7 +768,8 @@ the fulfillment-service API, and starts a consuming Kubernetes Manager only
 after those writes succeed. `resourceUID` and `observedGeneration` must match
 the resource context in that exact AAP job's original `extra_vars`; OSAC uses
 the job's tracked manager stage and `osac_network_task_from` to determine
-which result fields and outputs are expected. Every result contains
+which task-specific result fields are required and which manager registration
+to use when validating returned values. Every result contains
 `data.network_data` exactly once; each entry identifies its model, owner, and
 JSON value. For the `create_external_ip` task, OSAC validates the returned
 canonical IPv4 address against the selected pool, writes it to
@@ -783,7 +784,7 @@ OSAC validates the artifact name and all required fields before accepting task s
 
 #### AAP job identity, polling, and retries
 
-When OSAC launches a task, AAP returns a unique job ID. OSAC records that ID in the networking resource's `status.provisioningJobs` entry, with the job type, manager target, state, timestamp, and desired configuration version. On later reconciles, OSAC polls that exact AAP job ID. AAP returns that job's original `extra_vars` and its `artifacts`; OSAC reads `artifacts.osac_result` from the same job and checks the result's resource UID and observed generation against the resource context in that job's `extra_vars`. The tracked manager target and `osac_network_task_from` identify which task ran and which result fields are expected. This uses the generation that the attempt actually processed, even if the resource has since changed. OSAC does not search AAP for a recent job by resource UID or use whichever result completed most recently.
+When OSAC launches a task, AAP returns a unique job ID. OSAC records that ID in the networking resource's `status.provisioningJobs` entry, with the job type, manager target, state, timestamp, and desired configuration version. On later reconciles, OSAC polls that exact AAP job ID. AAP returns that job's original `extra_vars` and its `artifacts`; OSAC reads `artifacts.osac_result` from the same job and checks the result's resource UID, observed generation, and `network_owner_context` against that job's original request context. The tracked manager target and `osac_network_task_from` identify which task ran and which result fields are expected. This uses the generation and owner UIDs that the attempt actually processed, even if the resource or profile has since changed. OSAC does not search AAP for a recent job by resource UID or use whichever result completed most recently.
 
 Each retry is a new AAP execution with a new job ID and a new status-history entry. While a job is non-terminal, OSAC polls the same ID and does not launch another attempt for that target. Resources dispatched to both manager roles track separate `fabric` and `kubernetes` targets. The Kubernetes target waits for the Fabric target's tracked job to succeed and for its NetworkData outputs to be persisted; a result from another job or target cannot satisfy that dependency.
 
@@ -804,14 +805,14 @@ sequenceDiagram
 
     NC->>Operator: Select manager registrations
     Operator->>Operator: Match K8s networkInputs against Fabric networkOutputs
-    Operator->>AAP: Run create_subnet for Fabric with existing network_data and output model names
-    AAP->>Fabric: create_subnet(resource, network_data, network_output_models)
+    Operator->>AAP: Run create_subnet for Fabric with existing network_data
+    AAP->>Fabric: create_subnet(resource, network_data)
     Fabric->>AAP: osac_result with network_data values
     AAP-->>Operator: Fabric result
-    Operator->>Operator: Validate all returned model names, owners, and values
+    Operator->>Operator: Validate every expected output key and value
     Operator->>Fulfillment: Create validated NetworkData records
     Fulfillment-->>Operator: Persisted NetworkData records
-    Operator->>Operator: Resolve applicable Kubernetes inputs
+    Operator->>Operator: Confirm every applicable Kubernetes input is stored
     Operator->>AAP: Run create_subnet for Kubernetes with network_data
     AAP->>K8s: create_subnet(resource, network_data)
     K8s-->>AAP: Converged result
@@ -882,8 +883,9 @@ NetworkManager objects contain role selection, data declarations, and credential
 - **Registry projection delay:** A successful registration may not yet be visible in the networking hub. The operator does not dispatch against a partial registry view; it retries reconciliation after the referenced NetworkDataModel and NetworkManager projections arrive.
 - **Unmatched manager input:** NetworkClass creation reports the model name required by the Kubernetes Manager but absent from the Fabric Manager outputs; no NetworkClass is persisted and no AAP job can start.
 - **Missing collection role or task:** AAP fails with the missing fully qualified collection role or task name. The diagnostic names the registration or task.
-- **Missing or malformed Fabric outputs:** A missing result, unknown or duplicate model name, owner outside the operation context, wrong owner scope, or value that fails the registered JSON Schema prevents NetworkData creation and Kubernetes dispatch. OSAC reports the invalid model and owner UID.
-- **NetworkData persistence failure:** The operator does not start Kubernetes work until every required value is stored. It retries identical NetworkData creates idempotently; a different value for an existing model/owner key fails and is never written as an update.
+- **Invalid or incomplete Fabric output:** A missing or malformed `osac_result` envelope, missing expected key, unexpected or duplicate key, owner outside the operation context, wrong owner scope, or value that fails the registered JSON Schema prevents all NetworkData writes. OSAC reports the model and owner UID.
+- **Missing required Kubernetes input:** If an applicable `networkInputs` value is absent after Fabric outputs are persisted, OSAC reports the missing model and does not launch the Kubernetes stage. This check protects against missing or inconsistent pre-existing NetworkData.
+- **NetworkData persistence failure:** The operator does not start Kubernetes work until every returned value is stored and every applicable Kubernetes input is present. It retries identical NetworkData creates idempotently; a different value for an existing model/owner key fails and is never written as an update.
 - **Kubernetes create failure after Fabric success:** OSAC retains NetworkData records and retries the Kubernetes stage with the same values. The Fabric task receives existing values on retry and must reuse them. The Subnet is not Ready until the Kubernetes stage succeeds.
 - **Kubernetes delete failure:** OSAC does not start Fabric deletion or remove NetworkData, so Kubernetes cleanup can retry using the same values.
 - **Fabric delete failure after Kubernetes detach:** OSAC retains job state and retries Fabric cleanup. The Kubernetes target is already detached; repeated Fabric deletion of absent state succeeds.
@@ -936,7 +938,7 @@ AAP playbooks derive the role FQCN from the selected NetworkManager's `managerNa
 
 **Requirements:** FR-2, FR-3, FR-4, FR-6
 
-NetworkClass creation requires a Fabric Manager and validates that its declared outputs cover every input declared by a selected Kubernetes Manager. An invalid selection is rejected before NetworkClass persistence with a diagnostic naming unresolved references or unsatisfied model names. OSAC routes each operation only to its contract-assigned role.
+NetworkClass creation requires a Fabric Manager and validates that its declared outputs cover every input declared by a selected Kubernetes Manager. An invalid selection is rejected before NetworkClass persistence with a diagnostic naming unresolved references or unsatisfied model names. At runtime, each Fabric task returns the declared values it creates; OSAC validates each returned value and checks that all applicable Kubernetes inputs have been stored before dispatching that stage. OSAC routes each operation only to its contract-assigned role.
 
 ### IC-4: Manager results and retry behavior
 
@@ -948,7 +950,7 @@ Manager tasks follow the lifecycle action, target, artifact, idempotency, and er
 
 **Requirements:** FR-1, FR-2, FR-3, FR-4
 
-The Fabric Manager returns JSON values for declared models and registered owner resources in its AAP result. OSAC validates each value against its registered model schema and owner scope, stores it as NetworkData, then passes only applicable Kubernetes Manager inputs on dependent operations. Section 4.3 defines the result and AAP schemas; Section 4.4 defines NetworkData lifetime and ordering.
+For each Fabric create or reconcile action, OSAC derives the expected model/owner keys from the selected manager's `networkOutputs`, the owner scopes in the operation context, and values already stored. It does not pass that set to AAP. The Fabric task must return every expected key exactly once and no other key; OSAC validates the complete result before storing it as NetworkData. Before a dependent Kubernetes operation, OSAC verifies that each applicable declared input has a stored value and passes only those inputs. Section 4.3 defines the result and AAP schemas; Section 4.4 defines NetworkData lifetime and ordering.
 
 ### IC-6: Workload attachment and SecurityGroup enforcement
 
