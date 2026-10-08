@@ -58,6 +58,8 @@ service.
    NetworkClass capability false while the manager declares it.
 5. Try Update/Patch on NetworkManager and NetworkClass, then delete a manager
    while it is referenced.
+6. Try deleting a NetworkClass while a VirtualNetwork references it. Remove
+   its dependent resources, delete the profile, then create its replacement.
 
 **Expected results**
 
@@ -71,6 +73,9 @@ service.
   not enable tenant requests.
 - NetworkManager and NetworkClass reject Update/Patch. Delete is blocked while
   dependencies remain.
+- A NetworkClass cannot be deleted while dependent VirtualNetworks remain.
+  After its dependents are removed, Delete succeeds and the provider can
+  create a replacement profile.
 
 ### TC-3: Dispatch AAP roles with shared group settings and secrets
 
@@ -244,10 +249,10 @@ validation alone is not evidence of behavioral conformance.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
-Final: revise @ design 0.11.3 - 2bd6607, workspace docs/network-manager-provider-guide @ af7e4e348 (dirty)
+Final: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-1433-network-manager-provider-guide @ f0999b434 (dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"af7e4e348 (dirty)","source_repo_branch":"docs/network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"f0999b434 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
