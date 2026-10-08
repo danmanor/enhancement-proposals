@@ -47,7 +47,7 @@ superseded-by:
       - [NetworkClass](#networkclass)
         - [East-West Capability Declaration](#east-west-capability-declaration)
       - [NetworkDataModel, NetworkData, and NetworkManager APIs](#networkdatamodel-networkdata-and-networkmanager-apis)
-      - [ExternalIPPool](#externalippool-1)
+      - [ExternalIPPool](#externalippool)
       - [VirtualNetwork](#virtualnetwork)
       - [Subnet](#subnet)
       - [SecurityGroup](#securitygroup)
@@ -56,7 +56,7 @@ superseded-by:
       - [Resource Status: Discovered IPs](#resource-status-discovered-ips)
       - [ExternalIPAttachment: Inbound Traffic (DNAT)](#externalipattachment-inbound-traffic-dnat)
       - [NATGateway: Outbound Traffic (SNAT)](#natgateway-outbound-traffic-snat)
-    - [ExternalIPPool](#externalippool)
+    - [ExternalIPPool](#externalippool-1)
   - [4.3 Architecture and Manager Integration](#43-architecture-and-manager-integration)
     - [Manager Dispatch and Integration Contract](#manager-dispatch-and-integration-contract)
   - [4.4 API Changes](#44-api-changes)
@@ -1017,7 +1017,7 @@ tracked by [OSAC-2226](https://redhat.atlassian.net/browse/OSAC-2226).
 1. **Provider setup:** create any provider-defined NetworkDataModels, register
    the Fabric Manager and optional Kubernetes Manager, then create the
    NetworkClass. Create an ExternalIPPool when the deployment offers inbound
-   access or outbound SNAT. The [provider guide](https://github.com/osac-project/docs/blob/main/guides/admin/network-manager-provider-guide.md)
+   access or outbound SNAT. The [provider guide in OSAC PR #1517](https://github.com/osac-project/osac/pull/1517/files)
    gives the manager implementation and registration steps.
 2. **Tenant network:** create a `VirtualNetwork` for the tenant's IPv4 routing
    domain, then create one or more `Subnets` within it. Each Subnet is a
@@ -1506,7 +1506,7 @@ manager could defer provider setup, but leaves subnet readiness and manager
 selection ambiguous. The design provisions the selected fabric and optional
 Kubernetes overlay when the Subnet is created.
 
-#### Drawbacks
+### Drawbacks
 
 This design requires K8s-to-fabric connectivity in every deployment that
 hosts VMs. The K8s Manager must bridge the OVN overlay to the physical
@@ -1744,11 +1744,11 @@ explicitly specifies them.
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 515ce8758
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-1433-network-manager-provider-guide @ 9e46b1a96 (dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"515ce8758","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"9e46b1a96 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

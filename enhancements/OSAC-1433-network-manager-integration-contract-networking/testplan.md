@@ -56,10 +56,12 @@ service.
 4. Enable Ethernet east-west first with a Fabric Manager that lacks
    `EAST_WEST_ETHERNET`, then with one that declares it. Also leave the
    NetworkClass capability false while the manager declares it.
-5. Try Update/Patch on NetworkManager and NetworkClass, then delete a manager
-   while it is referenced.
-6. Try deleting a NetworkClass while a VirtualNetwork references it. Remove
-   its dependent resources, delete the profile, then create its replacement.
+5. Try Update/Patch on NetworkManager and NetworkClass. Try deleting a manager
+   while a NetworkClass selects it, and try deleting that NetworkClass while a
+   VirtualNetwork references it.
+6. Remove the dependent VirtualNetwork and delete the NetworkClass. Delete the
+   now-unreferenced NetworkManager, register its replacement with the same
+   `spec.managerName`, and create a replacement NetworkClass that selects it.
 
 **Expected results**
 
@@ -71,11 +73,13 @@ service.
   Manager. NetworkClass may enable Ethernet east-west only when its selected
   Fabric Manager declares that capability. A manager declaration alone does
   not enable tenant requests.
-- NetworkManager and NetworkClass reject Update/Patch. Delete is blocked while
-  dependencies remain.
-- A NetworkClass cannot be deleted while dependent VirtualNetworks remain.
-  After its dependents are removed, Delete succeeds and the provider can
-  create a replacement profile.
+- NetworkManager and NetworkClass reject Update/Patch. Deleting a manager is
+  blocked while a NetworkClass selects it, and deleting a NetworkClass is
+  blocked while dependent VirtualNetworks remain.
+- After dependent resources are removed, NetworkClass deletion succeeds;
+  deleting the unreferenced NetworkManager then succeeds. The provider can
+  register a replacement manager with the same `spec.managerName` and create a
+  replacement NetworkClass that selects it.
 
 ### TC-3: Dispatch AAP roles with shared group settings and secrets
 
@@ -249,10 +253,10 @@ validation alone is not evidence of behavioral conformance.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
-Final: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-1433-network-manager-provider-guide @ f0999b434 (dirty)
+Final: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-1433-network-manager-provider-guide @ 9e46b1a96 (dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"f0999b434 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"9e46b1a96 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
