@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-07
+last-updated: 2026-10-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -25,23 +25,26 @@ superseded-by:
 | Author(s) | Dan Manor (dmanor@redhat.com) |
 | Jira | https://redhat.atlassian.net/browse/OSAC-1433 |
 | PRD | [Network Manager Integration Contract PRD](prd.md) |
-| Date | 2026-10-07 |
+| Date | 2026-10-08 |
 
 ## Contents
 
 - [1. Overview](#1-overview)
 - [2. Goals and Non-Goals](#2-goals-and-non-goals)
-- [3. Motivation / Background](#3-motivation--background)
+- [3. Motivation and Background](#3-motivation-and-background)
 - [4. Design](#4-design)
   - [4.1 Architecture and Manager Roles](#41-architecture-and-manager-roles)
   - [4.2 NetworkDataModel and NetworkManager Registration](#42-networkdatamodel-and-networkmanager-registration)
     - [East-West capability boundary](#east-west-capability-boundary)
+    - [Manager configuration and credentials](#manager-configuration-and-credentials)
   - [4.3 API and Operation Contract](#43-api-and-operation-contract)
     - [Fulfillment-service API operations](#fulfillment-service-api-operations)
+    - [Provider API routes and requests](#provider-api-routes-and-requests)
     - [NetworkData API and resource-scoped exchange](#networkdata-api-and-resource-scoped-exchange)
     - [Common AAP input](#common-aap-input)
     - [Workload attachment policy input](#workload-attachment-policy-input)
     - [Fixed operation and target table](#fixed-operation-and-target-table)
+    - [Generic AAP role invocation](#generic-aap-role-invocation)
     - [Operation result envelope](#operation-result-envelope)
     - [AAP job identity, polling, and retries](#aap-job-identity-polling-and-retries)
   - [4.4 Operation Ordering and NetworkData Lifecycle](#44-operation-ordering-and-networkdata-lifecycle)
@@ -60,9 +63,9 @@ superseded-by:
 
 ## 1. Overview
 
-A Fabric Manager configures the provider's physical network fabric for OSAC. A Kubernetes Manager connects Kubernetes-hosted workloads to that fabric. NetworkClass selects one implementation for each configured role. NetworkDataModel defines one value's meaning, owner scope, and JSON Schema; NetworkData stores one validated value for a model and owner; NetworkManager registers an implementation and its model inputs or outputs.
+A Fabric Manager configures the provider's physical network fabric for OSAC. A Kubernetes Manager connects Kubernetes-hosted workloads to that fabric. NetworkClass selects one implementation for each configured role. NetworkDataModel defines one value's meaning, owner scope, and JSON Schema; NetworkData stores one validated value for a model and owner; NetworkManager registers an implementation, its inputs and outputs, its non-secret backend configuration, and its AAP credential references.
 
-This design defines the source-neutral role contract, registration APIs, Ansible Automation Platform (AAP) task interface, and OSAC-owned exchange between managers. In the proposed contract, a manager reports successful work through a structured AAP job artifact named `osac_result`; this is a manager response, not an OSAC API resource. Ansible publishes it with `set_stats`, AAP exposes it under the completed job's `artifacts` field, and the OSAC operator reads it. The result identifies the dispatched operation, resource UID, and observed specification generation, and can carry Fabric-produced NetworkData values. OSAC validates the result before treating the operation as complete and validates and stores Fabric values through the NetworkData API before starting a consumer manager. `dhcp_lease.query` instead returns a `leases` artifact. Section 4.3 defines the exact fields and handling. OSAC coordinates both roles, and one manager does not call another directly. After generic OSAC support exists, onboarding an implementation requires NetworkManager and NetworkDataModel resources plus Ansible content, with no implementation-specific Go code. See the [Network Manager Integration Contract PRD](prd.md) for the outcomes this design supports and the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md) for the shared tenant-resource semantics.
+This design defines the source-neutral role contract, registration APIs, Ansible Automation Platform (AAP) task interface, and OSAC-owned exchange between managers. Every successful manager operation returns the same structured AAP job artifact, `osac_result`; it is a manager response, not an OSAC API resource. Ansible publishes it with `set_stats`, AAP exposes it under the completed job's `artifacts` field, and the OSAC operator reads it from the exact tracked job. The result identifies the dispatched operation, resource UID, and observed specification generation, and carries any NetworkData values or operation-specific output. OSAC validates the result before treating the operation as complete and validates and stores Fabric values through the NetworkData API before starting a consumer manager. OSAC coordinates both roles, and one manager does not call another directly. After generic OSAC support exists, onboarding an implementation requires NetworkManager and NetworkDataModel resources plus Ansible content, with no implementation-specific Go code. See the [Network Manager Integration Contract PRD](prd.md) for the outcomes this design supports and the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md) for the shared tenant-resource semantics.
 
 ## 2. Goals and Non-Goals
 
@@ -73,16 +76,17 @@ This design defines the source-neutral role contract, registration APIs, Ansible
 - Pass only the required, schema-validated JSON values through a stable OSAC-owned interface with owner scope and lifetime.
 - Allow a conforming implementation from any source to use the same tenant networking application programming interface (API) and OSAC dispatch behavior.
 - Keep future manager onboarding within registration and Ansible content after generic OSAC contract support is implemented.
+- Pass each manager its own non-secret backend configuration and AAP credentials without exposing another manager's credentials.
 
 ### 2.2 Non-Goals
 
 - Change the meaning, fields, or lifecycle of tenant networking resources defined by Unified Networking.
 - Require every Fabric Manager to work with every Kubernetes Manager.
-- Define product-specific configuration for any backend.
+- Define vendor-specific configuration schemas or backend behavior inside generic OSAC APIs.
 - Let an implementation add resource kinds, operation identifiers, workload targets, or tenant API fields that OSAC does not understand.
 - Migrate existing backend resources when a provider changes the manager selected by a NetworkClass.
 
-## 3. Motivation / Background
+## 3. Motivation and Background
 
 The current operator discovers manager implementations and dispatches provider work through Ansible Automation Platform (AAP). Its manager parser does not yet implement the proposed implementation reference or generic input/output model declarations. The target contract adds first-class NetworkDataModel, NetworkManager, and NetworkData objects, schema-validated manager results, and an input resolver so selected managers exchange only the declared values they need. Current OSAC code does not yet enforce this generic contract; platform implementation work must add it.
 
@@ -215,12 +219,20 @@ message NetworkManagerSpec {
   repeated string network_outputs = 4;
   repeated string network_inputs = 5;
   optional string description = 6;
+  google.protobuf.Struct configuration = 7;
+  repeated int32 aap_credential_ids = 8;
+  repeated NetworkManagerCapability capabilities = 9;
 }
 
 enum NetworkManagerRole {
   NETWORK_MANAGER_ROLE_UNSPECIFIED = 0;
   NETWORK_MANAGER_ROLE_FABRIC = 1;
   NETWORK_MANAGER_ROLE_KUBERNETES = 2;
+}
+
+enum NetworkManagerCapability {
+  NETWORK_MANAGER_CAPABILITY_UNSPECIFIED = 0;
+  NETWORK_MANAGER_CAPABILITY_EAST_WEST_ETHERNET = 1;
 }
 
 message NetworkData {
@@ -247,21 +259,24 @@ The provider APIs expose Create/Get/List/Delete for NetworkDataModel and Network
 
 OSAC accepts only the exact Draft 2020-12 `$schema` dialect identifier, validates the submitted schema against a locally bundled meta-schema, and never fetches a schema or meta-schema over the network. All schema reference keywords, including `$ref` and `$dynamicRef`, must resolve to fragments in the same document. Remote and file references, schema-level `$id` values, unsupported vocabularies and owner scopes, malformed schemas, and duplicate NetworkDataModel names are rejected with a fulfillment-service validation error naming the object and invalid field. Because schemas are provider input, OSAC enforces finite schema-size, nesting, and validation-work limits through the fulfillment-service API on Create. The service converts the schema `Struct` to JSON, validates it against the bundled meta-schema, and compiles a Draft 2020-12 validator with network and filesystem resolution disabled. It caches the compiled validator by immutable `NetworkDataModel.id`; managers still reference the model by `metadata.name`. On NetworkData Create, the service converts the `Value` to JSON and runs that validator before committing the authoritative database row; the existing controller path later projects the row as a CRD. JSON Schema validates structure, types, and expressible constraints; it does not prove that a manager configured its backend correctly or that a value satisfies a relationship with other OSAC resources unless that relationship is encoded in a generic OSAC rule. Managers remain responsible for resource-relative semantics, and conformance verifies they honor the model description and shared networking behavior.
 
-A NetworkManager is a cluster-scoped OSAC API object that registers one Fabric or Kubernetes Manager implementation. It uses API version osac.openshift.io/v1alpha1. Its `spec.managerName` is the immutable logical name selected by NetworkClass; `metadata.name` is the separate DNS-safe Kubernetes object name. `spec.implementationRef` identifies the fully qualified Ansible collection role AAP invokes. The logical name and implementation reference are independent.
+A NetworkManager is a cluster-scoped OSAC API object that registers one Fabric or Kubernetes Manager implementation. It uses API version osac.openshift.io/v1alpha1. Its `spec.managerName` is the immutable logical name selected by NetworkClass; `metadata.name` is the separate DNS-safe Kubernetes object name. `spec.implementationRef` identifies the fully qualified Ansible collection role AAP invokes. The logical name and implementation reference are independent. `spec.configuration` carries provider-defined, non-secret JSON settings for that manager. `spec.aapCredentialIds` references secrets stored as credentials in AAP. Neither field changes the fixed OSAC operation or data contracts.
 
 | Field | Required | Meaning |
 |---|---|---|
 | metadata.name | Yes | DNS-safe Kubernetes object name, unique across NetworkManager objects. It need not match the logical manager name. |
 | spec.managerName | Yes | Immutable logical name referenced by NetworkClass; unique within its role. Existing names may contain underscores. |
-| spec.role | Yes | Exactly Fabric or Kubernetes. |
+| spec.role | Yes | `NETWORK_MANAGER_ROLE_FABRIC` or `NETWORK_MANAGER_ROLE_KUBERNETES`. These are the Fabric and Kubernetes manager roles. |
 | spec.implementationRef | Yes | Fully qualified Ansible collection role name, such as acme.networking.fabric_manager; the role must be installed in the AAP execution environment. |
 | spec.networkOutputs | Fabric only | List, possibly empty, of model names this Fabric Manager can produce. |
 | spec.networkInputs | Kubernetes only | List, possibly empty, of model names this Kubernetes Manager requires whenever the model owner is present for one of its assigned operations. |
 | spec.description | No | Human-readable description for provider administration. |
+| spec.configuration | No | Provider-defined JSON object of non-secret backend settings. OSAC preserves and passes it through without interpreting vendor-specific keys. |
+| spec.aapCredentialIds | No | Unique positive AAP credential IDs that AAP attaches only to jobs for this manager. Credential values remain stored by AAP and are not included in manager variables or NetworkData. |
+| spec.capabilities | No | Values from OSAC's fixed capability enum. Only `NETWORK_MANAGER_CAPABILITY_EAST_WEST_ETHERNET` is currently defined; it is valid for the Fabric role only. |
 
-A Fabric Manager may populate `networkOutputs` and must leave `networkInputs` empty; a Kubernetes Manager may populate `networkInputs` and must leave `networkOutputs` empty. Omitted and empty repeated fields have the same meaning in the protobuf API. Each listed name must identify an existing NetworkDataModel; duplicate and unknown names are rejected. An empty list means the manager has no declarations for that direction. The fulfillment-service API validates these fields and references before committing the record; Kubernetes schema validation enforces field types and immutability on its CRD projection.
+A Fabric Manager may populate `networkOutputs` and must leave `networkInputs` empty; a Kubernetes Manager may populate `networkInputs` and must leave `networkOutputs` empty. Omitted and empty repeated fields have the same meaning in the protobuf API. Each listed name must identify an existing NetworkDataModel; duplicate and unknown names are rejected. An empty list means the manager has no declarations for that direction. The fulfillment-service API validates these fields and references before committing the record; Kubernetes schema validation enforces field types and immutability on its CRD projection. `configuration` must be a JSON object within OSAC's size and nesting limits. The OSAC API does not validate manager-specific keys; the registered implementation validates and uses those keys. Credential IDs must be unique positive integers. AAP confirms whether each ID exists and whether the OSAC launch identity may use it when the job is launched.
 
-The pair (spec.role, spec.managerName) must be unique across NetworkManager objects. The fulfillment-service API rejects duplicate pairs when creating a manager so each NetworkClass reference resolves to exactly one registration. Kubernetes already requires metadata.name to be unique across all NetworkManager objects.
+The pair (spec.role, spec.managerName) must be unique across NetworkManager objects. The fulfillment-service API rejects duplicate pairs when creating a manager so each NetworkClass reference resolves to exactly one registration. Kubernetes already requires metadata.name to be unique across all NetworkManager objects. Manager specs, including configuration, capability declarations, and credential references, are immutable; changes require replacing the registration after its dependents are removed.
 
 ~~~yaml
 apiVersion: osac.openshift.io/v1alpha1
@@ -270,9 +285,15 @@ metadata:
   name: netris-manager
 spec:
   managerName: netris
-  role: Fabric
+  role: NETWORK_MANAGER_ROLE_FABRIC
   implementationRef: acme.networking.fabric_manager
   description: Fabric integration
+  capabilities:
+    - NETWORK_MANAGER_CAPABILITY_EAST_WEST_ETHERNET
+  configuration:
+    ethernet_east_west:
+      server_cluster_template: spectrum-x-gpu-template
+  aapCredentialIds: [42]
   networkOutputs:
     - osac-networking-virtual-network-vxlan-l3-vni
     - osac-networking-subnet-vxlan-l2-vni
@@ -286,7 +307,7 @@ metadata:
   name: cudn-evpn
 spec:
   managerName: cudn_evpn
-  role: Kubernetes
+  role: NETWORK_MANAGER_ROLE_KUBERNETES
   implementationRef: acme.networking.vm_overlay
   description: Kubernetes VM overlay integration
   networkInputs:
@@ -297,7 +318,9 @@ spec:
 
 The selection sequence is NetworkDataModel objects, then NetworkManager objects, then NetworkClass. NetworkClass continues to store the existing logical manager names. On NetworkClass Create, the fulfillment service resolves each name against the authoritative NetworkManager records by role and `spec.managerName`, then checks that every NetworkDataModel name in the Kubernetes Manager's inputs appears in the selected Fabric Manager's outputs. IPv4 is the fixed address-family contract for all managers; no registration-time family negotiation is needed. If the fulfillment-service registry records cannot be read, NetworkClass creation fails closed. An invalid or incompatible selection is rejected before NetworkClass is persisted; no tenant networking resource or AAP job can use it.
 
-The comparison uses exact model names, not only JSON shape, because identity, meaning, and owner scope are part of the contract. A matching declaration establishes that the selected implementation advertises required data; it does not prove that either manager preserves the shared VirtualNetwork L3, Subnet L2, attachment, or SecurityGroup behavior. The conformance harness must verify each implementation against every operation and target in the fixed role table before the provider uses it. Registry validation checks declared data compatibility; it cannot infer behavioral conformance from a schema or implementation reference. OSAC does not contain a manager-name compatibility table.
+NetworkClass Create also checks enabled deployment capabilities against the selected Fabric Manager. If `NetworkClass.spec.east_west_capabilities.supports_east_west_ethernet` is true, the selected Fabric Manager must declare `NETWORK_MANAGER_CAPABILITY_EAST_WEST_ETHERNET` (called `EAST_WEST_ETHERNET` in the operation descriptions); otherwise the profile is rejected before persistence. A manager capability alone does not enable the feature: when the NetworkClass field is false or omitted, OSAC rejects Ethernet FabricDomain requests before dispatch. IPv4 is mandatory for every conforming manager and is not an optional capability.
+
+The comparison uses exact model names, not only JSON shape, because identity, meaning, and owner scope are part of the contract. A matching declaration establishes that the selected implementation advertises required data; it does not prove that either manager preserves the shared VirtualNetwork L3, Subnet L2, attachment, or SecurityGroup behavior. Before selecting a manager in a production NetworkClass, the provider must verify every operation and target assigned to that role against the [Test Plan](testplan.md). OSAC validates declarations but does not operate a hosted provider certification service or infer behavioral conformance from a schema or implementation reference. OSAC does not contain a manager-name compatibility table.
 
 | Fabric Manager | Kubernetes Manager | Result |
 |---|---|---|
@@ -311,32 +334,70 @@ Manager and data model specs are immutable. Providers may Create, Read/List, and
 
 #### East-West capability boundary
 
-`NetworkManager` has no generic capability field. Its role and
-`implementationRef` identify the implementation contract it must fulfill;
-`networkInputs` and `networkOutputs` declare the named data it needs or
-produces. This avoids treating manager compatibility as a provider-asserted
-feature list. `IPv4` is fixed by the shared networking contract, and manager
-behavior is verified through conformance rather than inferred from capability
-metadata.
+Capabilities are a small, predefined OSAC list of optional behaviors that
+need explicit validation before dispatch. They are not provider-defined names
+and do not replace the fixed manager operation contract. `NetworkManager.spec.capabilities`
+declares what an implementation can perform; `NetworkClass.spec.east_west_capabilities`
+declares which supported east-west behavior the deployment exposes. The
+fulfillment service rejects unknown enum values and rejects a NetworkClass
+that enables a capability absent from its selected Fabric Manager. A manager
+capability does not enable a deployment feature by itself.
 
-`NetworkClass.spec.east_west_capabilities` is a separate, fixed OSAC API
-declaration for deployment-level FabricDomain behavior. Fulfillment-service
-validates those fields and their required east-west configuration; the
-[Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md)
-and [Multi-Fabric East-West Networking
-Design](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md)
-define their functional effects and errors. East-west declarations do not
-participate in manager-pair compatibility.
+The only capability in this contract is the
+`NETWORK_MANAGER_CAPABILITY_EAST_WEST_ETHERNET` enum value, referred to as
+`EAST_WEST_ETHERNET` below. A Fabric Manager that declares it must implement
+`fabric_domain.create` and
+`fabric_domain.delete`. Those operations create and remove the Ethernet
+east-west isolation domain for its participating servers, using the associated
+VirtualNetwork and the manager's own `configuration`. They do not replace the
+VirtualNetwork's north-south routing or alter OSAC Subnet broadcast domains.
+OSAC dispatches them only when the NetworkClass enables
+`supports_east_west_ethernet` and the selected Fabric Manager declares
+`EAST_WEST_ETHERNET`. NetworkClass Create validates that pairing; a FabricDomain
+Create with the deployment capability disabled fails before an AAP job starts.
+The manager implementation is responsible for validating its provider-owned
+configuration and reporting backend errors.
 
-When NetworkClass is created, fulfillment-service resolves the selected
-NetworkManager objects by role and logical name and compares their declared
-data models. Each input model name required by the Kubernetes Manager must
-also appear in the selected Fabric Manager's output names. A missing model,
-wrong role, or unresolved manager rejects NetworkClass before persistence.
-Exact model-name matching validates declared data availability; it does not
-prove that either implementation honors the shared networking behavior.
-Conformance tests validate that behavior. OSAC does not maintain a
-manager-name compatibility matrix.
+SecurityGroup behavior, IPv4 addressing, and VM, Cluster, and bare-metal
+attachment support are mandatory parts of the base contract, not optional
+capabilities. The data-model match between Fabric and Kubernetes Managers is
+validated separately: every Kubernetes input must match a Fabric output.
+Exact model-name matching verifies declared data availability, while provider
+conformance verifies actual behavior. OSAC has no manager-name compatibility
+table.
+
+The [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md)
+defines the deployment capability field and the user-visible FabricDomain
+behavior. This manager design defines how the selected Fabric Manager
+implements that behavior.
+
+#### Manager configuration and credentials
+
+`NetworkManager.spec.configuration` is an immutable JSON object whose keys
+belong to the provider's implementation. Use it for non-secret values such as
+controller endpoints, resource selectors, and template names. OSAC preserves
+this object and passes it as `osac_job_vars.manager.configuration`; it does not
+interpret backend-specific fields or require a Go change when their shape
+changes. The manager author documents and validates those fields. For
+example, the Netris implementation can keep a Server Cluster template name in
+this object; another Fabric Manager can use a different configuration shape.
+
+Secret material stays in AAP Credential objects. `NetworkManager.spec.aapCredentialIds`
+contains the IDs of credentials that AAP attaches to jobs for that registration.
+The generic AAP job template must allow credentials to be supplied at launch,
+and the OSAC launch identity must be allowed to use each referenced credential.
+OSAC passes only the selected manager's credential IDs to AAP. Credential
+values are injected by AAP according to their credential type; they are not
+copied into `osac_job_vars`, the fulfillment-service registry, NetworkData,
+or result artifacts. A job for a Kubernetes Manager never receives the
+selected Fabric Manager's credentials, and vice versa. A missing or
+unusable credential causes the AAP launch or manager task to fail; providers
+must validate these bindings during conformance before selecting the manager
+in a production NetworkClass.
+
+Both fields are immutable with the manager registration. To change provider
+settings or credential bindings, remove the dependent NetworkClass and
+resources as required by the lifecycle, then replace the NetworkManager.
 
 ### 4.3 API and Operation Contract
 
@@ -355,6 +416,50 @@ A successful registry API write commits before its hub CRD projection is guarant
 The fulfillment service also checks that manager names are unique within their role and that each NetworkData model/owner key is unique. Kubernetes CRD schemas enforce outer field shape and immutability on backing objects. If an API read or write fails, the service returns an error and does not report the operation as successful.
 
 These APIs manage provider registrations and OSAC-managed runtime data. The existing NetworkClass API selects managers by logical name. The operation and target table below describes AAP backend reconciliation, not fulfillment-service CRUD operations.
+
+#### Provider API routes and requests
+
+The private Fulfillment API exposes these provider registration services and
+REST routes. The equivalent gRPC services use package `osac.private.v1` and
+the RPC names shown. Create request bodies contain the resource object
+directly; the response body is the created object. The service assigns the
+resource `id`. References between registrations use `metadata.name`, not that
+generated ID. Get and Delete routes address the generated resource ID; use
+List with the `metadata.name` filter to find an ID when needed.
+
+| Resource | gRPC service | Create | List | Get | Delete |
+|---|---|---|---|---|---|
+| NetworkDataModel | `NetworkDataModels` | `POST /api/private/v1/network_data_models` | `GET /api/private/v1/network_data_models` | `GET /api/private/v1/network_data_models/{id}` | `DELETE /api/private/v1/network_data_models/{id}` |
+| NetworkManager | `NetworkManagers` | `POST /api/private/v1/network_managers` | `GET /api/private/v1/network_managers` | `GET /api/private/v1/network_managers/{id}` | `DELETE /api/private/v1/network_managers/{id}` |
+| NetworkData | `NetworkData` | `POST /api/private/v1/network_data` (OSAC service identity only) | `GET /api/private/v1/network_data` | `GET /api/private/v1/network_data/{id}` | `DELETE /api/private/v1/network_data/{id}` (OSAC lifecycle identity only) |
+
+Cloud Infrastructure Admins use their existing private-Fulfillment API
+authentication for NetworkDataModel and NetworkManager Create, List, Get, and
+Delete. They may List and Get NetworkData values for troubleshooting. Only
+OSAC service identities may create or delete NetworkData. Update and Patch
+methods are not defined for any of these resources. There is no new CLI in
+this contract; administrators use the private REST API or generated gRPC
+client. The List request's `filter` field uses the private API's existing CEL
+syntax; for example, `this.metadata.name == "acme-fabric-manager"` selects a
+registration by its Kubernetes object name.
+
+For example, after preparing a JSON resource body in `network-manager.json`,
+an administrator creates the registration with:
+
+```sh
+curl --fail-with-body --request POST \
+  "${FULFILLMENT_API}/api/private/v1/network_managers" \
+  --header "Authorization: Bearer ${OSAC_PROVIDER_TOKEN}" \
+  --header "Content-Type: application/json" \
+  --data-binary @network-manager.json
+```
+
+The private API's configured provider identity determines authorization; the
+body cannot grant itself permission. A successful response contains the
+created object's generated `id` and the submitted `metadata.name` and `spec`.
+The provider stores the returned ID for later Get/Delete operations, while a
+NetworkClass and other managers continue to reference the object by logical
+name.
 
 #### NetworkData API and resource-scoped exchange
 
@@ -427,7 +532,7 @@ The Kubernetes Manager receives only values whose model names it declared and wh
 
 #### Common AAP input
 
-OSAC passes a common job envelope in the `osac_job_vars` variable. The task-specific resource is the OSAC resource being reconciled. The `manager.name` field carries the selected NetworkManager's `spec.managerName`; `metadata.name` identifies the Kubernetes object only. The manager reference selects the collection role, while the operation names one fixed task from the operation table. `manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a collection cannot choose or override it. A Fabric task receives existing `network_data` values owned by resources in its operation context and a `network_output_models` list naming required values not yet stored. A Kubernetes task receives only applicable NetworkData values whose model names appear in its `networkInputs`; this list is empty when no declared owner scope applies to the operation.
+OSAC passes a common job envelope in the `osac_job_vars` variable. The task-specific resource is the OSAC resource being reconciled. The `manager.name` field carries the selected NetworkManager's `spec.managerName`; `metadata.name` identifies the Kubernetes object only. The manager reference selects the collection role, while the operation names one fixed task from the operation table. `manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a collection cannot choose or override it. `manager.configuration` contains that registration's non-secret provider settings. A Fabric task receives existing `network_data` values owned by resources in its operation context and a `network_output_models` list naming required values not yet stored. A Kubernetes task receives only applicable NetworkData values whose model names appear in its `networkInputs`; this list is empty when no declared owner scope applies to the operation. AAP credentials are attached to the selected manager's job separately and are not copied into `osac_job_vars`.
 
 ```yaml
 osac_job_vars:
@@ -436,6 +541,9 @@ osac_job_vars:
     name: netris
     role: fabric
     implementationRef: acme.networking.fabric_manager
+    configuration:
+      ethernet_east_west:
+        server_cluster_template: spectrum-x-gpu-template
   network_data: []
   resource:
     apiVersion: osac.openshift.io/v1alpha1
@@ -532,20 +640,69 @@ osac_job_vars:
 |-----------|-------------------------|-----------------|-------------------------|------------------------------|
 | `virtual_network.create` / `virtual_network.delete` | Fabric | N/A | `create_virtual_network` / `delete_virtual_network` | Create or remove the isolated VirtualNetwork routing domain and associated allocation. Subnets in the same VirtualNetwork are L3-routable to one another; separate VirtualNetworks remain isolated. |
 | `subnet.create` / `subnet.delete` | Create: Fabric, then Kubernetes when configured. Delete: Kubernetes, then Fabric. | N/A | `create_subnet` / `delete_subnet` | Fabric creates/removes one L2 broadcast domain for the Subnet and returns declared values for their NetworkClass, VirtualNetwork, or Subnet owners. OSAC persists validated values as NetworkData. Both managers receive the same applicable values on delete that they used on create. Kubernetes receives only its declared, matched inputs, which may include parent VirtualNetwork and current Subnet values. Workloads in one Subnet share that L2 domain and are L3-routable within their parent VirtualNetwork. OSAC removes Subnet NetworkData after consumer cleanup and Fabric deletion; parent-VirtualNetwork values persist through individual Subnet deletion. The Subnet CIDR belongs to its parent VirtualNetwork and cannot overlap a sibling Subnet. |
+| `fabric_domain.create` / `fabric_domain.delete` | Fabric, only when the selected manager declares `EAST_WEST_ETHERNET` | N/A | `create_fabric_domain` / `delete_fabric_domain` | Create or remove the requested Ethernet east-west isolation for the FabricDomain's participating servers. The task receives the FabricDomain, its associated VirtualNetwork context, the manager's `configuration`, and applicable NetworkData. It must preserve the VirtualNetwork's north-south routing and the Subnets' broadcast domains. |
 | `workload_attachment.apply` / `workload_attachment.delete` | Kubernetes Manager for `compute_instance`; Fabric Manager for `cluster` and `baremetal_instance` | `compute_instance`, `cluster`, `baremetal_instance` | `apply_workload_attachment` / `delete_workload_attachment` | Connect the resolved interface to its Subnet and enforce the complete effective stateful SecurityGroup rules before enabling traffic. On delete, remove policy and detach the interface before workload teardown. For CaaS, Fabric receives each node-set interface. |
 | `external_ip_pool.create` / `external_ip_pool.delete` | Fabric | N/A | `create_external_ip_pool` / `delete_external_ip_pool` | Register or remove the provider address pool. The pool has one canonical IPv4 Classless Inter-Domain Routing (CIDR) prefix; OSAC owns API capacity counters. |
-| `external_ip.allocate` / `external_ip.release` | Fabric | N/A | `create_external_ip` / `delete_external_ip` | Reserve or release one address from the selected pool. After durable allocation, the task writes the address to `osac.openshift.io/allocated-address`. Repeated allocation for the same resource unique identifier returns the same address. |
+| `external_ip.allocate` / `external_ip.release` | Fabric | N/A | `create_external_ip` / `delete_external_ip` | Reserve or release one address from the selected pool. On allocation, return the address in `osac_result.data.external_ip.address`; repeated allocation for the same resource UID returns the same address. The manager does not write to the ExternalIP resource. |
 | `external_ip_attachment.create` / `external_ip_attachment.delete` | Fabric | `compute_instance`, `cluster`, `baremetal_instance` | `attach_external_ip` / `detach_external_ip` | Add or remove inbound translation for the resource target or configured Cluster endpoint. Remove the attachment before releasing its ExternalIP. |
 | `nat_gateway.create` / `nat_gateway.delete` | Fabric | N/A | `create_nat_gateway` / `delete_nat_gateway` | Add or remove outbound source network address translation (SNAT) for the VirtualNetwork using its ExternalIP. It does not provide inbound access. |
-| `dhcp_lease.query` | Fabric | `cluster`, `baremetal_instance` | `query_dhcp_lease` | Return the Dynamic Host Configuration Protocol (DHCP) lease matching each requested network attachment as the AAP artifact `leases`. |
+| `dhcp_lease.query` | Fabric | `cluster`, `baremetal_instance` | `query_dhcp_lease` | Return one Dynamic Host Configuration Protocol (DHCP) lease for each requested network attachment in `osac_result.data.dhcp_leases`. |
 
-Every implementation must provide the complete operation and workload-target combinations assigned to its role. A registration does not select an operation subset. A manager with a different internal model must translate the fixed OSAC operation into that model; it cannot route the operation to the other manager role.
+Every implementation must provide the complete base operation and workload-target combinations assigned to its role. A registration does not select an operation subset. A Fabric Manager that declares `EAST_WEST_ETHERNET` must also implement both FabricDomain task entry points. A manager with a different internal model must translate the fixed OSAC operation into that model; it cannot route the operation to the other manager role.
 
-The `leases` artifact contains entries with `subnet_ref`, `interface`, `ip_address`, and `mac_address`. A missing or ambiguous lease match is a task failure. OSAC owns API resource phase, conditions, and provisioning job history.
+Each `dhcp_leases` entry contains `subnet_ref`, `interface`, `ip_address`, and `mac_address`. A missing or ambiguous lease match is a task failure. OSAC owns API resource phase, conditions, and provisioning job history.
+
+#### Generic AAP role invocation
+
+OSAC launches one generic networking job template for each manager operation.
+The template runs the OSAC-owned `playbook_osac_network_manager.yml`; it does
+not select a provider playbook. That playbook maps the fixed `operation` to
+the corresponding `tasks_from` entry in the operation table and dynamically
+includes the FQCN in `manager.implementationRef`:
+
+```yaml
+- name: Invoke the selected network manager
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - name: Run the operation's manager task
+      ansible.builtin.include_role:
+        name: "{{ osac_job_vars.manager.implementationRef }}"
+        tasks_from: "{{ osac_network_task_from }}"
+```
+
+`osac_network_task_from` is computed by OSAC from the fixed operation table;
+the manager cannot choose a different operation. The manager collection role
+contains one file under `roles/<role>/tasks/` for each assigned entry point,
+for example `create_subnet.yml`, `delete_subnet.yml`, and
+`apply_workload_attachment.yml`. Each task reads `osac_job_vars`, uses its
+own `manager.configuration`, and returns the required result. A registered
+role must be installed in the execution environment used by the generic job
+template. [Ansible `include_role` supports dynamic role names and `tasks_from`](https://docs.ansible.com/projects/ansible-core/2.17/collections/ansible/builtin/include_role_module.html); [collection roles are addressed by FQCN](https://docs.ansible.com/projects/ansible/latest/collections_guide/collections_using_playbooks.html).
+
+The generic job template sets `ask_credential_on_launch: true` and does not
+carry a default provider-backend credential. When a manager registration has
+`aapCredentialIds`, OSAC supplies exactly that list as the AAP launch
+request's `credentials` field. AAP attaches those credential objects to that
+job according to their configured credential types. The Kubernetes task
+never receives Fabric credentials. An empty list means the job uses no
+manager-specific AAP credentials. AAP rejects launch if credentials are
+unavailable, not permitted to the OSAC launch identity, or not accepted by
+the template; OSAC records that as a failed operation and does not mark the
+resource Ready. The template must be configured to allow credentials at
+launch, as described in the [AAP job-template launch documentation](https://docs.redhat.com/en/documentation/red_hat_ansible_automation_platform/2.6/develop-proc_controller_launch_job_template).
 
 #### Operation result envelope
 
-Every successful operation except `dhcp_lease.query` returns an AAP artifact named `osac_result` with this fixed shape. The `resourceUID` field identifies the Kubernetes object's unique identifier (UID); `observedGeneration` identifies the version of its specification that the manager processed. The example's empty `network_data` list is used when that operation has no requested output values; a Fabric operation that publishes values returns them in this list.
+Every successful manager operation, including `dhcp_lease.query`, returns one AAP artifact named
+`osac_result` with the same fixed envelope. `resourceUID` identifies the
+Kubernetes object's unique identifier (UID), and `observedGeneration`
+identifies the version of its specification that the manager processed.
+`data.network_data` is always present and is an empty list when that
+operation has no requested NetworkData values. `data.external_ip` is present
+only for `external_ip.allocate`; `data.dhcp_leases` is present only for
+`dhcp_lease.query`. Other operations leave those operation-specific fields
+absent.
 
 ```yaml
 - name: Return operation result to OSAC
@@ -559,7 +716,57 @@ Every successful operation except `dhcp_lease.query` returns an AAP artifact nam
           network_data: []
 ```
 
-AAP exposes the `osac_result` stat in the completed job's `artifacts` field (`artifacts.osac_result`), which the OSAC operator reads. This artifact is transport, not durable NetworkData storage: manager playbooks do not write NetworkData or call the fulfillment-service API. The operator validates the result and each output, creates the corresponding NetworkData records through the fulfillment-service API, and starts a consuming Kubernetes Manager only after those writes succeed. `operation`, `resourceUID`, and `observedGeneration` must match the operation OSAC dispatched and the resource version it dispatched. `data.network_data` is an optional list of manager-produced values, present only when the operation publishes values declared in `network_output_models`; each entry identifies its model, owner, and JSON value. ExternalIP allocation reports its address through the guarded `osac.openshift.io/allocated-address` annotation, not in `data`. `dhcp_lease.query` returns the `leases` artifact instead of `osac_result`. The envelope has no version field; changes to its fields or result data require a coordinated OSAC and manager contract update. See the [Ansible `set_stats` documentation](https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/set_stats_module.html) and [AAP step outputs documentation](https://docs.redhat.com/en/documentation/automation_orchestrator/2026.8/develop-understand_inputs_and_outputs_for_aap_steps).
+An ExternalIP allocation uses the same envelope and adds its operation output:
+
+```yaml
+osac_result:
+  operation: external_ip.allocate
+  resourceUID: "<external IP UID>"
+  observedGeneration: 1
+  data:
+    network_data: []
+    external_ip:
+      address: 198.51.100.19
+```
+
+A lease query uses the same envelope and adds the matching leases:
+
+```yaml
+osac_result:
+  operation: dhcp_lease.query
+  resourceUID: "<workload UID>"
+  observedGeneration: 1
+  data:
+    network_data: []
+    dhcp_leases:
+      - subnet_ref: "<subnet UID>"
+        interface: primary
+        ip_address: 192.0.2.10
+        mac_address: "02:00:00:00:00:10"
+```
+
+One result contains only fields required by its operation. A Subnet create
+has `network_data` and no `external_ip` or `dhcp_leases`; an ExternalIP
+allocation has `external_ip.address`, and a DHCP query has `dhcp_leases`.
+
+AAP exposes the `osac_result` stat in the completed job's `artifacts` field
+(`artifacts.osac_result`), which the OSAC operator reads. This artifact is
+transport, not durable NetworkData storage: manager playbooks do not write
+NetworkData or call the fulfillment-service API. The operator validates the
+result and each output, creates the corresponding NetworkData records through
+the fulfillment-service API, and starts a consuming Kubernetes Manager only
+after those writes succeed. `operation`, `resourceUID`, and
+`observedGeneration` must match the operation and resource generation stored
+with that exact AAP job. Every result contains `data.network_data` exactly
+once; each entry identifies its model, owner, and JSON value. For
+`external_ip.allocate`, OSAC validates the returned canonical IPv4 address
+against the selected pool, writes it to `ExternalIP.status.address`, and
+reports allocation through the existing status feedback path. For
+`dhcp_lease.query`, OSAC validates one unambiguous lease per requested
+attachment. The envelope has no version field; changing its fields requires
+a coordinated OSAC and manager contract update. See the [Ansible
+`set_stats` documentation](https://docs.ansible.com/projects/ansible/latest/collections/ansible/builtin/set_stats_module.html)
+and [AAP step outputs documentation](https://docs.redhat.com/en/documentation/automation_orchestrator/2026.8/develop-understand_inputs_and_outputs_for_aap_steps).
 
 OSAC validates the artifact name and all required fields before accepting task success. A missing, malformed, stale, or mismatched envelope is a failed operation and cannot advance resource readiness or release capacity. A manager must not report a successful operation with an envelope for a different operation, resource UID, or generation.
 
@@ -570,8 +777,6 @@ When OSAC launches a task, AAP returns a unique job ID. OSAC records that ID in 
 Each retry is a new AAP execution with a new job ID and a new status-history entry. While a job is non-terminal, OSAC polls the same ID and does not launch another attempt for that target. Resources dispatched to both manager roles track separate `fabric` and `kubernetes` targets. The Kubernetes target waits for the Fabric target's tracked job to succeed and for its NetworkData outputs to be persisted; a result from another job or target cannot satisfy that dependency.
 
 The current OSAC lifecycle retries failed jobs without a maximum attempt count. Its first retry backoff is two minutes and the delay is capped at 30 minutes. The default history limit retains ten job entries; that limit trims old status history and does not limit retries. The operator attempts to persist a returned job ID before the reconcile finishes and checks fresh resource status before another launch to prevent duplicate launches from concurrent reconciles. AAP launch and resource-status persistence are separate operations, however, so OSAC cannot guarantee exactly-once launch if it loses the launch response or stops before persisting the ID. Manager operations must remain idempotent by resource UID to make such retries safe.
-
-Ansible supports role inclusion by a variable role name and the `tasks_from` selector. The fully qualified collection role must be installed in the AAP execution environment. See [Ansible Core include_role documentation](https://docs.ansible.com/projects/ansible-core/2.17/collections/ansible/builtin/include_role_module.html) and [using collection roles by FQCN](https://docs.ansible.com/projects/ansible/latest/collections_guide/collections_using_playbooks.html). [Research: §1]
 
 ### 4.4 Operation Ordering and NetworkData Lifecycle
 
@@ -656,7 +861,7 @@ NetworkManager and NetworkDataModel objects contain small declarations and schem
 
 ### 4.6 Security Considerations
 
-NetworkManager and NetworkDataModel objects contain implementation references, declarations, and schemas, not credentials. Cluster-scoped RBAC limits their administration to Cloud Infrastructure Admins. The fulfillment service serves the provider registry APIs; the operator reads registrations for manager resolution and dispatch. AAP jobs cannot modify registry objects or NetworkData CRDs. A Fabric AAP job returns values only in its result artifact; the OSAC operator submits them through the fulfillment-service API, which checks model, owner, tenant, and schema before committing the database record. The fulfillment service's existing controller path projects the record as a CRD. The Kubernetes Manager receives validated values, not fulfillment-service credentials. Model values are JSON data and must not contain credentials or secrets. Ansible job artifacts and logs must not disclose secrets. Manager tasks act only on the tenant-scoped resources OSAC passes and must preserve existing tenant and owner-reference boundaries.
+NetworkManager objects contain implementation references, declarations, and credential IDs, not credential values. NetworkDataModel objects contain schemas, not secrets. Cluster-scoped RBAC limits their administration to Cloud Infrastructure Admins. The fulfillment service serves the provider registry APIs; the operator reads registrations for manager resolution and dispatch. AAP jobs cannot modify registry objects or NetworkData CRDs. A Fabric AAP job returns values only in its result artifact; the OSAC operator submits them through the fulfillment-service API, which checks model, owner, tenant, and schema before committing the database record. The fulfillment service's existing controller path projects the record as a CRD. The Kubernetes Manager receives validated values, not fulfillment-service credentials. Model values are JSON data and must not contain credentials or secrets. Ansible job artifacts and logs must not disclose secrets. Manager tasks act only on the tenant-scoped resources OSAC passes and must preserve existing tenant and owner-reference boundaries.
 
 ### 4.7 Failure Handling and Recovery
 
@@ -674,7 +879,7 @@ NetworkManager and NetworkDataModel objects contain implementation references, d
 - **Backend timeout or transient error:** The AAP task returns a diagnostic and a non-success result. Existing OSAC job retry/backoff behavior retries the operation. All create/apply and delete tasks are idempotent by resource UID.
 - **Workload attachment policy apply failure:** The manager keeps traffic unavailable; OSAC does not report the workload Ready and retries the same normalized attachment. Policy delete failure retains the workload finalizer and blocks teardown until cleanup succeeds.
 - **Invalid operation result:** A missing, malformed, stale, or mismatched result fails the operation; OSAC does not advance readiness or release capacity.
-- **Invalid ExternalIP or lease result:** Missing allocated-address output or malformed/ambiguous lease output fails the task; OSAC does not report allocation or lease discovery as successful.
+- **Invalid ExternalIP or lease result:** Missing or invalid `data.external_ip.address`, or malformed or ambiguous `data.dhcp_leases`, fails the operation; OSAC does not report allocation or lease discovery as successful.
 
 ### 4.8 RBAC and Tenancy
 
@@ -682,7 +887,7 @@ No tenant-facing RBAC changes are required. Cloud Infrastructure Admins manage N
 
 ### 4.9 Extensibility and Future-Proofing
 
-A new manager is onboarded by creating any provider-defined NetworkDataModel objects first, creating a NetworkManager object that references those models, installing its collection into the AAP execution environment, and selecting the manager in NetworkClass. During reconciliation, its Fabric task returns generic JSON values and OSAC validates and stores them as NetworkData; the selected Kubernetes Manager receives its declared inputs. After OSAC ships the generic CRDs, fulfillment-service APIs, fulfillment-service API validation, JSON Schema validator, owner-scope resolver, and manager contract, adding a model or manager requires provider objects and Ansible content only; it does not require manager-specific Go changes. Adding an OSAC resource kind, manager role, operation, or workload target requires platform support. A model name, meaning, scope, and schema remain a provider-level contract and do not require a new OSAC manager integration.
+A new manager is onboarded by creating any provider-defined NetworkDataModel objects first, creating a NetworkManager object that references those models, installing its collection into the AAP execution environment, and selecting the manager in NetworkClass. During reconciliation, its Fabric task returns generic JSON values and OSAC validates and stores them as NetworkData; the selected Kubernetes Manager receives its declared inputs. Before selection, the provider verifies all operations and targets assigned to that role, including the selected manager's real AAP credential access and backend configuration, against the cases in the [manager integration test plan](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md). OSAC may run those cases for its own supported implementations; it does not issue provider certification. After OSAC ships the generic CRDs, fulfillment-service APIs, fulfillment-service API validation, JSON Schema validator, owner-scope resolver, and manager contract, adding a model or manager requires provider objects and Ansible content only; it does not require manager-specific Go changes. Adding an OSAC resource kind, manager role, operation, or workload target requires platform support. A model name, meaning, scope, and schema remain a provider-level contract and do not require a new OSAC manager integration.
 
 ### 4.10 Risks and Mitigations
 
@@ -797,8 +1002,8 @@ Changing manager names in NetworkClass does not automatically migrate backend st
 ## Provenance
 
 Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (99 behind origin/main, dirty)
+Final: revise @ design 0.11.3 - 2bd6607, workspace main @ 515ce8758
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"1f3b63b82 (dirty)","source_repo_branch":"main","commits_behind_main":99,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"515ce8758","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":false} -->

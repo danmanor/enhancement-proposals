@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-07
+last-updated: 2026-10-08
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -22,7 +22,7 @@ superseded-by:
 |-------|-------|
 | Author(s) | Dan Manor (dmanor@redhat.com) |
 | Jira | https://redhat.atlassian.net/browse/OSAC-1433 |
-| Date | 2026-10-07 |
+| Date | 2026-10-08 |
 
 ## Contents
 
@@ -44,6 +44,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 
 - Cloud Infrastructure Admins can determine whether selected Fabric and K8s manager implementations can meet each other's networking needs before provider work starts.
 - Providers can assess whether a manager implementation meets OSAC's complete role requirements using one published contract.
+- Cloud Infrastructure Admins can configure each manager's backend settings and credentials so each implementation receives only what it needs.
 - Providers can add shared network data definitions needed by new manager implementations without requesting manager-specific OSAC code.
 - Tenants can use the same networking resources and workflows for VMs, managed clusters, and bare-metal workloads across compatible manager combinations.
 - Providers can select an implementation regardless of who supplies it, without changing tenant networking workflows.
@@ -54,7 +55,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - Changing the shared tenant networking resources or their meaning.
 - Requiring every Fabric Manager to work with every K8s Manager.
 - Exposing provider manager selection to tenants.
-- Defining vendor-specific configuration for Netris, Agentless VLAN, CUDN, or another backend.
+- Defining a standard vendor-specific field set for Netris, Agentless VLAN, CUDN, or another backend.
 - Proving from a data definition alone that a manager configured its backend correctly or preserved the shared networking behavior.
 - Adding new OSAC resource kinds or manager operations solely by registering a data definition.
 
@@ -65,6 +66,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - As a Cloud Infrastructure Admin, I want one contract that states each manager role's requirements and which implementations can interoperate, so that I can select a supported provider configuration with clear diagnostics when a pairing or operation is unsupported.
 - As a Cloud Infrastructure Admin, I want to create, inspect, and remove shared network data definitions and manager registrations through OSAC's provider management interface, so that OSAC can validate configuration before networking work uses it.
 - As a Cloud Infrastructure Admin, I want OSAC to validate manager declarations and produced values against registered definitions, so that a new backend integration does not require manager-specific OSAC development.
+- As a Cloud Infrastructure Admin, I want to configure backend settings and credentials for each manager independently, so that the selected implementation can reach its backend without exposing another manager's credentials.
 
 ### Tenant User
 
@@ -81,6 +83,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - **FR-5:** A provider can define additional shared networking data for existing provider profiles, VirtualNetworks, and Subnets, then exchange it between conforming managers without one-off OSAC changes or a tenant API change. [User]
 - **FR-6:** OSAC must identify invalid data definitions, undefined manager references, missing required data, and values that do not match their definition, and prevent dependent work from starting. [User]
 - **FR-7:** Cloud Infrastructure Admins can create, inspect, list, and remove manager and data-model registrations through OSAC's provider management interface; OSAC rejects attempts to modify an existing registration in place. [User]
+- **FR-8:** Cloud Infrastructure Admins can provide per-manager backend settings and bind credentials to that manager's execution; OSAC passes only the selected manager's settings and credentials to its job. [User]
 
 ### 3.2 Non-Functional Requirements
 
