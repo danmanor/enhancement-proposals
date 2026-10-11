@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-08
+last-updated: 2026-10-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: prd.md
@@ -65,7 +65,27 @@ superseded-by:
 
 A Fabric Manager configures the provider's physical network fabric for OSAC. A Kubernetes Manager connects Kubernetes-hosted workloads to that fabric. NetworkClass selects one implementation for each configured role. NetworkDataModel defines one value's meaning, owner scope, and JSON Schema; NetworkData stores one validated value for a model and owner; NetworkManager registers an implementation, its role, capabilities, and NetworkData inputs or outputs.
 
-This design defines the source-neutral role contract, registration APIs, Ansible Automation Platform (AAP) task interface, and OSAC-owned exchange between managers. Every successful manager request returns the same structured AAP job artifact, `osac_result`; it is a manager response, not an OSAC API resource. Ansible publishes it with `set_stats`, AAP exposes it under the completed job's `artifacts` field, and the OSAC operator reads it from the exact tracked job. The result identifies the resource UID and observed specification generation, and carries any NetworkData values or request-specific output. OSAC already knows the resource lifecycle action and manager stage from reconciliation, so managers do not send an operation identifier. OSAC validates the result before treating the request as complete and validates and stores Fabric values through the NetworkData API before starting a consumer manager. OSAC coordinates both roles, and one manager does not call another directly. After generic OSAC support exists, onboarding an implementation requires NetworkManager and NetworkDataModel resources plus Ansible content, with no implementation-specific Go code. See the [Network Manager Integration Contract PRD](prd.md) for the outcomes this design supports and the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md) for the shared tenant-resource semantics.
+This design defines the source-neutral role contract, registration APIs, Ansible
+Automation Platform (AAP) task interface, and OSAC-owned exchange between
+managers. Every successful manager request returns the same structured AAP job
+artifact, `osac_result`; it is a manager response, not an OSAC API resource.
+Ansible publishes it with `set_stats`, AAP exposes it under the completed job's
+`artifacts` field, and the OSAC operator reads it from the exact tracked job.
+The result identifies the reconciled resource UID and observed specification
+generation, and carries any NetworkData values or request-specific output. For
+workload attachment jobs, the reconciled resource is the internal
+`SubnetAttachment` request; its referenced workload is a separate target.
+OSAC already knows the resource lifecycle action, manager stage, and any
+request phase from reconciliation, so managers do not send an operation
+identifier. OSAC validates the result before treating the request as complete
+and validates and stores Fabric values through the NetworkData API before
+starting a consumer manager. OSAC coordinates both roles, and one manager does
+not call another directly. After generic OSAC support exists, onboarding an
+implementation requires NetworkManager and NetworkDataModel resources plus
+Ansible content, with no implementation-specific Go code. See the [Network
+Manager Integration Contract PRD](prd.md) for the outcomes this design
+supports and the [Unified Networking Design](/enhancements/OSAC-1433-unified-networking/design.md)
+for the shared tenant-resource semantics.
 
 ## 2. Goals and Non-Goals
 
@@ -536,7 +556,38 @@ The Kubernetes Manager receives only NetworkData values whose model names it dec
 
 #### Common AAP input
 
-OSAC launches the generic playbook with an `osac_job_vars` envelope and an `osac_network_task_from` value. The operator derives the task name from the resource kind and lifecycle action; providers do not set an operation or choose a task. The task-specific resource is the OSAC resource being reconciled. The `manager.name` field carries the selected NetworkManager's `spec.managerName` and selects the same-named role in the `osac.networking` collection; `metadata.name` identifies the Kubernetes object only. `manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a collection cannot choose or override it. Provider settings are not included in `osac_job_vars`; the role reads the environment variables supplied to every networking fulfillment-group job. `network_owner_context.owners` contains the live owner identities applicable to the action, each with `kind` and hub-object `uid`. A Fabric role implements the output models declared by its manager: its task uses the owner context to label values and existing `network_data` to skip values already stored. OSAC derives the expected new model/owner keys internally and does not pass that set to the task; it validates that the task returns every expected key exactly once. A Kubernetes task receives only applicable NetworkData values whose model names appear in its `networkInputs`; this list is empty when no declared owner scope applies to the request.
+OSAC launches the generic playbook with an `osac_job_vars` envelope and an
+`osac_network_task_from` value. The operator derives ordinary task names from
+the resource kind and lifecycle action. For a `SubnetAttachment` request, it
+also uses the target kind and current request phase: the target kind selects
+the manager role, while the phase distinguishes attachment apply/delete from
+post-handoff DHCP lookup. Providers do not set an operation or choose a task.
+
+`resource` is the OSAC object whose reconciliation owns the job. For workload
+attachment and lease-lookup tasks, it is the `SubnetAttachment` request CR; for
+other tasks, it is the networking resource being reconciled. The request's
+spec contains only a reference to its target workload. The separate `target`
+field contains the referenced `ComputeInstance` or `BaremetalInstance` object,
+and `network_attachment` contains the normalized networking input described
+below.
+
+The `manager.name` field carries the selected NetworkManager's
+`spec.managerName` and selects the same-named role in the `osac.networking`
+collection; `metadata.name` identifies the Kubernetes object only.
+`manager.role` is normalized by OSAC to exactly `fabric` or `kubernetes`; a
+collection cannot choose or override it. Provider settings are not included in
+`osac_job_vars`; the role reads the environment variables supplied to every
+networking fulfillment-group job.
+
+When applicable, `network_owner_context.owners` contains live owner identities
+for NetworkData values, each with `kind` and hub-object `uid`. A Fabric role
+implements the output models declared by its manager: its task uses the owner
+context to label values and existing `network_data` to skip values already
+stored. OSAC derives the expected new model/owner keys internally and does not
+pass that set to the task; it validates that the task returns every expected
+key exactly once. A Kubernetes task receives only applicable NetworkData
+values whose model names appear in its `networkInputs`; this list is empty
+when no declared owner scope applies to the request.
 
 ```yaml
 osac_network_task_from: create_subnet
@@ -566,9 +617,21 @@ For example, the CUDN manager declares the VirtualNetwork VNI and the two Subnet
 #### Workload attachment policy input
 
 SecurityGroup is an immutable OSAC rule resource, not a separately provisioned
-backend object. When a workload selects one or more groups, OSAC resolves the
-attachment's ready Subnet and groups and sends the complete normalized policy
-with the `apply_workload_attachment` task. A group contains ingress and egress rules;
+backend object. The workload lifecycle owner creates one target-only
+`SubnetAttachment` request for a `ComputeInstance` or `BaremetalInstance`.
+CaaS creates one request for each worker `BaremetalInstance`; there is no
+Cluster-target request. The request does not copy the workload's Subnet,
+interface, or SecurityGroup fields. The networking controller reads the
+referenced workload, resolves its immutable attachment, and supplies the
+resolved data to the manager task. The SubnetAttachment controller owns request status,
+AAP job history, and its finalizer; the workload lifecycle owner mirrors
+readiness and discovered IP status to the workload and gates workload
+readiness and teardown. See the [Unified Networking Design's
+SubnetAttachment flow](/enhancements/OSAC-1433-unified-networking/design.md#internal-workload-attachment-request).
+
+When a workload selects one or more groups, the networking controller resolves
+the attachment's ready Subnet and groups and sends the complete normalized
+policy with the `apply_workload_attachment` task. A group contains ingress and egress rules;
 each rule carries `protocol`, optional TCP/UDP `port_from` and `port_to`, and
 an IPv4 `ipv4_cidr`. The payload preserves each group's UID and the complete
 rule arrays so managers can remove only policy owned by that workload.
@@ -577,32 +640,39 @@ from 1 through 65535 with `port_to >= port_from`; ICMP and ALL omit port
 fields. Ingress CIDRs match sources and egress CIDRs match destinations. The
 legacy IPv6 field is omitted because the API rejects non-empty IPv6 values.
 
-The `workload_attachment` object is a sibling of `resource` in
-`osac_job_vars`. `resource` remains the owning ComputeInstance, Cluster, or
-BaremetalInstance, so the standard result UID and generation identify the
-workload. Its normalized fields are:
+The `network_attachment` object is a sibling of `resource` and `target` in
+`osac_job_vars`. For these tasks, `resource` is the `SubnetAttachment` request,
+so the standard result UID and generation identify the request whose status
+tracks the AAP job. `target` is the referenced workload object; its UID scopes
+provider-side attachment state. The networking controller derives
+`network_attachment` from the workload's attachment fields and resolved OSAC
+resources. Its normalized fields are:
 
 | Field | Meaning |
 |-------|---------|
 | `subnet` | Resolved Subnet UID, name, IPv4 CIDR, and its parent VirtualNetwork UID and name. |
-| `interfaces` | One or more resolved interface descriptors with `type` and `name`. ComputeInstance uses `{type: overlay, name: primary}`; BaremetalInstance uses the selected physical port; Cluster provides each node-set name and its resolved `fabric_interface` as a physical interface. |
+| `interface` | The one resolved interface descriptor with `type` and `name`. ComputeInstance uses `{type: overlay, name: primary}`; a BaremetalInstance, including a CaaS worker, uses its selected physical port. A physical descriptor includes `mac_address` when resolved. BMaaS lease lookup requires the MAC for the selected port from the BareMetalHost `osac.openshift.io/interface-macs` annotation; the controller does not dispatch the lookup until it is available. |
 | `security_groups` | Entries containing group UID, name, and complete immutable `ingress` and `egress` rules. Rule order does not affect behavior; attached groups' allow rules combine as a union. |
 
-OSAC validates that the Subnet and all selected SecurityGroups are Ready and
-belong to the same VirtualNetwork before dispatch. `apply_workload_attachment`
+The networking controller validates that the Subnet and all selected
+SecurityGroups are Ready and belong to the same VirtualNetwork before
+dispatch. `apply_workload_attachment`
 must establish the Subnet connection and install the effective stateful rules
 before workload traffic is enabled. Unmatched new traffic is denied and
 established reply traffic is allowed. `delete_workload_attachment` removes the
 workload-owned policy and detaches the interface (restoring the provisioning
-network for physical ports). Both operations are idempotent by workload UID
-and interface. Policy failure keeps the workload non-ready and traffic
-unavailable; delete failure retains the workload finalizer and retries before
+network for physical ports). Both operations are idempotent by target workload
+UID and interface. Policy failure keeps the request non-ready and the workload
+non-ready with traffic unavailable; delete failure retains the request's
+networking finalizer while the workload lifecycle owner waits to continue
 teardown. The task receives the same normalized attachment on apply and delete.
 
-For ComputeInstance, OSAC routes these operations to the Kubernetes Manager.
-For BaremetalInstance and Cluster workers, OSAC routes them to the Fabric
-Manager. Managers do not call one another; the cluster's resolved physical
-interfaces and policy are part of the Fabric Manager input.
+For a `ComputeInstance` target, the networking controller routes these
+operations to the Kubernetes Manager. For a `BaremetalInstance` target,
+including a CaaS worker BaremetalInstance, it routes them to the Fabric
+Manager. Each CaaS worker has its own BaremetalInstance-target request and
+resolved physical interface.
+Managers do not call one another.
 
 ```yaml
 osac_job_vars:
@@ -611,22 +681,31 @@ osac_job_vars:
     role: kubernetes
   resource:
     apiVersion: osac.openshift.io/v1alpha1
+    kind: SubnetAttachment
+    metadata: {uid: "<request UID>", generation: 1}
+    # Its spec contains only the target reference.
+  target:
+    apiVersion: osac.openshift.io/v1alpha1
     kind: ComputeInstance
-    metadata: {uid: "<workload UID>", generation: 3}
-    spec: {}
+    metadata: {name: app-vm, uid: "<workload UID>", generation: 3}
+    spec: {} # Abbreviated; the controller passes the referenced workload object.
   network_owner_context:
     owners:
       - {kind: NetworkClass, uid: "<networkclass UID>"}
       - {kind: VirtualNetwork, uid: "<VirtualNetwork UID>"}
       - {kind: Subnet, uid: "<subnet UID>"}
-  workload_attachment:
+  network_data:
+    - model_name: osac-networking-virtual-network-vxlan-l3-vni
+      resource_kind: VirtualNetwork
+      resource_uid: "<VirtualNetwork UID>"
+      value: 4020
+  network_attachment:
     subnet:
       uid: "<subnet UID>"
       name: app-subnet
       ipv4_cidr: 192.0.2.0/24
       virtual_network: {uid: "<VirtualNetwork UID>", name: app-network}
-    interfaces:
-      - {type: overlay, name: primary}
+    interface: {type: overlay, name: primary}
     security_groups:
       - uid: "<group UID>"
         name: web
@@ -637,9 +716,10 @@ osac_job_vars:
 
 #### Resource action, manager, and task table
 
-OSAC already knows the resource kind and lifecycle action it is reconciling.
-It uses this fixed table to choose the manager role or ordered manager
-stages, then passes the exact task filename stem to the generic playbook as
+OSAC knows the resource kind and lifecycle action it is reconciling. For a
+SubnetAttachment request, it also resolves the target workload kind. It uses
+this fixed table to choose the manager role or ordered manager stages, then
+passes the exact task filename stem to the generic playbook as
 `osac_network_task_from`. This table is an OSAC dispatch rule; managers do not
 send or select an operation identifier, and `NetworkManager` does not declare
 an operation subset.
@@ -649,12 +729,12 @@ an operation subset.
 | Create/delete VirtualNetwork | Fabric | N/A | `create_virtual_network` / `delete_virtual_network` | Create or remove the isolated VirtualNetwork routing domain and associated allocation. Subnets in the same VirtualNetwork are L3-routable to one another; separate VirtualNetworks remain isolated. |
 | Create/delete Subnet | Create: Fabric, then Kubernetes when configured. Delete: Kubernetes, then Fabric. | N/A | `create_subnet` / `delete_subnet` | Fabric creates/removes one L2 broadcast domain for the Subnet and returns declared values for their NetworkClass, VirtualNetwork, or Subnet owners. OSAC persists validated values as NetworkData. Both managers receive the same applicable values on delete that they used on create. Kubernetes receives only its declared, matched inputs, which may include parent VirtualNetwork and current Subnet values. Workloads in one Subnet share that L2 domain and are L3-routable within their parent VirtualNetwork. OSAC removes Subnet NetworkData after consumer cleanup and Fabric deletion; parent-VirtualNetwork values persist through individual Subnet deletion. The Subnet CIDR belongs to its parent VirtualNetwork and cannot overlap a sibling Subnet. |
 | Create/delete FabricDomain | Fabric, only when the selected manager declares `EAST_WEST_ETHERNET` | N/A | `create_fabric_domain` / `delete_fabric_domain` | Create or remove the requested Ethernet east-west isolation for the FabricDomain's participating servers. The task receives the FabricDomain, its associated VirtualNetwork context, provider settings through the job environment, and applicable NetworkData. It must preserve the VirtualNetwork's north-south routing and the Subnets' broadcast domains. |
-| Apply/delete workload attachment | Kubernetes Manager for `compute_instance`; Fabric Manager for `cluster` and `baremetal_instance` | `compute_instance`, `cluster`, `baremetal_instance` | `apply_workload_attachment` / `delete_workload_attachment` | Connect the resolved interface to its Subnet and enforce the complete effective stateful SecurityGroup rules before enabling traffic. On delete, remove policy and detach the interface before workload teardown. For CaaS, Fabric receives each node-set interface. |
+| Apply/delete workload attachment | Kubernetes Manager for a `ComputeInstance` target; Fabric Manager for a `BaremetalInstance` target | `SubnetAttachment` targeting `compute_instance` or `baremetal_instance` | `apply_workload_attachment` / `delete_workload_attachment` | Connect the target's one resolved interface to its Subnet and enforce its complete effective stateful SecurityGroup rules before enabling traffic. On delete, remove policy and detach the interface before workload teardown. CaaS creates one BaremetalInstance-target request per worker; there is no Cluster target. |
 | Create/delete ExternalIPPool | Fabric | N/A | `create_external_ip_pool` / `delete_external_ip_pool` | Register or remove the provider address pool. The pool has one canonical IPv4 Classless Inter-Domain Routing (CIDR) prefix; OSAC owns API capacity counters. |
 | Allocate/release ExternalIP | Fabric | N/A | `create_external_ip` / `delete_external_ip` | Reserve or release one address from the selected pool. On allocation, return the address in `osac_result.data.external_ip.address`; repeated allocation for the same resource UID returns the same address. The manager does not write to the ExternalIP resource. |
 | Create/delete ExternalIPAttachment | Fabric | `compute_instance`, `cluster`, `baremetal_instance` | `attach_external_ip` / `detach_external_ip` | Add or remove inbound translation for the resource target or configured Cluster endpoint. Remove the attachment before releasing its ExternalIP. |
 | Create/delete NATGateway | Fabric | N/A | `create_nat_gateway` / `delete_nat_gateway` | Add or remove outbound source network address translation (SNAT) for the VirtualNetwork using its ExternalIP. It does not provide inbound access. |
-| Query DHCP lease | Fabric | `cluster`, `baremetal_instance` | `query_dhcp_lease` | Return one Dynamic Host Configuration Protocol (DHCP) lease for each requested network attachment in `osac_result.data.dhcp_leases`. |
+| Query DHCP lease | Fabric | `SubnetAttachment` targeting `baremetal_instance` | `query_dhcp_lease` | Return the requested Dynamic Host Configuration Protocol (DHCP) lease in `osac_result.data.dhcp_leases`; the networking controller records it on the request. CaaS uses the same per-worker BaremetalInstance request. |
 
 Every implementation must provide the complete set of resource actions and
 workload targets assigned to its role. A NetworkManager does not select an
@@ -663,15 +743,34 @@ implement both FabricDomain task entry points. A manager with a different
 internal model must translate the fixed OSAC request into that model; it
 cannot route the request to the other manager role.
 
-Each `dhcp_leases` entry contains `subnet_ref`, `interface`, `ip_address`, and `mac_address`. A missing or ambiguous lease match is a task failure. OSAC owns API resource phase, conditions, and provisioning job history.
+Each `dhcp_leases` entry contains `subnet_ref`, `interface`, `ip_address`,
+and `mac_address`. The `query_dhcp_lease` task receives the SubnetAttachment
+as `resource`, its workload as `target`, and the resolved Subnet and interface
+in `network_attachment`; for BMaaS, the interface includes the `mac_address`
+specified above. The task reads a lease and does not apply attachment policy.
+A missing or ambiguous lease match is a task failure.
+
+Attachment apply and DHCP lookup are distinct reconciliation phases for a
+`BaremetalInstance`-target request. After apply succeeds, the SubnetAttachment
+controller records attachment readiness so the workload lifecycle owner can
+proceed with network handoff. The bare-metal fulfillment operator (BMF) reports
+`NetworkHandoffComplete` after handoff; only then does the SubnetAttachment
+controller launch a separate `query_dhcp_lease` job. Both jobs use the same
+SubnetAttachment as `resource`, but each has its own tracked AAP job ID and
+result. The SubnetAttachment controller owns request status, its finalizer,
+and AAP job history; the workload lifecycle owner mirrors the resulting
+conditions and IP into the target workload status.
 
 #### Generic AAP role invocation
 
-OSAC launches one generic networking job template for each manager stage.
+OSAC launches one generic networking job template for each manager stage or
+request phase.
 The template runs the OSAC-owned `playbook_osac_network_manager.yml`; it does
 not select a provider playbook or use `implementation-strategy`. The operator
-chooses the exact task file from the resource kind, lifecycle action, and
-fixed table above, then supplies its filename stem as
+chooses the task file from the resource kind and lifecycle action; for a
+SubnetAttachment request, it also uses the target kind and current phase (for
+example, attachment apply versus post-handoff DHCP lookup). It passes the selected
+task filename stem as
 `osac_network_task_from`. The generic playbook derives the role FQCN from the
 selected registration's `manager.name`:
 
@@ -714,7 +813,10 @@ values, so the group is the configuration and secret-sharing boundary.
 Every successful manager request returns one AAP artifact named
 `osac_result` with the same fixed envelope. `resourceUID` identifies the
 Kubernetes object's unique identifier (UID), and `observedGeneration`
-identifies the version of its specification that the manager processed.
+identifies the version of its specification that the manager processed. For
+workload attachment and DHCP-query tasks, these fields identify the
+`SubnetAttachment` request; the target workload UID is carried separately in
+`osac_job_vars.target`.
 `data.network_data` is always present and is an empty list when the task has
 no requested NetworkData values. `data.external_ip` is present only when the
 task allocates an ExternalIP; `data.dhcp_leases` is present only when the
@@ -749,7 +851,7 @@ A lease query uses the same envelope and adds the matching leases:
 
 ```yaml
 osac_result:
-  resourceUID: "<workload UID>"
+  resourceUID: "<SubnetAttachment request UID>"
   observedGeneration: 1
   data:
     network_data: []
@@ -771,7 +873,9 @@ NetworkData or call the fulfillment-service API. The operator validates the
 result and each output, creates the corresponding NetworkData records through
 the fulfillment-service API, and starts a consuming Kubernetes Manager only
 after those writes succeed. `resourceUID` and `observedGeneration` must match
-the resource context in that exact AAP job's original `extra_vars`; OSAC uses
+the resource context in that exact AAP job's original `extra_vars`; for
+workload attachment tasks, that context is the SubnetAttachment request, while
+`target` identifies the referenced workload. OSAC uses
 the job's tracked manager stage and `osac_network_task_from` to determine
 which task-specific result fields are required and which manager registration
 to use when validating returned values. Every result contains
@@ -789,11 +893,26 @@ OSAC validates the artifact name and all required fields before accepting task s
 
 #### AAP job identity, polling, and retries
 
-When OSAC launches a task, AAP returns a unique job ID. OSAC records that ID in the networking resource's `status.provisioningJobs` entry, with the job type, manager target, state, timestamp, and desired configuration version. On later reconciles, OSAC polls that exact AAP job ID. AAP returns that job's original `extra_vars` and its `artifacts`; OSAC reads `artifacts.osac_result` from the same job and checks the result's resource UID, observed generation, and `network_owner_context` against that job's original request context. The tracked manager target and `osac_network_task_from` identify which task ran and which result fields are expected. This uses the generation and owner UIDs that the attempt actually processed, even if the resource or profile has since changed. OSAC does not search AAP for a recent job by resource UID or use whichever result completed most recently.
+When OSAC launches a task, AAP returns a unique job ID. The controller
+reconciling the resource records that ID in its status with the job type,
+manager target, state, timestamp, and desired configuration version. For a
+workload attachment task, the SubnetAttachment controller records the job
+on the request CR; for other tasks, the controller records it on the
+networking resource being reconciled. On later reconciles, the controller polls
+that exact AAP job ID. AAP returns that job's original `extra_vars` and its
+`artifacts`; the controller reads `artifacts.osac_result` from the same job
+and checks the result's resource UID and observed generation against the
+original request context. For SubnetAttachment jobs, the original context
+also binds the request to the target workload UID and normalized
+`network_attachment` input. The tracked manager target and
+`osac_network_task_from` identify which task ran and which result fields are
+expected. The request identity and target captured by that attempt are used
+even if another reconcile is underway. OSAC does not search AAP for a recent
+job by workload UID or use whichever result completed most recently.
 
 Each retry is a new AAP execution with a new job ID and a new status-history entry. While a job is non-terminal, OSAC polls the same ID and does not launch another attempt for that target. Resources dispatched to both manager roles track separate `fabric` and `kubernetes` targets. The Kubernetes target waits for the Fabric target's tracked job to succeed and for its NetworkData outputs to be persisted; a result from another job or target cannot satisfy that dependency.
 
-The current OSAC lifecycle retries failed jobs without a maximum attempt count. Its first retry backoff is two minutes and the delay is capped at 30 minutes. The default history limit retains ten job entries; that limit trims old status history and does not limit retries. The operator attempts to persist a returned job ID before the reconcile finishes and checks fresh resource status before another launch to prevent duplicate launches from concurrent reconciles. AAP launch and resource-status persistence are separate operations, however, so OSAC cannot guarantee exactly-once launch if it loses the launch response or stops before persisting the ID. Manager operations must remain idempotent by resource UID to make such retries safe.
+The current OSAC lifecycle retries failed jobs without a maximum attempt count. Its first retry backoff is two minutes and the delay is capped at 30 minutes. The default history limit retains ten job entries; that limit trims old status history and does not limit retries. The operator attempts to persist a returned job ID before the reconcile finishes and checks fresh resource status before another launch to prevent duplicate launches from concurrent reconciles. AAP launch and resource-status persistence are separate operations, however, so OSAC cannot guarantee exactly-once launch if it loses the launch response or stops before persisting the ID. Resource tasks must remain idempotent by resource UID; workload attachment tasks must remain idempotent by target workload UID and interface.
 
 ### 4.4 Manager Stage Ordering and NetworkData Lifecycle
 
@@ -839,36 +958,60 @@ sequenceDiagram
 
 #### Workload attachment policy lifecycle
 
-The workload attachment operation carries the complete normalized attachment
-to the manager that owns its interface. That manager connects the interface
-only after it has installed the selected stateful SecurityGroup rules. During
-deletion, OSAC waits for policy removal and interface detachment before the
-workload controller removes the VM, server, or cluster attachment.
+The workload lifecycle owner creates the target-only SubnetAttachment request.
+The networking controller reads the referenced ComputeInstance or
+BaremetalInstance, resolves its immutable workload attachment, and launches
+the manager task with the request as `resource`, the workload as `target`, and
+the normalized data as `network_attachment`. The AAP result is bound to the
+request UID and generation; backend attachment state is idempotent by target
+workload UID and interface. The manager connects the interface only after it
+has installed the selected stateful SecurityGroup rules. During deletion, the
+SubnetAttachment controller waits for policy removal and interface detachment before
+allowing the workload lifecycle owner to continue teardown. CaaS creates one
+request for each worker BaremetalInstance and does not use a Cluster target.
+
+The sequence below shows the BaremetalInstance path. A ComputeInstance uses
+the same request/target split, but its IP is discovered from VMI status rather
+than by a DHCP lease manager task.
 
 ```mermaid
 sequenceDiagram
-    participant Workload as Workload provisioning controller
-    participant OSAC as OSAC dispatcher
+    participant Owner as Bare-metal workload lifecycle owner
+    participant Request as SubnetAttachment request
+    participant Network as Networking controller
     participant Manager as Interface owner manager
+    participant Baremetal as BaremetalInstance
     participant Target as Workload interface
 
-    Workload->>OSAC: Ready Subnet and resolved SecurityGroups
-    OSAC->>Manager: apply_workload_attachment(resource, normalized attachment)
+    Owner->>Request: Create target-only request
+    Network->>Request: Observe request and read target workload
+    Network->>Network: Resolve Subnet, interface, SecurityGroups, and NetworkData
+    Network->>Manager: apply_workload_attachment(request, target, network_attachment)
     Manager->>Target: Install deny-by-default stateful policy
     Manager->>Target: Connect interface to Subnet
-    Manager-->>OSAC: Successful osac_result
-    OSAC-->>Workload: Attachment complete; workload may become Ready
-    Workload->>OSAC: Delete workload
-    OSAC->>Manager: delete_workload_attachment(same attachment)
+    Manager-->>Network: osac_result for request UID and generation
+    Network->>Request: Record attachment readiness and job result
+    Request-->>Owner: Report readiness for workload status mirror
+    Owner->>Target: Complete network handoff and reboot
+    Owner-->>Baremetal: Report NetworkHandoffComplete
+    Network->>Baremetal: Observe target handoff condition
+    Network->>Manager: query_dhcp_lease(request, target, network_attachment)
+    Manager-->>Network: osac_result with matching lease
+    Network->>Request: Record discovered IP and IPDiscoveryComplete
+    Request-->>Owner: Mirror discovered IP to workload status
+    Owner->>Request: Begin request cleanup when target is deleted
+    Network->>Manager: delete_workload_attachment(same target and network_attachment)
     Manager->>Target: Remove policy and detach or restore provisioning network
-    Manager-->>OSAC: Successful osac_result
-    OSAC-->>Workload: Attachment cleanup complete; continue teardown
+    Manager-->>Network: osac_result for request UID and generation
+    Network->>Request: Record offboard completion and remove request finalizer
+    Request-->>Owner: Cleanup complete; continue workload teardown
 ```
 
-OSAC routes ComputeInstance attachments to the Kubernetes Manager and routes
-BaremetalInstance and CaaS worker attachments to the Fabric Manager. A failed
-apply leaves the workload non-ready with no workload traffic; a failed delete
-retains its finalizer and blocks teardown until retry succeeds.
+The networking controller routes ComputeInstance targets to the Kubernetes
+Manager and BaremetalInstance targets to the Fabric Manager. A failed apply
+keeps the request non-ready, so its workload lifecycle owner does not report
+the target Ready. A failed delete retains the request finalizer and keeps the
+workload lifecycle owner's teardown gate closed until cleanup succeeds.
 
 The current OSAC implementation does not yet provide the proposed NetworkDataModel registrations, schema validator, NetworkData API, or input resolver. Generic lifecycle support must validate Fabric result values against registered schemas before persisting NetworkData or dispatching Kubernetes work, preserve each owner scope through retries, and order consumer cleanup before removing values. Each manager task remains independently implemented and idempotent; OSAC owns matching, validation, persistence, ordering, and retries.
 
@@ -894,8 +1037,8 @@ NetworkManager objects contain manager identity, role selection, capabilities, a
 - **Kubernetes create failure after Fabric success:** OSAC retains NetworkData records and retries the Kubernetes stage with the same values. The Fabric task receives existing values on retry and must reuse them. The Subnet is not Ready until the Kubernetes stage succeeds.
 - **Kubernetes delete failure:** OSAC does not start Fabric deletion or remove NetworkData, so Kubernetes cleanup can retry using the same values.
 - **Fabric delete failure after Kubernetes detach:** OSAC retains job state and retries Fabric cleanup. The Kubernetes target is already detached; repeated Fabric deletion of absent state succeeds.
-- **Backend timeout or transient error:** The AAP task returns a diagnostic and a non-success result. Existing OSAC job retry/backoff behavior retries the operation. All create/apply and delete tasks are idempotent by resource UID.
-- **Workload attachment policy apply failure:** The manager keeps traffic unavailable; OSAC does not report the workload Ready and retries the same normalized attachment. Policy delete failure retains the workload finalizer and blocks teardown until cleanup succeeds.
+- **Backend timeout or transient error:** The AAP task returns a diagnostic and a non-success result. Existing OSAC job retry/backoff behavior retries the operation. Resource tasks are idempotent by resource UID; workload attachment apply/delete tasks are idempotent by target workload UID and interface.
+- **Workload attachment policy apply failure:** The manager keeps traffic unavailable; the networking controller leaves the SubnetAttachment request non-ready and retries the same normalized `network_attachment`. The workload lifecycle owner does not report its target Ready. Policy delete failure retains the request finalizer and blocks the workload teardown gate until cleanup succeeds.
 - **Invalid manager result:** A missing, malformed, stale, or mismatched result fails the request; OSAC does not advance readiness or release capacity.
 - **Invalid ExternalIP or lease result:** Missing or invalid `data.external_ip.address`, or malformed or ambiguous `data.dhcp_leases`, fails the operation; OSAC does not report allocation or lease discovery as successful.
 
@@ -911,8 +1054,8 @@ A new manager is onboarded by creating any provider-defined NetworkDataModel obj
 
 - **Matching declarations may not preserve the shared network and policy semantics.** Treat input/output matching as necessary but not sufficient; require each manager and selected network path to pass conformance for VirtualNetwork L3 routing, Subnet L2 broadcast behavior, and workload attachment policy.
 - **The generic protobuf `Value` number representation cannot preserve every integer.** Restrict numeric schema values to the exactly representable range and require providers to model larger integer identifiers as strings; current OSAC VNI and VLAN values fit that range.
-- **Policy installation failure could expose a workload without its requested rules.** Require deny-by-default behavior until policy is installed, keep the workload non-ready on failure, and retain the deletion finalizer until policy cleanup and detachment succeed.
-- **A manager may receive rules for a different tenant or attachment.** OSAC validates tenant ownership and the Subnet/SecurityGroup relationship before dispatch; the task is scoped to the workload UID and interface and receives no cross-tenant lookup authority.
+- **Policy installation failure could expose a workload without its requested rules.** Require deny-by-default behavior until policy is installed, keep the SubnetAttachment request and workload non-ready on failure, and retain the request finalizer until policy cleanup and detachment succeed.
+- **A manager may receive rules for a different tenant or attachment.** The networking controller verifies that the target matches the SubnetAttachment reference, validates tenant ownership and the Subnet/SecurityGroup relationship before dispatch, and scopes the operation to the target workload UID and interface. The task receives no cross-tenant lookup authority.
 - **The normalized operation may grow as OSAC adds rule types or attachment targets.** Treat new rule fields and targets as contract changes and require both OSAC and manager conformance updates before dispatching them.
 
 ### 4.11 Drawbacks
@@ -961,7 +1104,7 @@ For each Fabric create or reconcile action, OSAC derives the expected model/owne
 
 **Requirements:** FR-2, FR-3
 
-OSAC sends the resolved workload attachment and complete SecurityGroup rules to the manager that owns its interface. The Kubernetes Manager handles ComputeInstance overlays; the Fabric Manager handles BaremetalInstance and CaaS worker interfaces. Apply and delete ordering, payload fields, stateful rule semantics, and failure behavior are specified in Sections 4.3 and 4.4.
+The workload lifecycle owner creates a target-only SubnetAttachment request; the networking controller reads the target workload and sends the resolved attachment and complete SecurityGroup rules to the selected manager. The AAP job is tracked on the request, while the target workload and normalized `network_attachment` are separate job inputs. The Kubernetes Manager handles ComputeInstance overlays; the Fabric Manager handles BaremetalInstance targets, including CaaS workers. Apply and delete ordering, payload fields, stateful rule semantics, and failure behavior are specified in Sections 4.3 and 4.4.
 
 ### IC-7: Provider-installed network data model registry
 
@@ -1020,10 +1163,10 @@ Changing manager names in NetworkClass does not automatically migrate backend st
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
-Final: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-1433-network-manager-provider-guide @ f0999b434 (dirty)
+Final: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"f0999b434 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"6d28c88","source_repo":"eabff3b59","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":76,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

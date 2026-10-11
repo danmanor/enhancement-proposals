@@ -182,8 +182,11 @@ service.
 - OSAC polls the exact job ID it recorded. It checks the result against that
   job's resource context, manager stage, and task name. A result from another
   job, resource, generation, or manager target cannot complete the attempt.
-  Retried manager operations reuse the same owner-scoped values and are
-  idempotent by resource UID.
+  For workload attachment tasks, the tracked resource and result UID/generation
+  identify the SubnetAttachment request; its target workload UID and normalized
+  `network_attachment` remain in the original job context. Retried attachment
+  operations are idempotent by target workload UID and interface. Other
+  resource tasks remain idempotent by resource UID.
 
 ### TC-5: Verify the shared resource behavior across workload targets
 
@@ -193,9 +196,14 @@ service.
 
 1. Exercise VirtualNetwork and Subnet behavior with the selected Fabric
    Manager, and Subnet overlay behavior when a Kubernetes Manager is selected.
-2. Apply and delete workload attachments for ComputeInstance, Cluster, and
-   BaremetalInstance targets supported by the profile.
-3. Exercise SecurityGroup traffic matches, non-matches, and established reply
+2. Apply and delete attachments for ComputeInstance and BaremetalInstance
+   targets. For CaaS, verify one BaremetalInstance-target request per worker
+   and no Cluster-target SubnetAttachment.
+3. Inspect the manager job input and request status for each target. Verify the
+   SubnetAttachment is the tracked `resource`, the referenced workload is the
+   separate `target`, and `network_attachment` contains the resolved Subnet,
+   one interface, and complete SecurityGroup rules.
+4. Exercise SecurityGroup traffic matches, non-matches, and established reply
    traffic on each supported attachment target.
 
 **Expected results**
@@ -206,6 +214,13 @@ service.
 - Workloads on the same Subnet share its broadcast domain.
 - SecurityGroup rules apply to each network attachment, combine as a union,
   allow established replies, and deny unmatched new traffic.
+- The workload attachment fields remain the source of desired state. The
+  target-only SubnetAttachment request owns networking job history, status,
+  and its cleanup finalizer; the workload lifecycle owner mirrors readiness
+  and IP status and waits for cleanup before teardown.
+- Every successful AAP result identifies the SubnetAttachment request UID
+  and generation. The manager uses the separate target UID and interface to
+  scope its backend attachment state.
 - Policy is installed before traffic is enabled. A failed apply leaves the
   workload non-ready and traffic unavailable; deletion removes policy and
   detaches the interface before workload teardown.
@@ -220,8 +235,12 @@ service.
    it enabled and the selected Fabric Manager declaring `EAST_WEST_ETHERNET`.
 2. Allocate and release an ExternalIP, retrying allocation for the same
    ExternalIP UID. Submit a malformed address and an address outside the pool.
-3. Query DHCP leases for Cluster and BaremetalInstance attachments, including
-   missing and ambiguous matches.
+3. Query DHCP leases for BaremetalInstance-target SubnetAttachment requests,
+   including CaaS worker requests and missing or ambiguous matches. Verify the
+   BMaaS query input carries `network_attachment.interface.mac_address` for
+   the selected port, resolved from the BareMetalHost annotation. Verify no
+   query job launches before the MAC is available. Verify CaaS can use the worker's server name
+   when no MAC is supplied.
 
 **Expected results**
 
@@ -232,12 +251,17 @@ service.
 - ExternalIP allocation returns the canonical IPv4 address in
   `osac_result.data.external_ip.address`. OSAC validates the result against
   its tracked job context and the address against the selected pool, then writes
-  `ExternalIP.status.address`. Managers have no Kubernetes write credential.
-  Retrying the same UID returns the same reservation; invalid results are
-  rejected and capacity is released only after confirmed provider release.
-- DHCP leases are returned in `osac_result.data.dhcp_leases`, with one
-  unambiguous entry per requested attachment. Missing or ambiguous results
-  fail the task.
+  `ExternalIP.status.address`. Retrying the same UID returns the same
+  reservation; invalid results are rejected and capacity is released only
+  after confirmed provider release. Managers have no Kubernetes write
+  credential.
+- A DHCP lease query receives the target-only SubnetAttachment as `resource`,
+  the referenced BaremetalInstance as `target`, and the resolved Subnet and
+  interface in `network_attachment`. It returns one unambiguous lease in
+  `osac_result.data.dhcp_leases`; OSAC tracks the query as a separate job on
+  the same request and records the discovered IP there. Its result identifies
+  the request UID and generation; the workload lifecycle owner mirrors the IP
+  to BaremetalInstance status. Missing or ambiguous results fail the task.
 
 ## Provider Evidence
 
@@ -253,10 +277,10 @@ validation alone is not evidence of behavioral conformance.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
-Final: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-1433-network-manager-provider-guide @ 9e46b1a96 (dirty)
+Final: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"9e46b1a96 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"6d28c88","source_repo":"eabff3b59","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":76,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

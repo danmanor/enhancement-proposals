@@ -3,7 +3,7 @@ title: unified-networking-api
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-08
+last-updated: 2026-10-11
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -42,6 +42,7 @@ superseded-by:
   - [4.1 Resource Model](#41-resource-model)
     - [Provider Profile and Manager Roles](#provider-profile-and-manager-roles)
       - [Resource API Meaning](#resource-api-meaning)
+        - [Internal Workload Attachment Request](#internal-workload-attachment-request)
   - [4.2 Data Model and Schema Changes](#42-data-model-and-schema-changes)
     - [API Extensions](#api-extensions)
       - [NetworkClass](#networkclass)
@@ -159,7 +160,7 @@ The **fulfillment service** stores and serves networking API resources. The `osa
 
 #### Resource API Meaning
 
-VMaaS provides the `ComputeInstance` workload resource for a VM, CaaS provides the `Cluster` workload resource for a managed Kubernetes cluster, and BMaaS provides the `BaremetalInstance` workload resource for a bare-metal server. All three services manage their workload lifecycle. In the table, “Provider” and “Tenant” identify who manages the networking resource: provider-managed resources configure the deployment, while tenant-managed resources express tenant network intent. Field names, cardinality, defaults, and status are specified in [Data Model and Schema Changes](#42-data-model-and-schema-changes).
+VMaaS provides the `ComputeInstance` workload resource for a VM, CaaS provides the `Cluster` workload resource for a managed Kubernetes cluster, and BMaaS provides the `BaremetalInstance` (BMI) workload resource for a bare-metal server. All three services manage their workload lifecycle. In the table, “Provider” and “Tenant” identify who manages the networking resource: provider-managed resources configure the deployment, while tenant-managed resources express tenant network intent. Field names, cardinality, defaults, and status are specified in [Data Model and Schema Changes](#42-data-model-and-schema-changes).
 
 | Resource | Owner | Meaning |
 |---|---|---|
@@ -176,6 +177,31 @@ VMaaS provides the `ComputeInstance` workload resource for a VM, CaaS provides t
 | **ExternalIPAttachment** | Tenant | Associates one allocated ExternalIP with a VM, bare-metal server, or cluster endpoint for inbound access using destination network address translation (DNAT). |
 | **NATGateway** | Tenant | Associates one ExternalIP with one VirtualNetwork for outbound source network address translation (SNAT); it does not provide inbound access. |
 | **FabricDomain** | Tenant | An east-west isolation domain for participating servers on a high-performance fabric. It is associated with one VirtualNetwork and does not change that VirtualNetwork's north-south IP routing or its Subnet broadcast domains; see the [Multi-Fabric East-West Networking Design](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md). |
+
+##### Internal Workload Attachment Request
+
+`SubnetAttachment` is an internal request CR that connects workload lifecycle
+management to networking reconciliation. It is not a tenant-managed networking
+resource and does not add another source of desired network state. The
+workload's existing attachment field remains the source of intent.
+
+The ComputeInstance lifecycle controller creates one target-only request for
+each ComputeInstance. BMaaS creates one for each BaremetalInstance at its
+network lifecycle gate. For CaaS, the Cluster's single desired attachment is
+copied to each worker BaremetalInstance; each worker has its own request, and
+there is no Cluster target. The request spec contains only a reference to its
+ComputeInstance or BaremetalInstance target. It does not copy Subnet,
+interface, SecurityGroup, or IP values.
+
+The networking controller reads the target workload and resolves its
+immutable attachment before dispatching manager work. It owns the request's
+status, finalizer, and AAP job history. The workload lifecycle owner reads
+request status, mirrors readiness and discovered IP to the workload status it
+owns, and waits for attachment cleanup before completing workload teardown.
+For a manager job, `resource` identifies the SubnetAttachment request,
+`target` identifies the referenced workload, and `network_attachment` carries
+the resolved manager input defined by the [Network Manager Integration
+Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
 
 The resource model is **infrastructure-agnostic**: every resource keeps the same meaning across virtual machines, managed clusters, and bare-metal workloads. Workload-specific connection details remain on the workload API. It is **backend-agnostic**: provider choice does not change tenant resources, and any implementation that fulfills the manager-role contract can supply the backend behavior. This applies to every networking resource, including `FabricDomain`; OSAC dispatches FabricDomain operations to the selected Fabric Manager through the same generic manager contract.
 
@@ -725,7 +751,7 @@ Signal remote procedure call (RPC) to the fulfillment service.
 message BareMetalNetworkAttachmentStatus {
   string interface = 1;                 // Physical interface name (echoed from spec)
   string subnet_ref = 2;               // Subnet ID (echoed from spec)
-  string ip_address = 3;               // Discovered via query_dhcp_lease after provisioning (matches the interface address to its lease)
+  string ip_address = 3;               // Mirrored from SubnetAttachment status after DHCP lease discovery
   bool primary = 4;                     // true for the sole resolved attachment; normalized from spec
 }
 
@@ -735,19 +761,22 @@ message BareMetalInstanceStatus {
 }
 ```
 
-The IP address is discovered after DHCP assigns it on the tenant network. After
-`reconcileProvisioning` completes, the operator dispatches
-`query_dhcp_lease` to the Fabric Manager's DHCP lease API, matching
-the server's interface address to find the assigned IP (see
-[BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration--resolved)).
-The operator writes the discovered IP to resource status, and the feedback
-controller syncs to fulfillment service.
+The SubnetAttachment controller discovers the IP after DHCP assigns it on the
+tenant network. For BMaaS, the bare-metal fulfillment operator (BMF) sets
+`NetworkHandoffComplete` on the target BaremetalInstance after the selected
+port has moved from the provisioning network to the tenant network and the
+handoff reboot has completed. The SubnetAttachment controller waits for this
+condition, then runs `query_dhcp_lease` through the selected Fabric Manager
+and matches the host interface address to the lease. It writes the IP and
+`IPDiscoveryComplete` to SubnetAttachment status. BMF mirrors the result into
+BaremetalInstance status, and the feedback controller syncs that status to the
+fulfillment service (see [BMaaS Networking](/enhancements/OSAC-1437-bmaas-networking/design.md)).
 
 **ClusterStatus** does not have per-attachment IP status — CaaS uses
 service-level virtual IPs (VIPs; `api_endpoint`, `ingress_endpoint`) rather than
-per-node IPs. Per-agent IPs are tracked on the ClusterOrder resource's
-`NodeSetStatus.AgentStatus.IPAddress` (operator-internal, not surfaced
-to tenant).
+per-node IPs. Each worker BMI has its own SubnetAttachment request; BMF mirrors
+its discovered IP into BMI status and the ClusterOrder reconciler aggregates
+per-agent IPs on the hub cluster. Cluster VIP discovery remains separate.
 
 ##### ExternalIPAttachment: Inbound Traffic (DNAT)
 
@@ -1106,7 +1135,7 @@ ExternalIPAttachment transitions to **Ready**.
 |-------------|----------------------|---------------------|
 | ComputeInstance | `compute_network_attachment_statuses` populated with primary attachment's `ip_address` | Feedback controller reads KubeVirt VMI network status, writes `ComputeNetworkAttachmentStatus` per attachment |
 | Cluster | `status.apiEndpoint` or `status.ingressEndpoint` populated on ClusterOrder resource | MetalLB allocates VIP from IPAddressPool, template discovers and writes to ClusterOrder status |
-| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | Operator runs the Fabric Manager's `query_dhcp_lease` task after provisioning completes; matches network-interface address (from the BareMetalHost `osac.openshift.io/interface-macs` annotation) to assigned IP; operator writes to resource status |
+| BaremetalInstance | `status.networkAttachmentStatuses[].ipAddress` populated for the primary interface | SubnetAttachment controller waits for `NetworkHandoffComplete`, queries the Fabric Manager's DHCP lease API, matches the BareMetalHost interface MAC, and writes the IP to request status; BMF mirrors it to the workload |
 
 The controller uses the existing requeue pattern: if the precondition
 is not met, it returns `ctrl.Result{RequeueAfter: interval}` and
@@ -1122,40 +1151,52 @@ to hosts when they boot on the subnet. OSAC does not pre-allocate IPs
 or configure host-side networking — DHCP handles IP address, gateway,
 prefix, and DNS automatically.
 
-After the host receives its IP address, the operator writes it to resource
-status for ExternalIPAttachment target resolution and tenant visibility.
+After a workload receives its IP address, the SubnetAttachment controller
+writes it to request status. The workload lifecycle owner mirrors the address
+to workload status for ExternalIPAttachment target resolution and tenant
+visibility where that status is exposed.
 
 IP discovery mechanism per service type:
 
 | Service | Discovery source | Who writes status | Status field |
 |---------|-----------------|-------------------|-------------|
-| VMaaS | KubeVirt virtual machine instance (VMI) `status.interfaces[].ipAddress` | osac-operator feedback controller → Signal RPC → fulfillment service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
-| CaaS | Cluster agent network status | osac-operator feedback controller → Signal RPC → fulfillment service | `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
-| BMaaS | Operator runs the Fabric Manager's `query_dhcp_lease` task after provisioning completes; matches the network-interface address — from the BareMetalHost `osac.openshift.io/interface-macs` annotation — to the DHCP-assigned IP, falling back to server name for named fabric servers (see [BMaaS OQ#4 — Resolved](/enhancements/OSAC-1437-bmaas-networking/design.md#4-how-is-the-hosts-runtime-ip-discovered-after-network-reconfiguration--resolved)) | bare-metal-fulfillment-operator dispatches the task → writes to resource status → feedback controller → Signal RPC → fulfillment service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
+| VMaaS | KubeVirt VMI `status.interfaces[].ipAddress` | SubnetAttachment controller writes the IP and `IPDiscoveryComplete` to request status; ComputeInstance controller mirrors it to workload status; feedback syncs it to fulfillment service | `ComputeInstanceStatus.compute_network_attachment_statuses[].ip_address` |
+| CaaS | Fabric DHCP lease for each worker BMI after BMF reports `NetworkHandoffComplete`; the manager matches the supplied interface MAC or, when absent, the configured worker server name | Each worker has its own BMI-target SubnetAttachment; the networking controller writes request status, BMF mirrors it to BMI status, and ClusterOrder aggregates per-worker status | Per-worker `BareMetalInstanceStatus.network_attachment_statuses[].ip_address`; `ClusterOrderStatus.nodeSets[].agents[].ipAddress` (operator-internal) |
+| BMaaS | After BMF reports `NetworkHandoffComplete`, SubnetAttachment controller queries the Fabric Manager DHCP lease API using the selected interface MAC from the BareMetalHost annotation; the query waits until the MAC is available | Networking controller writes the IP and `IPDiscoveryComplete` to SubnetAttachment status; BMF mirrors it to BaremetalInstance status; feedback syncs it to fulfillment service | `BareMetalInstanceStatus.network_attachment_statuses[].ip_address` |
 
-The Fabric Manager's `apply_workload_attachment` task configures a physical
-interface's tenant Subnet connection and selected SecurityGroup rules as one
-operation. OSAC sends the resolved Subnet, physical interface, and complete
-SecurityGroup rule sets in the normalized attachment payload. The manager
-installs the policy before enabling workload traffic on the interface. For a
-BaremetalInstance, the operation moves the port from the provisioning network
-to the tenant network after OS provisioning; for a CaaS worker, BMaaS invokes
-the same task after OS provisioning and before the node joins cluster
-installation. The host then reboots and receives its tenant address through
-DHCP. On deletion, `delete_workload_attachment` removes policy and restores the
-provisioning network before workload teardown. Both operations are idempotent
-by workload UID and interface. See [BMaaS — Provisioning Network and Port
+The networking controller's `apply_workload_attachment` task configures a
+physical interface's tenant Subnet connection and selected SecurityGroup
+rules as one operation. It reads the target BaremetalInstance from the
+SubnetAttachment request and sends the target plus resolved Subnet, one
+physical interface, and complete SecurityGroup rules to the Fabric Manager.
+The manager installs policy before enabling workload traffic. Successful
+apply marks the attachment ready on the request. For BMaaS and CaaS workers,
+BMF creates the request after its provisioning gate, waits for attachment
+readiness, performs the single handoff reboot, and reports
+`NetworkHandoffComplete`. Attachment readiness lets BMF continue the handoff
+while IP discovery remains pending; the networking controller launches the
+separate lease-query phase only after handoff completes, as described below.
+On deletion, the SubnetAttachment controller invokes
+`delete_workload_attachment` to remove policy and restore the provisioning
+network before workload teardown.
+Both operations are idempotent by target workload UID and interface. See
+[BMaaS — Provisioning Network and Port
 Moves](/enhancements/OSAC-1437-bmaas-networking/design.md#provisioning-network-and-port-moves).
 
-IP discovery for BMaaS is a separate dispatcher call. After
-`reconcileProvisioning` completes and the host has received a DHCP
-lease, the operator invokes the Fabric Manager's `query_dhcp_lease` task; it queries
-the Fabric Manager's DHCP lease API for the subnet and matches the
-server's network-interface address to find the corresponding DHCP-assigned IP.
-Bare-metal hosts are not named fabric servers, so the lease is matched
-by network-interface address, which the operator supplies from the host's
-`osac.openshift.io/interface-macs` BareMetalHost resource annotation; named
-fabric servers such as CaaS agents fall back to matching by server name.
+For BMaaS and CaaS, DHCP lease lookup is a separate manager task on the same
+`SubnetAttachment` request. After BMF reports `NetworkHandoffComplete`, the
+SubnetAttachment controller launches `query_dhcp_lease` with that request as
+`resource` and its BaremetalInstance as `target`. The Fabric Manager queries
+its DHCP lease API for the resolved Subnet. For BMaaS, the controller resolves
+the MAC for the selected host interface from the
+`osac.openshift.io/interface-macs` BareMetalHost annotation and supplies it as
+`network_attachment.interface.mac_address`. It does not dispatch the query
+until this required MAC is available. For CaaS workers, the manager may match
+by the worker's server name when no MAC is supplied. The controller requires
+one unambiguous lease, writes the IP and
+`IPDiscoveryComplete` to the request status, and BMF mirrors the result to
+BaremetalInstance status. The AAP job history and result UID/generation remain
+associated with that request.
 
 *NATGateway controller preconditions:*
 
@@ -1428,7 +1469,7 @@ The fulfillment service public API and operator resource surfaces cover NetworkC
 
 **Requirements:** FR-2, FR-3, FR-7, FR-9
 
-ComputeInstance, Cluster, and BaremetalInstance accept their resource-specific network attachment at creation. Each accepts at most one tenant attachment; the bare-metal attachment may identify one exposed physical interface. OSAC resolves the Subnet and SecurityGroup rules and invokes the `apply_workload_attachment` task on the manager that owns the interface before the workload becomes Ready. Deletion invokes `delete_workload_attachment` before the interface is detached or removed. The payload and role mapping are defined by the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
+ComputeInstance, Cluster, and BaremetalInstance accept their resource-specific network attachment at creation. Each accepts at most one tenant attachment; the bare-metal attachment may identify one exposed physical interface. The workload API remains the source of attachment intent. Its lifecycle owner creates a target-only SubnetAttachment request for each ComputeInstance or BaremetalInstance; for CaaS, it creates one request per worker BaremetalInstance from the Cluster's desired attachment, with no Cluster target request. The networking controller reads the target, resolves its Subnet and SecurityGroup rules, and invokes `apply_workload_attachment` before the workload lifecycle owner reports it Ready. During deletion, `delete_workload_attachment` removes policy and detaches the interface before workload teardown; the workload lifecycle owner waits for the request's cleanup to finish. The request, AAP job tracking, and manager input are defined in the [SubnetAttachment flow](#internal-workload-attachment-request) and the [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md).
 
 ### IC-3: External access
 
@@ -1652,7 +1693,17 @@ No additional infrastructure beyond existing OSAC components and managers.
   allocation/release, and ExternalIPAttachment create/delete end to end. Verify
   the manager owning each interface receives the full normalized Subnet and
   SecurityGroup rules, tenant annotations, and owner references on
-  controller-created resources.
+  controller-created resources. Verify each attachment job is tracked on its
+  target-only SubnetAttachment request, carries the referenced workload and
+  resolved `network_attachment` separately, and returns the request UID and
+  generation. For CaaS, verify one request per worker BMI and no Cluster-target
+  request. Verify workload status mirrors readiness and discovered IP, and
+  teardown waits until the request finalizer is removed. For BMaaS and CaaS,
+  verify `apply_workload_attachment` completes before BMF handoff, and
+  `query_dhcp_lease` is dispatched as a separate job only after
+  `NetworkHandoffComplete`; both jobs must be tracked on the same request.
+  Verify BMaaS query input includes the interface MAC resolved from the
+  BareMetalHost annotation.
 - Provision a VM, CaaS cluster, and bare-metal instance on the same supported
   Subnet; verify direct traffic only for flows allowed by attached
   SecurityGroups, denial of unmatched traffic, established reply traffic,
@@ -1745,10 +1796,10 @@ explicitly specifies them.
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.3 - 2bd6607, workspace docs/OSAC-1433-network-manager-provider-guide @ 9e46b1a96 (dirty)
+Final: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"9e46b1a96 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":1,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"6d28c88","source_repo":"eabff3b59","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":76,"commits_ahead_main":2,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
