@@ -21,6 +21,37 @@ superseded-by:
 
 # BMaaS Networking — Switch Port Configuration and Tenant-Defined Interface Mapping
 
+## Contents
+
+- [Summary](#summary)
+- [Motivation](#motivation)
+  - [Architecture: Two Operators on One CR](#architecture-two-operators-on-one-cr)
+  - [The Three Network Planes](#the-three-network-planes)
+- [Proposal](#proposal)
+  - [Working with provider-supplied managers](#working-with-provider-supplied-managers)
+  - [CaaS worker ownership](#caas-worker-ownership)
+  - [BareMetalInstanceType and Interface Validation](#baremetalinstancetype-and-interface-validation)
+  - [Workflow Description](#workflow-description)
+  - [API contract](#api-contract)
+  - [Component behavior and constraints](#component-behavior-and-constraints)
+- [Security Considerations](#security-considerations)
+- [Failure Handling and Recovery](#failure-handling-and-recovery)
+- [RBAC and Tenancy](#rbac-and-tenancy)
+- [Observability and Monitoring](#observability-and-monitoring)
+- [Risks and Mitigations](#risks-and-mitigations)
+- [Drawbacks](#drawbacks)
+- [Provider Networking Disabled](#provider-networking-disabled)
+- [Alternatives Considered](#alternatives-considered)
+- [Open Questions](#open-questions)
+- [Test Plan](#test-plan)
+- [Long-Term Evolution](#long-term-evolution-the-reboot-is-the-seam)
+- [Graduation Criteria](#graduation-criteria)
+- [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
+- [Version Skew Strategy](#version-skew-strategy)
+- [Support Procedures](#support-procedures)
+- [Infrastructure Needed](#infrastructure-needed)
+- [Dependencies](#dependencies)
+
 BMaaS networking provides single-NIC BaremetalInstance provisioning with optional tenant-specified physical interface mapping, switch port configuration via dispatcher, IP address feedback through CR status, and auto-provisioned external access (ExternalIP).
 
 ## Summary
@@ -123,7 +154,7 @@ Ironic reaching two planes at once is ordinary **multi-homing**: the conductor h
 ### Non-Goals
 
 - CaaS or VMaaS networking (this EP covers BMaaS only)
-- Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
+- Implementation of the shared manager dispatch contract, which is defined by the Network Manager Integration Contract.
 - Creating the provisioning network (network segment + DHCP + gateway + SNAT) and the initial per-server attach — a deployment prerequisite handled by the fabric infrastructure / deployment infrastructure, not the operator (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
 - Re-provision handoff reset: NetworkHandoffComplete is never reset after initial provisioning, so an in-place re-provision (config-version change after Ready) would run over the tenant network (deferred to long-term design)
 
@@ -460,14 +491,17 @@ rootfs). Hanging the default gateway off the management/BMC NIC is not an option
 the host would then have two DHCP default routes (management + fabric) once a
 tenant subnet is attached, causing a default-gateway race.
 
-**Solution — a provisioning network.** A fabric manager **provisioning network
-segment** (DHCP + default gateway + SNAT for outbound internet) holds every
+**Solution — a provisioning network.** A provider-managed provisioning network
+segment (DHCP + default gateway + SNAT for outbound internet) holds every
 server's **fabric NIC** while the server is idle and during provisioning, so an
 unassigned server always has internet via its fabric NIC. The provisioning
-network exists **only in the fabric manager** — it has no OSAC Subnet CR — and
-its name is a fabric-manager configuration value (`netris_bm_provisioning_vnet`,
-sourced from the `NETRIS_BM_PROVISIONING_VNET` environment variable, with
-backward-compatible fallback to `NETRIS_BM_PARKING_VNET`), not operator state.
+network exists in the selected Fabric Manager only — it has no OSAC Subnet CR.
+Its backend identifier and environment-variable name are provider configuration
+owned by that manager, not operator state or part of the shared task contract.
+For example, the current Netris deployment uses
+`NETRIS_BM_PROVISIONING_VNET` with a backward-compatible
+`NETRIS_BM_PARKING_VNET` fallback; those names are not requirements for other
+Fabric Managers.
 
 **Provision and deprovision are the same primitive: move a fabric port from one
 network segment to another.** The port lifecycle is:
@@ -633,9 +667,9 @@ This feature inherits the existing security model:
 - Auto-provisioned resource cleanup transient failure: finalizer retries
 - **Cleanup failure:** the parent finalizer remains while auto-created ExternalIPAttachments or ExternalIPs remain. Reconciliation retries with backoff and reports the failed child operation; an administrator repairs the cause before cleanup resumes. Enabled-mode failure never silently orphans children. [User]
 
-### RBAC / Tenancy
+### RBAC and Tenancy
 
-BMF requires create/get/list/watch/delete access to its target-only SubnetAttachment requests. The networking controller requires target BMI/BareMetalHost and Subnet/SecurityGroup/NetworkClass read access and owns request status/finalizer updates. It reads runtime NetworkData through the authorized fulfillment private API; NetworkData has no Kubernetes CR or Kubernetes RBAC rules. Tenant and target ownership are validated before dispatch. [User]
+BMF requires create/get/list/watch/delete access to its target-only SubnetAttachment requests. The networking controller requires target BMI/BareMetalHost and Subnet/SecurityGroup/NetworkClass read access and owns request status/finalizer updates. It reads runtime NetworkData through the authorized fulfillment private API; the fulfillment service also projects NetworkData records as CRs in the networking hub, but AAP manager jobs have no Kubernetes access to those projections. The operator passes validated values to jobs through the manager contract. Tenant and target ownership are validated before dispatch. [User]
 
 All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
@@ -663,7 +697,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Impact:** The fabric manager `apply_workload_attachment` role and a provisioned provisioning network segment are prerequisites for BMaaS networking. Without them, switch port configuration cannot function.
 
-**Mitigation:** Prioritize Netris BM roles (OSAC-2081). Accept that BMaaS remains unavailable until a fabric_manager exists. Document as a hard dependency.
+**Mitigation:** Require the selected Fabric Manager to pass the shared provider qualification for physical attachment, policy, selected-port lease discovery, and cleanup. The closed Netris port-move work is historical backend groundwork, not proof that another manager meets this contract.
 
 **Reviewed by:** Engineering / Product
 
@@ -748,7 +782,7 @@ The BMI's Ready condition attests only to OS provisioning in this mode.
 
 Re-enabling provider networking follows the [shared activation preflight](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control). For this extension, drain and delete every BaremetalInstance through the normal BMaaS teardown path. When a BaremetalInstance is a worker owned by a Cluster, delete the parent Cluster through the CaaS extension so the worker handoff and host cleanup finish in order. The shared gate also waits for workloads owned by other extensions and blocks new workload Creates while activation is pending. Reads and deletes remain available. After the deployment profile and configured pools regain real provider readiness, each new BaremetalInstance still waits for its own ready networking references. A disabled-mode ProvisioningDisabled state does not satisfy enabled readiness. An ordinary restart of an already enabled deployment does not require a new drain. [User]
 
-## Alternatives (Not Implemented)
+## Alternatives Considered
 
 ### Alternative 1: Single-operator architecture
 
@@ -782,7 +816,7 @@ Resolved: After request apply and BMF's one handoff reboot complete, the network
 
 ## Test Plan
 
-- **[DEV/QE] Tenant boundary:** standalone BMIs reject foreign networks. CaaS workers require the immutable authorized parent binding before apply/lease lookup and retain its original context through cleanup; ordinary system resources gain no exception. See shared contract test case TC-15.
+- **[DEV/QE] Tenant boundary:** standalone BMIs reject foreign networks. CaaS workers require the immutable authorized parent binding before apply/lease lookup and retain its original context through cleanup; ordinary system resources gain no exception. The extension owns these parent-authorization cases; generic owner/context rejection is covered by [TC-FR6-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-fr6-01-reject-invalid-json-schemas-declarations-and-manager-results).
 
 ### Attachment Lifecycle and Provider Contract
 
@@ -884,14 +918,14 @@ Tech Preview criteria:
 - [ ] Documentation: API reference, user guide for simplified BM creation
 
 GA criteria:
-- [ ] fabric_manager implementation (Netris BM roles, OSAC-2081) delivered and production-tested
-- [ ] Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460) implemented and stable
+- [ ] Selected Fabric Manager passes provider qualification for physical attachment, stateful policy, selected-port lease discovery, and cleanup
+- [ ] Network Manager Integration Contract registration, generic dispatch, result validation, and durable recovery implemented and stable
 - [ ] NATGateway full stack (OSAC-1443) implemented and stable
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
 - [ ] Reboot-based short-term validated; evolution path to Ironic Standalone Networking or dedicated provisioning NIC confirmed
 
-## Upgrade / Downgrade Strategy
+## Upgrade and Downgrade Strategy
 
 ### Configuration compatibility
 
@@ -1015,28 +1049,31 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 ## Infrastructure Needed
 
 - AAP execution environment with the fabric manager `apply_workload_attachment` role
-- A provisioned provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (deployment infrastructure)
-- Dispatcher core (OSAC-1457, OSAC-1458, OSAC-1460)
+- A provisioned manager-owned provisioning network segment (DHCP + gateway + SNAT) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (deployment infrastructure)
+- Network Manager Integration Contract implementation for registration, generic dispatch, result validation, and durable recovery
 - Integration test environment with fabric manager and Ironic/Metal3 backend
 
 ## Dependencies
 
-| Dependency | Jira | Status |
-|-----------|------|--------|
-| Dispatcher core | OSAC-1457, OSAC-1458, OSAC-1460 | Closed |
-| NATGateway full stack | OSAC-1443 (10 tasks) | 1/10 In Progress |
-| ExternalIPAttachment BM target in CRD | OSAC-2041 | New |
-| BM DNAT flow in controller | OSAC-1496 | New |
-| BareMetalNetworkAttachment proto | OSAC-1508 | New |
-| Primary field on BareMetalNetworkAttachment | OSAC-2042 | New |
-| Immutability + interface + primary validation | OSAC-1509 | New |
-| CLI --network-attachment for BareMetalInstance | OSAC-2075 | New |
+Jira states below were checked on 2026-10-12. Closed legacy or service issues are implementation history; they do not satisfy the target Network Manager Integration Contract, which remains required before provider networking is enabled.
+
+| Dependency | Jira | Status (2026-10-12) |
+|-----------|------|---------------------|
+| Legacy dispatcher groundwork (not the new NetworkManager/NetworkData contract) | OSAC-1457, OSAC-1458, OSAC-1460 | Closed |
+| Network Manager Integration Contract registration, generic dispatch, result validation, and durable recovery | N/A — defined by the linked contract design; platform implementation remains required | Required before provider networking is enabled |
+| NATGateway full stack | OSAC-1443 (10 tasks) | Closed |
+| ExternalIPAttachment BM target in CRD | OSAC-2041 | Closed |
+| BM DNAT flow in controller | OSAC-1496 | Closed |
+| BareMetalNetworkAttachment proto | OSAC-1508 | Closed |
+| Primary field on BareMetalNetworkAttachment | OSAC-2042 | Closed |
+| Immutability + interface + primary validation | OSAC-1509 | Closed |
+| CLI --network-attachment for BareMetalInstance | OSAC-2075 | Closed |
 | Historical BM direct-dispatch port-move groundwork. Target-only SubnetAttachment lifecycle, fixed adapter jobs and immutable dispatched context are shared target implementation work; the CR field/mutateBMI producers remain tracked below | OSAC-2047 | Closed (historical groundwork) |
 | BM reboot flow (reconcileReboot issues BMH annotation-based reboot after port move) | Not tracked | **GAP** |
-| Integration test | OSAC-1510 | New |
+| Integration test | OSAC-1510 | Closed |
 | Historical Fabric port-move backend groundwork; fixed apply/delete attachment adapters and policy semantics remain target implementation work | OSAC-2081 (Netris BM) | Closed (historical groundwork) |
-| Provisioning network segment (DHCP + gateway + SNAT, config identifier `netris_bm_provisioning_vnet`) + initial per-server attach in setup-bmaas | osac-deployment infrastructure | New |
-| BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-deployment infrastructure | New |
+| Provider provisioning network segment (DHCP + gateway + SNAT) and initial per-server attach in setup-bmaas | osac-deployment infrastructure | Deployment prerequisite; tracked outside Jira |
+| BareMetalHost `osac.openshift.io/interface-macs` annotation (inventory tooling) | osac-deployment infrastructure | Deployment prerequisite; tracked outside Jira |
 | BareMetalInstance CRD: add NetworkAttachments | Not tracked | **GAP** |
 | mutateBMI: copy network_attachments to K8s CR | Not tracked | **GAP** |
 | Request-owned DHCP query validates selected-MAC lease and result; BMF mirrors discovery status | Not tracked | **GAP** |
@@ -1049,10 +1086,10 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 ## Provenance
 
 Authored: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (77 behind origin/main, dirty)
+Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (98 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":77,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":98,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

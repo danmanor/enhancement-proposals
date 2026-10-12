@@ -1,5 +1,5 @@
 ---
-title: Unified Networking API
+title: Unified Networking Design
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
@@ -19,7 +19,7 @@ superseded-by:
   - N/A
 ---
 
-# Unified Networking API
+# Unified Networking Design
 
 | Field | Value |
 |-------|-------|
@@ -47,6 +47,7 @@ superseded-by:
     - [API operation constraint](#api-operation-constraint)
     - [Resource Hierarchy](#resource-hierarchy)
     - [Creation Readiness Gates](#creation-readiness-gates)
+    - [Workload attachment presence and defaulting](#workload-attachment-presence-and-defaulting)
     - [Deletion Dependency Guards](#deletion-dependency-guards)
     - [NetworkClass Examples](#networkclass-examples)
     - [UX Alignment](#ux-alignment)
@@ -119,11 +120,9 @@ A **NetworkClass** is a provider-managed profile for one deployment. It selects 
 
 A **Fabric Manager** configures the provider's physical network fabric for OSAC networking resources and physical workload interfaces. A **Kubernetes Manager** configures Kubernetes-native networking when a service extension requires that role. The Network Manager Integration Contract defines registration, validation, task invocation, data exchange, result handling, and recovery for both roles.
 
-The shared capability list is defined by OSAC and enforced by the fulfillment-service API. At present, the only optional capability is Ethernet east-west support. A manager declares whether it implements that capability; NetworkClass enables it for the deployment only when the selected Fabric Manager declares support. The capability enables FabricDomain operations while preserving VirtualNetwork routing and Subnet broadcast-domain behavior. A manager declaration alone does not enable tenant operations.
-
 A **NetworkDataModel** names and validates one provider-defined value that managers exchange. A **NetworkManager** registers a manager implementation and declares its role and model inputs or outputs. **NetworkData** stores a validated value for its declared owner. These objects are provider or OSAC implementation resources, not tenant networking configuration; the manager design defines their schemas, API operations, validation, and lifecycle.
 
-The fulfillment service is the authoritative API and database for networking resources. Its controllers project resources into the provider-designated **networking hub**. The OSAC operator reconciles those projections and coordinates provider work through Ansible Automation Platform (AAP). The selected provider manager configures its backend and returns an operation result; OSAC validates that result before updating authoritative resource status.
+The fulfillment service is the authoritative API and database for networking resources. Its controllers project resources into the provider-designated **networking hub**, the Kubernetes cluster where the networking operator reconciles those projections. The OSAC operator coordinates provider work through Ansible Automation Platform (AAP). The selected provider manager configures its backend and returns an operation result; OSAC validates that result before updating authoritative resource status.
 
 #### Resource API Meaning
 
@@ -144,6 +143,10 @@ The following table defines shared resource meaning. Provider-managed resources 
 | **NATGateway** | Tenant | Associates one ExternalIP with one VirtualNetwork for outbound source network address translation (SNAT); it does not provide inbound access. |
 | **FabricDomain** | Tenant | An east-west isolation domain for participating workloads on a high-performance fabric. It is associated with one VirtualNetwork and does not change that VirtualNetwork's north-south routing or its Subnet broadcast domains. |
 | **Workload network attachment** | Workload API | Selects one Subnet and applicable SecurityGroups for a workload interface. The service extension owns its API shape, target mapping, and status fields. |
+
+The shared capability list is defined by OSAC and enforced by the fulfillment-service API. At present, the only optional capability is Ethernet east-west support. A manager declares whether it implements that capability; NetworkClass enables it for the deployment only when the selected Fabric Manager declares support. When enabled, it permits FabricDomain operations while preserving VirtualNetwork routing and Subnet broadcast-domain behavior. A manager declaration alone does not enable tenant operations.
+
+For each normalized attachment type used by a workload service, the manager assigned to that interface must preserve the Subnet semantics above. A backend that offers only routed endpoint reachability where the contract requires a shared Subnet broadcast domain is not conforming for that attachment type. The Network Manager Integration Contract's provider qualification verifies the selected manager profile against this behavior.
 
 ### 4.2 Data Model and Schema Changes
 
@@ -181,6 +184,13 @@ message NetworkClassSpec {
   NetworkClassEastWestCapabilities east_west_capabilities = 5; // enabled FabricDomain behavior
 }
 
+message NetworkDefaults {
+  string virtual_network_cidr = 1; // required canonical IPv4 CIDR for the tenant's default VirtualNetwork
+  string ipv4_subnet_cidr = 2;     // required canonical IPv4 CIDR contained in virtual_network_cidr
+  repeated SecurityRule ingress_rules = 3; // rules for the default SecurityGroup
+  repeated SecurityRule egress_rules = 4;  // rules for the default SecurityGroup
+}
+
 message NetworkClassStatus {
   NetworkClassState state = 1; // system-reported readiness
   optional string message = 2;
@@ -200,6 +210,14 @@ message NetworkClassEastWestCapabilities {
   bool supports_east_west_ethernet = 1;
 }
 ```
+
+`NetworkDefaults` supplies the default VirtualNetwork and Subnet CIDRs and
+the default SecurityGroup's ingress and egress rules. Both CIDRs use
+canonical IPv4 notation, and the Subnet range must be contained by the
+VirtualNetwork range. Rules use the same `SecurityRule` schema and stateful
+behavior as tenant-created SecurityGroups. Tenant onboarding and default
+resource readiness are defined by the separate
+[Default Networking Design](/enhancements/OSAC-1433-default-networking/design.md).
 
 ###### East-West Capability Declaration
 
@@ -244,6 +262,18 @@ Design](/enhancements/OSAC-1382-multi-fabric-east-west-networking/design.md)
 defines the FabricDomain resource semantics. The [Network Manager Integration
 Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
 defines its generic Fabric Manager dispatch and result contract.
+
+##### Provider-reserved Subnet prefix
+
+When `NetworkClass.spec.vip_prefix_length` is set, it defines the prefix
+length of an IPv4 range that the provider reserves within each Subnet for
+provider-managed endpoint addresses. The range must be contained in the
+Subnet. When omitted, this setting requests no provider-reserved prefix. The
+Fabric Manager receives the captured value in its canonical `network_class`
+task context during Subnet creation. A manager that shares the reserved range
+with another manager publishes the exact CIDR through declared NetworkData;
+every allocator using that Subnet excludes the reserved range. A service
+extension defines whether and how its workflow consumes the reservation.
 
 ##### Manager registrations and runtime data
 
@@ -558,6 +588,34 @@ request; they do not create a resource that waits for the reference.
 checks their roles and capabilities, and verifies manager data declarations
 before saving the profile; see the manager contract.
 
+#### Workload attachment presence and defaulting
+
+The workload service extension defines the attachment field and target
+identity. Fulfillment-service resolves the selected Subnet and
+SecurityGroups before accepting the workload request:
+
+- An omitted attachment, an empty attachment object, or an empty attachment
+  list requests the tenant's default Subnet and default SecurityGroup.
+- For one supplied attachment, defaults fill missing fields independently. A
+  missing Subnet uses the tenant's default Subnet. A missing or empty
+  SecurityGroup list uses the default SecurityGroup only when the resolved
+  Subnet belongs to the tenant's default VirtualNetwork. Otherwise the caller
+  must supply SecurityGroups from the resolved Subnet's VirtualNetwork.
+- Supplied references are preserved. The resolved Subnet and every selected
+  SecurityGroup must be Ready and belong to the same VirtualNetwork. An
+  explicit SecurityGroup from a different VirtualNetwork is rejected.
+- The fully resolved attachment is stored with the workload and is immutable
+  after creation. An empty SecurityGroup list means “use the normal defaults”; it
+  does not disable policy.
+- A workload extension owns any interface-selection field and its service-
+  specific default. OSAC validates and passes that resolved selection; it does
+  not infer a hardware interface from backend details.
+
+If a required default or supplied dependency is unavailable, workload
+creation fails with a diagnostic before the workload is persisted. The
+service extension defines the exact request field and target-specific
+lifecycle; it does not redefine these shared resolution rules.
+
 #### Deletion Dependency Guards
 
 The fulfillment service rejects deletion while active dependents remain. A
@@ -572,7 +630,7 @@ dependency order as part of their owning workload's cleanup.
 | `ExternalIP` | Delete its ExternalIPAttachment or NATGateway. |
 | `ExternalIPPool` | Delete all ExternalIPs allocated from it and resolve their provider reservations. |
 | Workload | Delete manually created ExternalIPAttachments; OSAC cleans up auto-created ExternalIP children. |
-| `NetworkClass` | Drain all bound VirtualNetworks, ExternalIPPools, ExternalIPs, endpoint reservations, and active or uncertain operations, then delete the configuration. NetworkClass deletion submits no provider operation and removes no NetworkData. |
+| `NetworkClass` | Drain all bound VirtualNetworks, ExternalIPPools, ExternalIPs, endpoint reservations, and active or uncertain operations, then delete the configuration. Deletion submits no provider job; after dependents drain, OSAC removes NetworkClass-owned NetworkData through fulfillment-service owner cleanup. |
 
 NetworkManager and NetworkDataModel deletion dependencies, and OSAC owner
 cleanup of NetworkData, are defined in the manager contract. Provider-side
@@ -841,6 +899,8 @@ The fulfillment service public API and operator resource surfaces cover NetworkC
 
 ### IC-2: Workload network attachments
 
+**Requirements:** FR-7
+
 **Contract:** A workload service may express one attachment to a ready Subnet and select SecurityGroups from the same VirtualNetwork. The shared design defines the network meaning, ownership, and policy behavior. The service extension defines the workload API fields, target identity, request creation, readiness/status mapping, and teardown gate. The manager contract defines the internal attachment request and task protocol.
 
 ### IC-3: External access
@@ -967,11 +1027,11 @@ OSAC networking supports exactly one provider-owned networking hub per deploymen
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (92 behind origin/main, dirty)
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ d165396
+Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (98 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":92,"commits_ahead_main":2,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":98,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -67,6 +67,9 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - As a Cloud Infrastructure Admin, I want to create, inspect, and remove shared network data definitions and manager registrations through OSAC's provider management interface, so that OSAC can validate configuration before networking work uses it.
 - As a Cloud Infrastructure Admin, I want OSAC to validate manager declarations and produced values against registered definitions, so that a new backend integration does not require manager-specific OSAC development.
 - As a Cloud Infrastructure Admin, I want to configure backend settings and credentials for networking fulfillment, so that provider-selected manager implementations can reach their backend services.
+- As a Cloud Infrastructure Admin, I want to distinguish manager registration from behavior qualification, so that a successful task response is not mistaken for evidence that connectivity, allocation, policy, and cleanup work.
+- As a Cloud Infrastructure Admin, I want actionable blockers when manager work is interrupted or uncertain, so that OSAC does not declare dependent work ready, release addresses, or accept replacement managers prematurely.
+- As a Cloud Infrastructure Admin, I want a published qualification to retain pass, fail, or incomplete results for my selected manager configuration, so that I can review its evidence before production use.
 
 ### Tenant User
 
@@ -80,7 +83,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - **FR-2:** A Cloud Infrastructure Admin must be able to determine from one published contract what each manager role requires and whether selected implementations can meet those requirements. [User]
 - **FR-3:** Tenants can use the same OSAC networking resources and workflows across compatible manager combinations for every workload service that integrates the shared model, without selecting a provider backend. [Unified Networking PRD: FR-2, FR-6] [User]
 - **FR-4:** When selected implementations cannot meet a required networking dependency, a required role is unavailable, or a request is outside the supported manager contract, the Cloud Infrastructure Admin must receive a clear diagnostic and OSAC must reject the request rather than route it through an unrelated manager. [User]
-- **FR-5:** A provider can define additional shared networking data for existing provider profiles, VirtualNetworks, and Subnets, then exchange it between conforming managers without one-off OSAC changes or a tenant API change. [User]
+- **FR-5:** A provider can define additional shared networking data for existing provider profiles, VirtualNetworks, and Subnets, then exchange it between conforming managers without one-off OSAC changes or a tenant API change. Concurrent operations that produce the same shared value converge on one consistent value and backend allocation. [User]
 - **FR-6:** OSAC must identify invalid data definitions, undefined manager references, missing required data, and values that do not match their definition, and prevent dependent work from starting. [User]
 - **FR-7:** Cloud Infrastructure Admins can create, inspect, list, and remove manager and data-model registrations through OSAC's provider management interface; OSAC rejects attempts to modify an existing registration in place. [User]
 - **FR-8:** Cloud Infrastructure Admins can provide backend settings and credentials required by the provider-selected networking managers, so manager jobs can reach their backend services. [User]
@@ -104,10 +107,10 @@ No separate non-functional requirements were specified for this work.
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (77 behind origin/main, dirty)
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (98 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":77,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":98,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

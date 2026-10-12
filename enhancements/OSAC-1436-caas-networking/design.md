@@ -20,6 +20,34 @@ superseded-by:
 
 # CaaS Networking — Cluster Networking via OSAC Networking API
 
+## Contents
+
+- [Summary](#summary)
+- [Motivation](#motivation)
+- [Proposal](#proposal)
+  - [Working with provider-supplied managers](#working-with-provider-supplied-managers)
+  - [Management publication handoff](#management-publication-handoff)
+  - [Workflow Description](#workflow-description)
+  - [BareMetalInstanceType and Interface Resolution](#baremetalinstancetype-and-interface-resolution)
+  - [API contract](#api-contract)
+  - [Component behavior and constraints](#component-behavior-and-constraints)
+- [Security Considerations](#security-considerations)
+- [Failure Handling and Recovery](#failure-handling-and-recovery)
+- [RBAC and Tenancy](#rbac-and-tenancy)
+- [Observability and Monitoring](#observability-and-monitoring)
+- [Risks and Mitigations](#risks-and-mitigations)
+- [Drawbacks](#drawbacks)
+- [Provider Networking Disabled](#provider-networking-disabled)
+- [Alternatives Considered](#alternatives-considered)
+- [Open Questions](#open-questions)
+- [Test Plan](#test-plan)
+- [Graduation Criteria](#graduation-criteria)
+- [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
+- [Version Skew Strategy](#version-skew-strategy)
+- [Support Procedures](#support-procedures)
+- [Infrastructure Needed](#infrastructure-needed)
+- [Dependencies](#dependencies)
+
 CaaS networking provides tenant-controlled cluster node networking via one `network_attachment` per Cluster, BM-based node sets with fabric interface resolution from BareMetalInstanceType, MetalLB VIP provisioning, and auto-provisioned external access (ExternalIP + ExternalIPAttachment) for cluster API and ingress endpoints.
 
 ## Summary
@@ -161,7 +189,7 @@ system-tenant visibility requirement. [User]
 - VM-based cluster node sets (v0.2 supports BM node sets only; VM worker nodes require HyperShift ↔ CUDN integration not in scope)
 - DNS API (enabled-mode tenant/public endpoint records stay in the CaaS network phase until the DNS API is implemented; disabled mode uses baseline DNS)
 - Multi-NIC cluster nodes (not supported; v0.2 has one attachment per cluster → one subnet, while each node set resolves its own fabric interface from its BareMetalInstanceType)
-- Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
+- Implementation of the shared manager dispatch contract, which is defined by the Network Manager Integration Contract.
 
 ## Proposal
 
@@ -181,9 +209,10 @@ Kubernetes Manager for worker attachment.
 | Endpoint feedback | Verify the guest Service uses that address; publish confirmed API/ingress endpoints. | Optional external mappings use Fabric tasks with the endpoint's explicit routing domain. |
 | Delete | Remove external mappings and guest ingress consumers, release reservation, clean worker BMIs, then management/control-plane resources. | Fabric confirms release and physical cleanup; CaaS waits at each dependency gate. |
 
-The endpoint topology and worker authorization below are CaaS-specific. Task
-envelopes, allocation ownership, durable results and retry behavior are defined
-only in the unified contract. [User]
+The endpoint topology, Cluster-owned ingress reservation lifecycle, and worker
+authorization below are CaaS-specific. The Network Manager Integration Contract
+defines the common AAP task/result envelope, attempt correlation, and retry and
+recovery behavior; this extension defines its ingress task result and ownership. [User]
 
 ### Management publication handoff
 
@@ -221,6 +250,16 @@ the workload. Shared network creation, data persistence and optional external
 address resources follow unified rules; this service adds no backend-specific
 selection or allocation path.
 
+A deployment that offers tenant-subnet cluster ingress configures
+`NetworkClass.spec.vip_prefix_length` before creating Subnets for CaaS. The
+field is optional in the shared API. CaaS resolves the profile bound to the
+Cluster's Subnet and rejects Cluster creation with a configuration diagnostic
+if the field is absent, before persisting the Cluster or starting worker
+provisioning. When configured, the Fabric Manager receives the captured value
+in the canonical `network_class` task context and reserves a matching prefix
+inside each Subnet. A prefix that cannot fit a Subnet prevents that Subnet
+from becoming Ready; the reserved range is excluded from dynamic allocation.
+
 #### Phase 2: Tenant Creates Cluster
 
 1. **Create Cluster:**
@@ -242,6 +281,7 @@ selection or allocation path.
     - Validates network_attachment (the singular Cluster field):
       - Subnet exists, is Ready
       - SecurityGroups exist, are Ready, belong to same VN
+      - For tenant-subnet ingress, the Subnet's bound NetworkClass has `vip_prefix_length` configured; otherwise reject Cluster creation before any Cluster or ClusterOrder is persisted.
     - For each node_set: resolves `baremetal_instance_type` → BareMetalInstanceType → picks first port with `role=fabric` from `network_ports[]` and stores as `fabric_interface` on the node set definition in the ClusterOrder spec
     - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates two ExternalIPs (API + ingress, each labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <cluster-id>`) in the same DB transaction as the Cluster. Both start in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachments are **not** created at this point — their dependencies (ExternalIP Allocated + Cluster Ready) are not yet met. The fulfillment-service internal reconciler creates them later once both prerequisites are satisfied (see Phase 3). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioned-external-access) for the full stepped flow.
     - Creates Cluster record with empty `api_endpoint` / `ingress_endpoint`
@@ -252,7 +292,7 @@ selection or allocation path.
     - The API server runs in the provider management cluster. Its LoadBalancer Service obtains a VIP from the provider's management-network MetalLB allocator, unique within that management address space. It does not consume a tenant Subnet VIP pool.
     - Before worker creation/binding, satisfy the [management publication handoff](#management-publication-handoff) and set the current `ManagementPublicationReady` condition. The provider installs the management publication mechanism as a deployment prerequisite; optional tenant ExternalIPAttachments cannot satisfy this gate.
     - Record the real management API VIP as `status.apiEndpoint`; HyperShift owns the bootstrap endpoint in `status.controlPlaneEndpoint` and the generated installation configuration described above. Keep this path for worker installation and ongoing kubelet/API traffic. Workers do not treat a management VIP as if it belonged to their tenant Subnet.
-    - For ingress, dispatch Fabric `reserve_cluster_ingress_ip` with ClusterOrder as `resource`, the owning Cluster API ID as reservation owner (the ClusterOrder UID only correlates/fences the attempt), and resolved tenant VirtualNetwork/Subnet context. Subnet creation has already carved out the `vip_prefix_length` slice and excluded it from both DHCP and overlay allocation. The Fabric Manager is the sole allocator for this slice across concurrent guest clusters and hosting clusters.
+    - When creating a Subnet, the Fabric task receives the captured `NetworkClass.spec.vip_prefix_length` as `network_class.vip_prefix_length` through the [manager contract's canonical task inputs](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#canonical-serialized-task-inputs). It reserves the configured prefix within the Subnet and excludes it from dynamic address allocation. For ingress, dispatch Fabric `reserve_cluster_ingress_ip` with ClusterOrder as `resource`, the owning Cluster API ID as reservation owner (the ClusterOrder UID only correlates/fences the attempt), and resolved tenant VirtualNetwork/Subnet context. The Fabric Manager is the sole allocator for this reserved slice across concurrent guest clusters and hosting clusters.
     - The successful result contains `osac_result.data.cluster_ingress.address`. OSAC validates request UID/generation, canonical IPv4 form, usable-host containment in the Subnet and consistency with any accepted allocation. After accepting the result, the operator persists the address in the ClusterOrder annotation `osac.openshift.io/ingress-allocated-address` before guest configuration. Fabric owns IPAM: it atomically reserves a real address in its pre-excluded VIP slice, returns the same address for the same owner on retry, and gives independent clusters sharing a Subnet distinct addresses. OSAC does not maintain a second reservation registry. Reserving an address does not change immutable NetworkData.
     - Reservation failure/exhaustion leaves the ingress network phase non-ready with a diagnostic. No guest MetalLB pool or fabricated ingress endpoint is created from a missing reservation. [User]
 
@@ -559,7 +599,7 @@ This feature inherits the existing security model:
 - Auto-provisioned resource cleanup transient failure: finalizer retries
 - **Cleanup failure:** the parent finalizer remains while auto-created ExternalIPAttachments or ExternalIPs remain. Reconciliation retries with backoff and reports the failed child operation; an administrator repairs the cause before cleanup resumes. Enabled-mode failure never silently orphans children. [User]
 
-### RBAC / Tenancy
+### RBAC and Tenancy
 
 Tenant visibility and ordinary tenant networking permissions remain unchanged. The [worker authorization contract](#caas-worker-network-authorization) adds explicit controller authorization and immutable parent/network-tenant validation for hidden system-tenant BMIs. Cluster-owned ExternalIPs and ExternalIPAttachments inherit tenant isolation from their parent:
 - `osac.openshift.io/tenant` annotation propagated from Cluster to auto-created resources
@@ -650,7 +690,7 @@ cleaning; keep management/bootstrap connectivity until workers finish teardown.
 
 Re-enabling provider networking follows the [shared activation preflight](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control). For this extension, drain and delete each Cluster through its normal teardown path and wait for its worker BaremetalInstances to complete the BMaaS cleanup handoff. The shared gate also waits for workloads owned by other extensions and blocks new workload Creates while activation is pending. Reads and deletes remain available. After the deployment profile and configured pools regain real provider readiness, each Cluster still waits for its own ready networking references. A disabled-mode ProvisioningDisabled state does not satisfy enabled readiness. An ordinary restart of an already enabled deployment does not require a new drain. [User]
 
-## Alternatives (Not Implemented)
+## Alternatives Considered
 
 ### Alternative 1: Keep networking in step collections
 
@@ -695,12 +735,16 @@ Resolved: Return error, no resource persisted. Pool capacity is checked synchron
 
 ### ~~7. How is the subnet CIDR partitioned between MetalLB VIP allocation and fabric DHCP assignment?~~ — Resolved
 
-Subnet creation reserves the `vip_prefix_length` slice and excludes it from
-DHCP and overlay allocation upfront. The Fabric Manager is its sole allocator;
-`reserve_cluster_ingress_ip` returns a stable Cluster-API-ID-owned address.
-Guest MetalLB advertises only that reservation. Concurrent clusters sharing a
-Subnet cannot independently allocate the same address, and reservations do not
-modify immutable NetworkData. [User]
+The shared API leaves `vip_prefix_length` optional. A CaaS Cluster create
+request is rejected before persistence when tenant-subnet ingress is required
+but the Subnet's bound NetworkClass omits it. When configured, Subnet creation
+passes the captured value to the Fabric Manager, which reserves a contained
+prefix and excludes it from dynamic allocation. A prefix that cannot fit the
+Subnet prevents Subnet readiness. The Fabric Manager is the sole allocator
+for that range; `reserve_cluster_ingress_ip` returns a stable
+Cluster-API-ID-owned address. Guest MetalLB advertises only that reservation.
+Concurrent clusters sharing a Subnet cannot independently allocate the same
+address, and reservations do not modify immutable NetworkData. [User]
 
 ### ~~8. What IP addresses do DNS records point to — MetalLB VIPs or ExternalIPs?~~ — Resolved
 
@@ -713,11 +757,11 @@ optional tenant ExternalIPAttachment to complete installation. [User]
 
 ## Test Plan
 
-- **[DEV/QE] Worker authorization:** verify hidden system-tenant workers use only the validated parent Cluster network context. Reject forged parent metadata, wrong node sets/UIDs and foreign attachments; exercise parent-delete/create races and cleanup after projection loss. See shared contract test case TC-15.
+- **[DEV/QE] Worker authorization:** verify hidden system-tenant workers use only the validated parent Cluster network context. Reject forged parent metadata, wrong node sets/UIDs and foreign attachments; exercise parent-delete/create races and cleanup after projection loss. The extension owns these parent-authorization cases; generic owner/context rejection is covered by [TC-FR6-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-fr6-01-reject-invalid-json-schemas-declarations-and-manager-results).
 
 ### Endpoint Topology and Attachment Contract
 
-- **[DEV] Contract:** verify fixed Fabric ingress reserve/release entry points, Cluster API ID idempotency, unique addresses within Subnet VIP slice, exact `cluster_ingress.address` result shape, missing/invalid allocation rejection, and DNAT routing_domain/context for both Cluster target endpoints. A provider no-change success still requires real allocation/results for allocating tasks.
+- **[DEV] Contract:** verify CaaS rejects Cluster creation before persistence or worker provisioning when the bound NetworkClass omits the required `vip_prefix_length`. With the field configured, verify `create_subnet` receives the captured `network_class.vip_prefix_length`, reserves a CIDR contained in the Subnet, and fails Subnet creation/readiness when the prefix cannot fit. Verify the reserved range is excluded from dynamic address allocation. Also verify fixed Fabric ingress reserve/release entry points, Cluster API ID idempotency, unique addresses within the Subnet VIP slice, exact `cluster_ingress.address` result shape, missing/invalid allocation rejection, and DNAT routing_domain/context for both Cluster target endpoints. A provider no-change success still requires real allocation/results for allocating tasks.
 - **[DEV] Envtest:** provide the management VIP first, delay management-side DNS, TLS and Route admission separately, and assert `ManagementPublicationReady=False` blocks BMI creation/Agent binding. Make the API publish on TCP 7443 with Service port 6443; verify bootstrap uses 7443 and API DNAT maps external 7443 to VIP 6443, including restart before feedback. Do not gate workers on guest readiness or kubeconfig availability; delay optional ExternalIP allocation and prove core install continues; guest Service waits for the operator-written allocation annotation; failed annotation writes block provisioning; restart replays accepted results without reallocating; stale-UID writes and conflicting annotations fail; lost-result retry retains API-ID-owned allocation; projection reconciliation preserves the annotation; cleanup failures retain it and finalizers until confirmed release.
 - **[DEV] Envtest / [QE] E2E:** with zero workers, satisfy management-side publication and ready tenant references; BMI creation proceeds without a tenant probe resource/task. Break tenant egress while management checks remain healthy. An early Agent cannot bypass BMI handoff/IP gates, and Connected=False/Unknown blocks binding until timeout. If a stale Connected=True persists, subsequent assisted installation still fails and the Cluster remains non-ready; do not assert that a condition transition timestamp proves post-handoff traffic. Restore egress and retry through ordinary cleanup, then verify actual registration and installation through API/ignition/image paths before Cluster Ready.
 - **[QE] E2E:** CaaS-only deployment without K8s manager; two tenants with identical Subnet CIDRs; concurrent clusters on one Subnet across hosting clusters get distinct ingress reservations; guest single-address pools match reservations; worker/API DNS/TLS and kubelet traffic work before optional attachment creation; ingress HTTP/HTTPS reaches the guest router.
@@ -796,13 +840,12 @@ Tech Preview criteria:
 
 GA criteria:
 - [ ] Fabric-only CaaS profile validated; Kubernetes Manager required only when the deployment also enables VM overlay workloads
-- [ ] Multi-job tracking (OSAC-1459) implemented and stable
-- [ ] Dispatcher infrastructure (OSAC-1457, OSAC-1458, OSAC-1460) delivered
+- [ ] Network Manager Integration Contract registration, generic dispatch, result validation, and durable recovery implemented; the selected Fabric Manager and any required Kubernetes Manager pass provider qualification
 - [ ] BareMetalInstanceType with `network_ports` (BareMetalNetworkPortSpec) implemented and tested
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
 
-## Upgrade / Downgrade Strategy
+## Upgrade and Downgrade Strategy
 
 ### What Changes vs. Today
 
@@ -939,36 +982,39 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 ## Infrastructure Needed
 
 - AAP execution environment with `osac.templates.ocp_4_17_small` core role updated; a separately tracked CaaS network phase manages enabled-mode MetalLB VIP provisioning
-- Kubernetes Manager Ansible role (OSAC-1511 or OSAC-1717) only for deployments also serving VM overlay workloads; not a CaaS prerequisite
+- A Kubernetes Manager that meets the shared manager contract and passes provider qualification, only for deployments also serving VM overlay workloads; it is not a CaaS prerequisite
 - Fabric fixed attachment/lease and `reserve_cluster_ingress_ip`/`release_cluster_ingress_ip` entry points; management MetalLB/publication plus the BMaaS provisioning network are deployment prerequisites
-- Integration test environment with CUDN or EVPN fabric
+- Integration test environment with the deployment-selected Fabric Manager. Add a compatible Kubernetes Manager only when the tested deployment also supports VM overlay networking.
 - BareMetalInstanceType test data with `network_ports` (BareMetalNetworkPortSpec)
 
 ## Dependencies
 
-| Dependency | Jira | Status |
-|-----------|------|--------|
-| Dispatcher core | OSAC-1457, OSAC-1458, OSAC-1460 | Closed |
-| Multi-job tracking (subnet) | OSAC-1459 | New |
-| NATGateway full stack | OSAC-1443 (10 tasks) | 1/10 In Progress |
-| ExternalIPAttachment cluster target in CRD | OSAC-2041 | New |
-| Cluster DNAT flow in controller | OSAC-1495 | New |
-| ClusterNetworkAttachment proto | OSAC-1501 | New |
-| api_endpoint/ingress_endpoint on Cluster status | OSAC-2040 | New |
-| Immutability validation | OSAC-1503 | New |
-| DB migration for Cluster networking fields | OSAC-2079 | New |
-| Server validation | OSAC-1504 | New |
-| ClusterOrder CRD: singular `networkAttachment` | OSAC-1505 | New |
-| ClusterOrder CRD: api/ingress endpoint status | OSAC-2080 | New |
-| VIP discovery flow (feedback) | OSAC-1506 | New |
-| CaaS template: accept network_attachment + per-node config | OSAC-1507 | New |
-| CaaS endpoint phase: management publication, Fabric ingress reservation, guest single-address MetalLB Service and confirmed status | OSAC-2077 | New |
-| BareMetalWorkerReconciler (on-demand BMI provisioning + networking) | OSAC-2135 | New |
+Jira states below were checked on 2026-10-12. This is an implementation-tracking snapshot: closed legacy or service issues do not satisfy the target Network Manager Integration Contract, which remains required before provider networking is enabled.
+
+| Dependency | Jira | Status (2026-10-12) |
+|-----------|------|---------------------|
+| Legacy dispatcher groundwork (not the new NetworkManager/NetworkData contract) | OSAC-1457, OSAC-1458, OSAC-1460 | Closed |
+| Legacy two-job lifecycle tracking (does not implement the target durable manager-attempt journal) | OSAC-1459 | Closed |
+| Network Manager Integration Contract registration, generic dispatch, result validation, and durable recovery | N/A — defined by the linked contract design; platform implementation remains required | Required before provider networking is enabled |
+| NATGateway full stack | OSAC-1443 (10 tasks) | Closed |
+| ExternalIPAttachment cluster target in CRD | OSAC-2041 | Closed |
+| Cluster DNAT flow in controller | OSAC-1495 | Closed |
+| ClusterNetworkAttachment proto | OSAC-1501 | Closed |
+| api_endpoint/ingress_endpoint on Cluster status | OSAC-2040 | Closed |
+| Immutability validation | OSAC-1503 | Closed |
+| DB migration for Cluster networking fields | OSAC-2079 | Closed |
+| Server validation | OSAC-1504 | Closed |
+| ClusterOrder CRD: singular `networkAttachment` | OSAC-1505 | Closed |
+| ClusterOrder CRD: api/ingress endpoint status | OSAC-2080 | Closed |
+| VIP discovery flow (feedback) | OSAC-1506 | Closed |
+| CaaS template dispatch migration | OSAC-1507 (duplicate; see OSAC-2243) | OSAC-1507: New; OSAC-2243: Closed |
+| CaaS endpoint phase: management publication, Fabric ingress reservation, guest single-address MetalLB Service and confirmed status | OSAC-2077 | Closed |
+| BareMetalWorkerReconciler (on-demand BMI provisioning + networking) | OSAC-2135 | Closed |
 | Historical BMI direct-dispatch groundwork; target SubnetAttachment request lifecycle is shared implementation work | OSAC-2047 | Closed (historical groundwork) |
-| CLI --network-attachment for Cluster | OSAC-2076 | New |
-| Integration test | OSAC-2078 | New |
+| CLI --network-attachment for Cluster | OSAC-2076 | Closed |
+| Integration test | OSAC-2078 | Review |
 | Historical Fabric port-move backend groundwork; fixed attachment/lease adapters and ingress reservation tasks remain shared target implementation work | OSAC-2081 (Netris BM) | Closed (historical groundwork) |
-| BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed | OSAC-1201 | New |
+| BareMetalInstanceType: network ports (BareMetalNetworkPortSpec) with name, role, type, speed | OSAC-1201 | Closed |
 | Remove cluster_infra / external_access step collection dispatch | Not tracked | **GAP** |
 | Remove NETWORK_STEPS_COLLECTION dependency | Not tracked | **GAP** |
 | fulfillment-service: resolve interface from BareMetalInstanceType (fabric_interface) | Not tracked | **GAP** |
@@ -978,10 +1024,10 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 ## Provenance
 
 Authored: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (77 behind origin/main, dirty)
+Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (98 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":77,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":98,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->

@@ -19,11 +19,37 @@ superseded-by:
 
 # VMaaS Networking — Optional Attachments and Auto External Access
 
+## Contents
+
+- [Summary](#summary)
+- [Motivation](#motivation)
+- [Proposal](#proposal)
+  - [Working with provider-supplied managers](#working-with-provider-supplied-managers)
+  - [VM placement and interface ownership](#vm-placement-and-interface-ownership)
+  - [Workflow Description](#workflow-description)
+  - [API contract](#api-contract)
+  - [Component behavior and constraints](#component-behavior-and-constraints)
+- [Security Considerations](#security-considerations)
+- [Failure Handling and Recovery](#failure-handling-and-recovery)
+- [RBAC and Tenancy](#rbac-and-tenancy)
+- [Observability and Monitoring](#observability-and-monitoring)
+- [Risks and Mitigations](#risks-and-mitigations)
+- [Drawbacks](#drawbacks)
+- [Provider Networking Disabled](#provider-networking-disabled)
+- [Alternatives Considered](#alternatives-considered)
+- [Open Questions](#open-questions)
+- [Test Plan](#test-plan)
+- [Graduation Criteria](#graduation-criteria)
+- [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
+- [Version Skew Strategy](#version-skew-strategy)
+- [Support Procedures](#support-procedures)
+- [Infrastructure Needed](#infrastructure-needed)
+
 This enhancement extends the unified networking API to support VMaaS-specific requirements: a single ComputeInstance network attachment with an implicit primary/default route, optional network attachments with tenant defaults, and auto-provisioned external access (ExternalIP). The repeated attachment field is retained for API compatibility and is validated to contain at most one entry.
 
 ## Summary
 
-This enhancement is a service-specific extension of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The unified EP defines the shared architecture (NetworkClass, dispatcher, infrastructure-agnostic subnets, resource hierarchy); this document defines how this specific service consumes that architecture.
+This enhancement is a service-specific extension of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The Unified Networking EP defines NetworkClass and the shared networking resource semantics and hierarchy. The Network Manager Integration Contract defines manager registration and dispatch. This document defines how VMaaS consumes those shared contracts.
 
 VMaaS inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
@@ -75,8 +101,8 @@ external access follows the shared allocation and attachment lifecycle.
 ### Non-Goals
 
 - CaaS or BMaaS networking (this EP covers VMaaS only)
-- Dispatcher infrastructure implementation (deferred to Unified Networking EP implementation)
-- Kubernetes manager implementation (CUDN or EVPN fabric integration via k8s_manager roles)
+- Implementation of the shared manager dispatch contract, which is defined by the Network Manager Integration Contract.
+- Building or selecting a particular Kubernetes Manager implementation; VMaaS uses the deployment-selected manager that conforms to the shared contract.
 
 ## Proposal
 
@@ -373,7 +399,7 @@ This feature inherits the existing security model:
 - Auto-provisioned resource cleanup transient failure: finalizer retries
 - **Cleanup failure:** the parent finalizer remains while auto-created ExternalIPAttachments or ExternalIPs remain. Reconciliation retries with backoff and reports the failed child operation; an administrator repairs the cause before cleanup resumes. Enabled-mode failure never silently orphans children. [User]
 
-### RBAC / Tenancy
+### RBAC and Tenancy
 
 No RBAC or tenancy changes. All new resources (ComputeInstance with its existing fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
 - `osac.openshift.io/tenant` annotation propagated from ComputeInstance to auto-created resources
@@ -397,19 +423,19 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 ### Risks and Mitigations
 
-#### Risk: k8s_manager implementation blocked or delayed
+#### Risk: Qualified Kubernetes Manager is unavailable
 
-**Impact:** OSAC-1511 (CUDN) and OSAC-1717 (EVPN) are both in spike/blocked state. Without a k8s_manager, the Subnet controller cannot provision overlay networks, and VMaaS networking does not function.
+**Impact:** OSAC-1511 (CUDN) and OSAC-1717 (EVPN) are closed evaluation spikes, not evidence that a Kubernetes Manager meeting the Network Manager Integration Contract is deployed and qualified. Without a compatible, qualified Kubernetes Manager, VM overlay networking cannot be provisioned.
 
-**Mitigation:** Prioritize unblocking one of these dependencies. Accept that VMaaS remains unavailable until a k8s_manager exists. Document as a hard dependency.
+**Mitigation:** Gate VM overlay networking on a deployment-selected Kubernetes Manager that passes NetworkClass compatibility validation and provider qualification for its assigned tasks. Do not treat completion of either evaluation spike as manager qualification.
 
 **Reviewed by:** Engineering / Product
 
-#### Risk: Multi-job tracking not implemented
+#### Risk: Shared manager contract support is delayed
 
-**Impact:** OSAC-1459 is a prerequisite for Subnet controller to call both fabric_manager and k8s_manager. Without it, Subnet controller can only call one manager.
+**Impact:** The legacy two-job lifecycle tracking delivered by OSAC-1459 does not provide the manager registrations, generic task dispatch, validated results, and uncertain-job recovery specified by the Network Manager Integration Contract. VM networking cannot meet its readiness and cleanup requirements until that shared contract is implemented.
 
-**Mitigation:** Require durable tracking for every selected manager before enabling VMaaS networking. A VM deployment requires both Fabric and Kubernetes roles and their mandatory stages; a single-role bypass cannot satisfy enabled Subnet or workload readiness.
+**Mitigation:** Deliver the shared contract implementation before enabling VMaaS networking. Require the selected Fabric and Kubernetes Manager stages and their documented readiness and cleanup behavior; do not treat legacy multi-job support alone as qualification.
 
 **Reviewed by:** osac-operator team
 
@@ -442,7 +468,7 @@ does not wait for an unallocated automatic ExternalIP. [PRD: FR-8] [User]
 
 Re-enabling provider networking follows the [shared activation preflight](/enhancements/OSAC-1433-unified-networking/design.md#provider-networking-control). For this extension, drain and delete every ComputeInstance through the normal VM lifecycle; the extension does not migrate a running baseline VM to a tenant Subnet. The shared gate also waits for workloads owned by other extensions and blocks new workload Creates while activation is pending. Reads and deletes remain available. After the deployment profile and configured pools regain real provider readiness, ComputeInstances use their ordinary network-reference gates. A disabled-mode ProvisioningDisabled state does not satisfy enabled readiness. An ordinary restart of an already enabled deployment does not require a new drain. [User]
 
-## Alternatives (Not Implemented)
+## Alternatives Considered
 
 ### Alternative 1: Single shared NetworkAttachment message with optional primary field
 
@@ -535,12 +561,11 @@ Tech Preview criteria:
 - [ ] Documentation: API reference, user guide for simplified VM creation
 
 GA criteria:
-- [ ] k8s_manager implementation (OSAC-1511 or OSAC-1717) delivered and production-tested
-- [ ] Multi-job tracking (OSAC-1459) implemented and stable
+- [ ] Network Manager Integration Contract registration, dispatch, result validation, and recovery behavior delivered; the selected compatible Fabric/Kubernetes Manager pair passes provider qualification and is production-tested
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
 
-## Upgrade / Downgrade Strategy
+## Upgrade and Downgrade Strategy
 
 ### Implementation baseline
 
@@ -565,7 +590,7 @@ ComputeInstance already participates in the networking API. Today's flow:
 - Existing `ComputeNetworkAttachment` has no `primary` field; the compatibility field remains single-attachment only
 - Service-level maximum-one validation and field-level defaulting are still required
 - At most one attachment — template creates one `l2bridge` interface
-- No dispatcher — uses `implementation_strategy` annotation
+- The current implementation still uses `implementation_strategy` annotations; migration to the generic dispatcher is defined by the Network Manager Integration Contract.
 - BM-only deployment validation (reject VM when no k8sManager)
 - Auto ExternalIP allocation (tenant must manually create ExternalIP + ExternalIPAttachment)
 
@@ -672,18 +697,18 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 ## Infrastructure Needed
 
 - AAP execution environment with `osac.templates.ocp_virt_vm` role updated for single-NIC support
-- k8s_manager Ansible role (OSAC-1511 or OSAC-1717) for CUDN overlay provisioning
-- Integration test environment with CUDN or EVPN fabric
+- A deployment-selected Kubernetes Manager that implements the shared contract and passes provider qualification for VM overlay provisioning
+- Integration test environment with a deployment-selected, compatible Fabric/Kubernetes Manager pair, including an overlay-capable Kubernetes Manager.
 
 ---
 
 ## Provenance
 
 Authored: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (77 behind origin/main, dirty)
+Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (98 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":77,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":98,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
