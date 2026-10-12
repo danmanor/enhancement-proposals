@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-08
+last-updated: 2026-10-12
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -46,7 +46,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - Providers can assess whether a manager implementation meets OSAC's complete role requirements using one published contract.
 - Cloud Infrastructure Admins can provide the backend settings and credentials required by the provider-selected networking implementations.
 - Providers can add shared network data definitions needed by new manager implementations without requesting manager-specific OSAC code.
-- Tenants can use the same networking resources and workflows for VMs, managed clusters, and bare-metal workloads across compatible manager combinations.
+- Tenants can use the same networking resources and workflows across compatible manager combinations for every workload service that integrates the shared model.
 - Providers can select an implementation regardless of who supplies it, without changing tenant networking workflows.
 - Cloud Infrastructure Admins receive a clear rejection before dependent work starts when a data definition is invalid, a manager pair cannot exchange a required value, or a produced value does not meet its registered definition.
 
@@ -70,7 +70,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 
 ### Tenant User
 
-- As a Tenant User, I want to use the shared networking resources for VMs, managed clusters, and bare-metal workloads across supported manager combinations, so that changing provider implementations does not change my networking workflow.
+- As a Tenant User, I want to use the shared networking resources across supported manager combinations, so that changing provider implementations does not change my networking workflow.
 
 ## 3. Requirements
 
@@ -78,12 +78,16 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 
 - **FR-1:** A provider can select a conforming Fabric Manager or K8s Manager implementation regardless of who supplies it; OSAC-provided implementations meet the same requirements. [User]
 - **FR-2:** A Cloud Infrastructure Admin must be able to determine from one published contract what each manager role requires and whether selected implementations can meet those requirements. [User]
-- **FR-3:** Tenants can use the same OSAC networking resources and workflows for VMs, managed Kubernetes clusters, and bare-metal workloads across compatible manager combinations, without selecting a provider backend. [Unified Networking PRD: FR-2, FR-6] [User]
+- **FR-3:** Tenants can use the same OSAC networking resources and workflows across compatible manager combinations for every workload service that integrates the shared model, without selecting a provider backend. [Unified Networking PRD: FR-2, FR-6] [User]
 - **FR-4:** When selected implementations cannot meet a required networking dependency, a required role is unavailable, or a request is outside the supported manager contract, the Cloud Infrastructure Admin must receive a clear diagnostic and OSAC must reject the request rather than route it through an unrelated manager. [User]
 - **FR-5:** A provider can define additional shared networking data for existing provider profiles, VirtualNetworks, and Subnets, then exchange it between conforming managers without one-off OSAC changes or a tenant API change. [User]
 - **FR-6:** OSAC must identify invalid data definitions, undefined manager references, missing required data, and values that do not match their definition, and prevent dependent work from starting. [User]
 - **FR-7:** Cloud Infrastructure Admins can create, inspect, list, and remove manager and data-model registrations through OSAC's provider management interface; OSAC rejects attempts to modify an existing registration in place. [User]
 - **FR-8:** Cloud Infrastructure Admins can provide backend settings and credentials required by the provider-selected networking managers, so manager jobs can reach their backend services. [User]
+
+- **FR-9:** A Cloud Infrastructure Admin can distinguish manager registration and successful task handling from provider behavior qualification; a successful manager result alone does not prove that advertised connectivity, address allocation, policy, or cleanup occurred. [User direction to incorporate Astra review gap, 2026-10-12]
+- **FR-10:** When manager work is interrupted or its outcome is uncertain, OSAC does not report dependent resources as ready, release address capacity, or permit replacing the bound manager/profile until the relevant work is resolved. OSAC gives the Cloud Infrastructure Admin an actionable blocker. [User direction to incorporate Astra review gap, 2026-10-12]
+- **FR-11:** A Cloud Infrastructure Admin can run the published networking qualification against the provider's selected manager configuration and receive a retained pass, fail, or incomplete report for required operations, targets, capabilities, recovery, and cleanup. A skipped required assertion is incomplete, not a pass. [User direction to incorporate Astra review gap, 2026-10-12]
 
 ### 3.2 Non-Functional Requirements
 
@@ -100,10 +104,10 @@ No separate non-functional requirements were specified for this work.
 ## Provenance
 
 Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
-Final: revise @ prd 0.11.3 - 2bd6607, workspace docs/network-manager-provider-guide @ f0999b434 (dirty)
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (77 behind origin/main, dirty)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.3","ai_workflows":"2bd6607","source_repo":"f0999b434 (dirty)","source_repo_branch":"docs/network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"eabff3b59 (dirty)","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":77,"commits_ahead_main":2,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
