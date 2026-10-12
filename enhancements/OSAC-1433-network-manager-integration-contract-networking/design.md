@@ -644,6 +644,16 @@ the authoritative workload projection in `target`; the extension defines the
 placement fields. A manager must use the captured target selector and identity
 and must not discover a target by tenant or name alone.
 
+For `overlay` attachment tasks, OSAC makes the selected workload cluster's
+protected connection available to the AAP job through the existing
+remote-cluster kubeconfig mechanism (`OSAC_REMOTE_CLUSTER_KUBECONFIG`). The
+credential remains in the protected job environment; it is never copied into
+the SubnetAttachment, `osac_job_vars`, NetworkData, or result artifact. The
+manager uses this connection only to read or update the target identified by
+the request's immutable placement. If OSAC cannot resolve access to that exact
+cluster, the task fails and the workload remains stopped. Physical attachment
+tasks do not receive this workload-cluster connection.
+
 The `manager.name` field carries the selected NetworkManager's
 `spec.managerName` and selects the same-named role in the `osac.networking`
 collection; `metadata.name` identifies the registration object only.
@@ -705,8 +715,10 @@ then expects only newly required Subnet-scoped outputs. OSAC independently
 derives those keys, validates the manager declarations and schemas, and writes
 no values unless the complete result is valid. After persistence, OSAC resolves
 the Kubernetes Manager's declared inputs and starts that stage. A manager task
-has no fulfillment-service or Kubernetes write credential and cannot change
-the registered values or OSAC resource semantics.
+has no fulfillment-service credential and cannot change registered values or
+OSAC resource semantics. An overlay Kubernetes Manager may use only the
+separately supplied workload-cluster connection described above to update the
+network/interface fields of its exact target.
 
 #### Canonical serialized task inputs
 
@@ -767,7 +779,10 @@ validates tenant ownership and resource references, resolves the ready Subnet
 and selected SecurityGroups, and sends complete normalized rules with the
 `apply_subnet_attachment` task. The request does not copy Subnet, interface,
 or SecurityGroup fields from the workload. It is the durable OSAC request and
-job owner; it does not itself connect a physical port or add a VM interface.
+job owner. The selected manager applies the network attachment to its target:
+for a physical interface, it changes fabric membership; for an overlay
+interface, it adds the required network/interface fields to the exact stopped
+workload object and installs policy before that workload starts.
 
 Each rule carries `protocol`, optional TCP/UDP `port_from` and `port_to`, and
 an IPv4 `ipv4_cidr`. The payload preserves each group's stable ID and complete
@@ -805,25 +820,43 @@ behavior and workload-service timing:
   provider segment. It installs the complete effective SecurityGroup policy
   before tenant traffic is enabled. The workload service owns any additional
   handoff or address-discovery phases.
-- For `overlay`, the workload service creates its target with the Subnet
-  network reference and matching interface already present in the initial
-  object spec. The Kubernetes Manager verifies that the reference identifies
-  the requested Subnet and installs the complete effective policy; it does not
-  add or patch the target's network/interface fields. The service enables the
-  workload only after attachment policy is ready. For a ComputeInstance overlay
-  attachment, apply runs while the VM is halted and no VMI exists; the manager
-  must associate policy with that VM so it is effective when its VMI starts.
-  A manager that requires a running VMI does not meet this lifecycle contract.
-  The extension defines the exact reference and enablement step.
+- For `overlay`, the workload extension identifies the exact target object and
+  its network/interface fields. The Kubernetes Manager adds or updates only
+  those fields on the exact stopped target and installs policy. Apply must
+  finish before the workload can start. The manager must not change workload
+  run control or start it. A VM workload is created halted with no tenant
+  interface; its first VMI starts only after the request reports
+  `NetworkAttachmentsReady=True`, so the network fields and policy are already
+  present. A manager that requires a running VMI to configure the attachment
+  does not meet this lifecycle contract. Other workload extensions define
+  their target fields and enablement gate.
+
+The manager job runs asynchronously through AAP, but the workload lifecycle is
+strictly ordered by request conditions. On the `SubnetAttachment`,
+`NetworkAttachmentsReady=True` means the exact apply job succeeded, its result
+was validated and persisted, and the requested target network configuration
+and policy were confirmed. The workload lifecycle cannot start an overlay
+target or hand off a physical target to tenant traffic before this condition.
+`IPDiscoveryComplete=True` is a separate later condition, written only after
+the workload's tenant address is observed after its start or handoff.
 
 Both paths keep new traffic unavailable until policy is active.
 `delete_subnet_attachment` removes attachment-owned policy. For a physical
 target, it returns the selected port to the baseline defined by that workload
-extension. For an overlay target, the service deletes the stopped VM after
-policy cleanup. Both operations are idempotent by stable target resource ID
-and logical interface. Apply failure keeps the request non-ready; delete
-failure retains its finalizer and blocks the workload teardown gate. Apply
-and delete receive the same normalized attachment input.
+extension, but only after the extension confirms it is safe to move the port.
+For an overlay target, the service stops the workload first; the Kubernetes
+Manager removes its network/interface fields and policy from the exact stopped
+object, and the service deletes that object only after cleanup completes. For
+a physical target that requires shutdown before a port move, the workload
+extension reports `NetworkOffboardShutdownComplete=True` only after the host
+is powered off while still on tenant connectivity. The networking controller
+then runs `delete_subnet_attachment` and records `NetworkOffboardComplete=True`
+on the request only after cleanup succeeds. The service does not deprovision or
+release the target until request cleanup completes. Both operations are
+idempotent by stable target resource ID and logical interface. Apply failure
+keeps the request non-ready; delete failure retains its finalizer and blocks
+the workload teardown gate. Apply and delete receive the same normalized
+attachment input.
 
 #### Resource action, manager, and task table
 
@@ -839,7 +872,7 @@ subset.
 | Create/delete VirtualNetwork | Fabric | N/A | `create_virtual_network` / `delete_virtual_network` | Create or remove the isolated VirtualNetwork routing domain and associated allocation. Subnets in the same VirtualNetwork are L3-routable to one another; separate VirtualNetworks remain isolated. |
 | Create/delete Subnet | Create: Fabric, then Kubernetes when configured. Delete: Kubernetes, then Fabric. | N/A | `create_subnet` / `delete_subnet` | Fabric creates/removes one L2 broadcast domain for the Subnet and returns declared values for their NetworkClass, VirtualNetwork, or Subnet owners. OSAC persists validated values as NetworkData. Both managers receive the same applicable values on delete that they used on create. Kubernetes receives only its declared, matched inputs, which may include parent VirtualNetwork and current Subnet values. Workloads in one Subnet share that L2 domain and are L3-routable within their parent VirtualNetwork. OSAC removes Subnet NetworkData after consumer cleanup and Fabric deletion; parent-VirtualNetwork values persist through individual Subnet deletion. The Subnet CIDR belongs to its parent VirtualNetwork and cannot overlap a sibling Subnet. |
 | Create/delete FabricDomain | Fabric, only when the selected manager declares `EAST_WEST_ETHERNET` | N/A | `create_fabric_domain` / `delete_fabric_domain` | Create or remove the requested Ethernet east-west isolation for participating endpoints. The task receives the FabricDomain, its associated VirtualNetwork context, provider settings through the job environment, and applicable NetworkData. It must preserve the VirtualNetwork's north-south routing and the Subnets' broadcast domains. |
-| Apply/delete SubnetAttachment | Kubernetes Manager for `overlay`; Fabric Manager for `physical` | `SubnetAttachment` referencing an extension-defined workload target | `apply_subnet_attachment` / `delete_subnet_attachment` | For `physical`, bind the selected port to the Subnet's provider segment and install policy. For `overlay`, verify the network/interface reference present in the initial workload spec and install policy without patching that spec. For a new flow between two OSAC workloads, both source egress and destination ingress must allow it. On delete, remove policy; restore the extension-defined physical baseline or let the service remove the stopped overlay workload before deleting its Subnet network. |
+| Apply/delete SubnetAttachment | Kubernetes Manager for `overlay`; Fabric Manager for `physical` | `SubnetAttachment` referencing an extension-defined workload target | `apply_subnet_attachment` / `delete_subnet_attachment` | For `physical`, bind the selected port to the Subnet's provider segment and install policy before the service's handoff gate. For `overlay`, update only the service-defined network/interface fields on the exact stopped target and install policy; the service starts it only after `NetworkAttachmentsReady=True`. For a new flow between two OSAC workloads, both source egress and destination ingress must allow it. On delete, remove policy; restore the extension-defined physical baseline after its safe-offboard gate, or clean the stopped overlay target before the service deletes it. |
 | Create/delete ExternalIPPool | Fabric | N/A | `create_external_ip_pool` / `delete_external_ip_pool` | Register or remove the provider address pool. The pool has one canonical IPv4 CIDR prefix; OSAC owns API capacity counters. |
 | Allocate/release ExternalIP | Fabric | N/A | `create_external_ip` / `delete_external_ip` | Reserve or release one address from the selected pool. On allocation, return the address in `osac_result.data.external_ip.address`; repeated allocation for the same stable resource ID returns the same address. The manager does not write to the ExternalIP resource. |
 | Create/delete ExternalIPAttachment | Fabric | Service-defined workload endpoint | `attach_external_ip` / `detach_external_ip` | Add or remove inbound translation for the selected endpoint. Remove the attachment before releasing its ExternalIP. |
@@ -1182,6 +1215,14 @@ NetworkManager and NetworkDataModel objects contain small declarations and schem
 
 NetworkManager objects contain manager identity, role selection, capabilities, and NetworkData declarations. Provider backend settings and credentials are supplied through the existing networking fulfillment group's Kubernetes ConfigMap and Secret. The AAP networking instance-group pod exposes those keys as environment variables to every manager job in the group. These values are shared across roles; the group does not provide per-manager credential isolation, so providers must treat every installed networking role as trusted to read them. NetworkDataModel objects contain schemas, not secrets. Cluster-scoped RBAC limits registry administration to Cloud Infrastructure Admins. The fulfillment service serves the provider registry APIs; the operator reads registrations for manager resolution and dispatch. AAP jobs cannot modify registry objects or NetworkData CRDs. A Fabric AAP job returns values only in its result artifact; the OSAC operator submits them through the fulfillment-service API, which checks model, owner, tenant, and schema before committing the database record. The fulfillment service's existing controller path projects the record as a CRD. The Kubernetes Manager receives validated NetworkData values, not fulfillment-service credentials. Model values are JSON data and must not contain credentials or secrets. Provider settings and secrets are not copied into `osac_job_vars`, NetworkData, or result artifacts, and Ansible tasks and logs must not disclose secret values. Manager tasks act only on the tenant-scoped resources OSAC passes and must preserve existing tenant and owner-reference boundaries.
 
+For overlay attachment tasks, the target-cluster connection is a separate
+OSAC-supplied secret context, not a provider-selected role credential. The
+selected Kubernetes Manager can use it only for the target identified by the
+request's immutable placement; it cannot list or modify unrelated namespaces
+or clusters. The request is not accepted as ready if access, target UID
+verification, network/interface update, or policy installation fails. The
+connection is excluded from job variables, NetworkData, results, and logs.
+
 ### 4.7 Failure Handling and Recovery
 
 - **Invalid registry object:** The fulfillment-service API rejects a NetworkDataModel or NetworkManager with a diagnostic naming the object and invalid field or model name. Kubernetes enforces the outer CRD shape and preserves the raw schema object; the fulfillment service validates its JSON Schema semantics.
@@ -1364,4 +1405,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

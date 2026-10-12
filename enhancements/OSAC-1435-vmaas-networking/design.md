@@ -84,9 +84,11 @@ service's handoffs and readiness gates, not another copy of those rules.
 
 ## Motivation
 
-A VM needs one tenant network attachment in its VM spec when it is created.
-The selected Kubernetes Manager makes the Subnet's provider network available
-and applies SecurityGroup policy before the VM starts. OSAC publishes the
+Each VM receives its tenant network attachment before its first start. The
+workload template creates the VM halted without tenant network/interface
+fields; the selected Kubernetes Manager applies those fields and SecurityGroup
+policy through the target-only `SubnetAttachment`. VMaaS starts the VM only
+after the request confirms the configuration is ready. OSAC publishes the
 discovered address through the workload API. Optional external access follows
 the shared allocation and attachment lifecycle.
 
@@ -111,60 +113,69 @@ the shared allocation and attachment lifecycle.
 The deployment selects its Fabric and Kubernetes Managers through NetworkClass.
 Neither the tenant nor the VM template chooses a binding plugin or provider.
 The same workload template works with any conforming selected Kubernetes
-Manager. The template creates the VM with the VMaaS-defined Subnet network
-reference in its initial spec; the manager realizes that reference for the
-Subnet and applies policy without patching the VM's network/interface fields.
+Manager. The workload template creates each VM halted and without its tenant
+network/interface fields. The manager applies those fields and the requested
+policy through the target-only `SubnetAttachment` before VMaaS allows the VM to
+start.
 
 | Phase | VMaaS responsibility | Provider-manager responsibility |
 |---|---|---|
 | Prerequisites | Require a ready Subnet placement under the unified lifecycle. | Fabric creates the network; Kubernetes realizes that placement using stored Fabric outputs. |
-| Prepare | Create the stopped VM with its Subnet network and matching interface already in the VM spec; capture its backend UID. | `create_subnet` has already exposed the Subnet's stable VM network reference. |
-| Attach | Create the internal request with the exact placement and target identity. | Kubernetes verifies the VM's network reference and applies policy; it does not patch the VM network fields. |
-| Start and observe | Start only after accepted attachment success; mirror real VMI IP feedback. | Preserve the interface/policy and expose its address through the agreed VMI observation. |
-| Delete | Complete external cleanup, stop the VM, wait for policy cleanup, then remove compute/disks. | Kubernetes removes target-owned policy; shared Subnet cleanup waits for all consumers. |
+| Prepare | Create the VM halted without tenant network/interface fields; capture its backend UID and placement. | `create_subnet` prepares the Subnet's network for the selected Kubernetes Manager. |
+| Attach | Create the internal request with the exact placement and target identity; wait for `NetworkAttachmentsReady=True`. | Kubernetes Manager adds only the requested network/interface fields to the halted VM and applies policy. |
+| Start and observe | Apply the requested final run strategy only after attachment readiness; mirror real VMI IP feedback. | Keep the first VM boot gated on attachment readiness and expose the address through VMI status. |
+| Delete | Complete external cleanup, stop the VM, wait for request cleanup, then remove compute/disks. | Kubernetes Manager removes attachment-owned fields and policy; shared Subnet cleanup waits for all consumers. |
 
-The Kubernetes Manager maps the Subnet network reference to its backend
-implementation when it creates the Subnet. The VM template uses the VMaaS
-reference contract, so it does not need provider-specific network
-configuration. Both manager roles use the same OSAC action and readiness gate:
-Kubernetes verifies the overlay reference and applies policy, while Fabric
-binds a physical port to the Subnet segment. [User]
+The Kubernetes Manager prepares the Subnet's overlay network when it creates
+the Subnet. For an individual VM, its `apply_subnet_attachment` task updates
+the exact stopped VM and applies policy. The manager owns the target's
+network/interface fields; VMaaS owns compute fields and run control. The
+manager must finish and the request must report `NetworkAttachmentsReady=True`
+before VMaaS starts the VM. [User]
 
 ### VM placement and interface ownership
 
-OSAC owns placement; the Kubernetes Manager owns backend network realization.
-For each Subnet/hosting-cluster placement, OSAC sets `placement.tenant_namespace` to
-`osac-subnet-<Subnet API UUID>` and persists it with the placement snapshot
-before Subnet dispatch. Kubernetes `create_subnet` creates or verifies that
-namespace and the Subnet network. It preserves the tenant annotation and exact
-Subnet owner API ID; an existing namespace with a different owner is an error.
-The Kubernetes Manager exposes the VM network through a
-`NetworkAttachmentDefinition` named `primary` in that namespace. The
-provider-specific CNI configuration and backing object names remain
-manager-owned; the `namespace/primary` reference is the stable interface used
-by this extension. The manager cannot move the workload to another namespace
-or return a replacement placement.
+OSAC owns workload placement; the Kubernetes Manager owns backend network
+realization. For each Subnet/hosting-cluster placement, OSAC persists the
+selected cluster and workload namespace with the placement snapshot before
+Subnet dispatch. The selected manager prepares the Subnet for workloads in
+that placement. It preserves tenant ownership metadata, and a conflicting
+existing placement is an error. The manager may use any backend object or
+attachment mechanism that fulfills the shared Subnet and manager contracts;
+backend names and configuration remain manager-owned. For example, a
+KubeVirt implementation may expose the Subnet through a namespaced
+NetworkAttachmentDefinition. The manager cannot move the workload to another
+placement or return a replacement target.
 Deletion removes only its owned realization/namespace after all consumers
 are gone. Names do not replace the existing stable API ownership and concrete backend-object UID checks. [User]
 
 The workload controller chooses the hosting cluster from the Subnet's ready
 placements and persists `placement.workload_selector={kind: VirtualMachine,
-name: osac-vm-<ComputeInstance API UUID>}` and `interface_selector: primary`.
-The ordinary workload template creates the VM and disks in that namespace with
-`spec.runStrategy: Halted`, automatic pod-interface attachment disabled, and
-the Subnet network reference already present in the VM spec. The network and
-interface entries use the same logical name, `primary`; the Multus reference
-uses `primary` in the VM's Subnet-scoped namespace. The template confirms no VMI is
-running and captures the created VM UID as
-`placement.workload_selector.uid` before attachment dispatch. Preparation
-retries preserve the Subnet network reference.
+name: osac-vm-<ComputeInstance API UUID>}` and the service-defined logical
+`interface_selector`. The ordinary workload template creates the VM and disks
+in that namespace with `spec.runStrategy: Halted` and no tenant
+network/interface fields. It confirms no VMI is running and captures the
+created VM UID as `placement.workload_selector.uid` before attachment
+dispatch. The VM must remain halted and must not acquire a tenant interface
+until the networking manager applies the request. Preparation retries preserve
+that state.
 
 When it creates the target-only `SubnetAttachment`, the workload controller
 stores this immutable placement snapshot in `resource.spec.placement`: hosting
-cluster, Subnet namespace, VM kind/name/UID, and `interface_selector`.
+cluster, target namespace, VM kind/name/UID, and `interface_selector`.
 Attachment jobs pass the request as `resource` and the ComputeInstance as the
-separate `target`. The Kubernetes Manager uses the captured placement to reach
-the exact VM; it does not search for a VM by tenant, Subnet, or name alone.
+separate `target`. The Kubernetes Manager uses the captured placement and
+OSAC-supplied target-cluster access to read and update only the exact VM; it
+does not search for a VM by tenant, Subnet, or name alone. Credential material
+is supplied through the protected execution context and is never stored in the
+request or serialized in `osac_job_vars`.
+
+The following is an illustrative KubeVirt spec after
+`apply_subnet_attachment` has added one manager-selected network reference and
+its matching interface. The reference uses a NetworkAttachmentDefinition for
+this example; the object name and binding details are provider implementation
+choices, not fields in the tenant networking API or requirements for other
+workload services.
 
 ```yaml
 metadata:
@@ -191,27 +202,29 @@ KubeVirt requires a matching `spec.networks` entry and
 interface contract](https://kubevirt.io/user-guide/network/interfaces_and_networks/)
 and [run strategies](https://kubevirt.io/user-guide/compute/run_strategies/).
 
-Kubernetes `apply_subnet_attachment` verifies the exact VM UID and confirms
-the VM is halted with no running VMI on first apply. It verifies that the VM
-spec contains the `primary` Multus network and matching interface in the
-Subnet-scoped namespace, then installs the complete effective policy. It does
-not add, patch, or replace the VM's network/interface fields. An identical
-replay after start verifies the existing reference and policy without
-rewriting live network fields; drift that requires changing the reference
-fails rather than stopping or mutating the running workload. Live attachment
-updates require a separately defined update lifecycle. Provider-specific
+Kubernetes `apply_subnet_attachment` verifies the exact VM UID, confirms the
+VM is halted with no running VMI, adds only the manager-selected
+network/interface fields for the requested Subnet, and installs the complete
+effective policy. It must confirm both the VM update and policy before
+reporting success. It must not change compute fields or run control, and it
+must not start the VM. An identical replay after a lost result recognizes the
+already-applied fields and policy without rewriting a running VM. A mismatch
+or replacement VM UID fails rather than mutating another object. Live
+attachment updates require a separately defined lifecycle. Provider-specific
 labels/annotations used by networking must use a provider-owned prefix and
-must not overwrite OSAC tenant/ownership metadata. The adapter interprets its
+must not overwrite OSAC tenant/ownership metadata. The manager interprets its
 Fabric-produced NetworkData inputs and its own configuration; it produces no
 Kubernetes-owned NetworkData.
 
-After accepted attachment success, the workload controller verifies the
-same VM UID and single-interface shape, then changes only the workload-owned
-run control to start it. Subsequent workload reconciliation must not reapply
-a full stale VM manifest that overwrites the service-owned network fields. The
-selected adapter must expose the real `primary` interface address through VMI
-status. IP discovery uses that interface status, not manager-specific backend
-names or binding plugins.
+After the manager result is accepted and the SubnetAttachment reports
+`NetworkAttachmentsReady=True`, the workload controller verifies the same VM
+UID and applied interface, then applies the requested final run strategy. If
+the requested strategy runs the VM, the first VMI starts only after the
+network/interface fields and policy are present. If the requested strategy is
+`Halted`, no VMI starts. Subsequent workload reconciliation must preserve the
+manager-owned network/interface fields instead of applying a stale manifest
+that removes them. IP discovery reads the VM's tenant interface status, not a
+manager-specific backend identifier.
 Deletion confirms no VMI remains, invokes attachment cleanup with the same
 VM UID, and removes the stopped VM only after cleanup. A missing/replaced VM
 is not permission to patch a same-name object; cleanup uses captured identity
@@ -223,12 +236,12 @@ tasks, not another output channel or lifecycle. [User]
 ### Workflow Description
 
 The ComputeInstance's `network_attachments` field is the tenant's desired
-Subnet and SecurityGroups. The KubeVirt VM object carries the actual network
-reference in its initial spec. The internal `SubnetAttachment` is a separate
-OSAC request: it tracks the manager job, policy readiness, discovered address,
-and cleanup finalizer for that workload. It is not the VM interface or a
+Subnet and SecurityGroups. The internal `SubnetAttachment` is an OSAC request
+for applying that attachment to one workload. It tracks the manager job,
+attachment readiness, discovered address, and cleanup finalizer. It is not a
 second tenant attachment. The networking controller resolves the request's
-target and desired attachment from the ComputeInstance before dispatch.
+target and desired attachment from the ComputeInstance before dispatch; the
+manager applies the selected network/interface fields to the stopped VM.
 
 #### Networking prerequisites
 
@@ -257,16 +270,16 @@ realization; VMaaS does not allocate or reinterpret them.
      - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity), creates ExternalIP in the same DB transaction as the ComputeInstance — ExternalIP starts in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted. ExternalIPAttachment is **not** created at this point — it is deferred to the fulfillment-service internal reconciler, which creates it only after the ExternalIP is Allocated and the ComputeInstance is Ready. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioned-external-access) for the full stepped flow.
    - Creates ComputeInstance CR with `network_attachments`
 
-2. **Create the stopped VM with its Subnet attachment, then apply policy:**
-   - The ComputeInstance lifecycle controller resolves and persists the selected hosting cluster, Subnet overlay namespace, deterministic VM name and interface/selector identity. The ordinary AAP template prepares its DataVolume and creates the `osac-vm-<ComputeInstance API UUID>` VM with `runStrategy: Halted`, automatic pod-interface attachment disabled, and the `primary` network/interface pair in the initial VM spec. The pair references the `primary` NetworkAttachmentDefinition created with the Subnet. It records the VM UID before creating the SubnetAttachment; the request's immutable `spec.placement` captures the hosting cluster, namespace, VM name/UID and interface selector. No VMI runs or tenant traffic is enabled.
+2. **Create the VM halted, then apply its Subnet attachment:**
+   - The ComputeInstance lifecycle controller resolves and persists the selected hosting cluster, deterministic VM name and interface selector. The ordinary workload template prepares the DataVolume and creates the VM with `runStrategy: Halted` and no tenant network/interface fields. It records the VM UID before creating the SubnetAttachment; the request's immutable `spec.placement` captures the hosting cluster, target namespace, VM name/UID and interface selector. No VMI runs and no tenant traffic is enabled.
    - After registering its workload cleanup finalizer, the controller creates one target-only SubnetAttachment. The networking controller resolves the workload's immutable attachment, ready same-VirtualNetwork Subnet/SecurityGroup references, stateful rules, applicable NetworkData and the exact stopped-VM placement.
-   - It dispatches Kubernetes `apply_subnet_attachment` with the SubnetAttachment request as `resource`, the ComputeInstance as `target`, and normalized `network_attachment`. Request UID/generation identify the result; the ComputeInstance API ID, logical interface and captured placement own backend state. The manager uses `resource.spec.placement` to address the exact VM before a running VMI exists.
-   - The manager verifies that exact stopped VM UID and its Subnet network reference, then installs complete stateful policy. It must not patch the network/interface fields and may not require a running VMI to apply policy. Apply failure keeps the VM stopped and the request non-ready; `AttachmentReady` follows confirmed apply/result persistence. [User]
+   - It dispatches Kubernetes `apply_subnet_attachment` with the SubnetAttachment request as `resource`, the ComputeInstance as `target`, and normalized `network_attachment`. Request UID/generation identify the result; the ComputeInstance API ID, logical interface and captured placement own backend state. The manager uses the request placement and OSAC-supplied target-cluster access to address the exact VM.
+   - The manager confirms the VM UID and halted state, adds only its network/interface fields for the requested Subnet, and installs complete stateful policy. It must not change the VM's run control or start it. The request becomes `NetworkAttachmentsReady=True` only after the job result is accepted and the attachment is confirmed. Apply failure keeps the VM halted and non-ready. [User]
 
-3. **Start the prepared VM (`osac.templates.ocp_virt_vm`):**
-   - The lifecycle controller resumes ordinary template execution only after `AttachmentReady`. It starts the prepared KubeVirt VM with its one interface in the resolved overlay namespace.
+3. **Start only after attachment readiness (`osac.templates.ocp_virt_vm`):**
+   - The lifecycle controller waits for `NetworkAttachmentsReady=True`, then applies the ComputeInstance's requested final run strategy. For a running VM, the first VMI boot therefore starts with the manager-applied network/interface fields and policy already in place; a requested `Halted` strategy leaves it stopped.
    - DHCP supplies the real address, gateway, prefix and DNS. Workload labels identify the selected interface; labels alone do not establish policy success.
-   - Workload provisioning and networking jobs remain separately tracked. VM Ready requires successful attachment policy and real IP discovery. [User]
+   - Workload provisioning and networking jobs remain separately tracked. VM Ready requires successful attachment and real IP discovery. [User]
 
 #### IP Discovery (feedback loop)
 
@@ -296,7 +309,7 @@ realization; VMaaS does not allocate or reinterpret them.
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-created: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created ExternalIPAttachments block deletion** — if the tenant created ExternalIPAttachments explicitly (not labeled `osac.openshift.io/auto-created`), the delete request is rejected. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
-   - The lifecycle controller stops the VM and waits until guest execution has ended, retaining the VM object and its immutable placement. It then deletes its SubnetAttachment and waits for its finalizer. The networking controller dispatches `delete_subnet_attachment` to the Kubernetes Manager, which removes workload-owned policy. The Subnet reference remains in the stopped VM spec until that VM is deleted.
+   - The lifecycle controller stops the VM and waits until guest execution has ended, retaining the VM object and its immutable placement. It then deletes its SubnetAttachment and waits for its finalizer. The networking controller dispatches `delete_subnet_attachment` to the Kubernetes Manager, which removes attachment-owned policy and network/interface fields from the exact stopped VM. The workload template deletes the VM only after request cleanup completes.
    - The ordinary `osac-delete-compute-instance` template deletes the stopped KubeVirt VM object and DataVolume only after request cleanup completes. VM teardown does not restore a physical provisioning port. [User]
 
 8. **Delete networking resources:**
@@ -372,10 +385,10 @@ The SubnetAttachment controller discovers the IP from KubeVirt VMI status and wr
 
 #### Template responsibilities (osac-aap)
 
-- `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: prepare compute/disks and create a stopped VM with the stable `primary` Subnet network/interface pair already in its spec. Disable automatic pod-interface attachment.
-- OSAC chooses and persists the namespace, VM name/UID and `primary` selector. The Kubernetes Manager creates the Subnet-scoped `primary` NetworkAttachmentDefinition during `create_subnet`; `apply_subnet_attachment` verifies the VM reference and installs policy without patching the VM. The manager's provider-specific NetworkAttachmentDefinition configuration can use its Fabric-produced inputs. Kubernetes Managers do not produce NetworkData.
-- Start/reconcile operations preserve the service-owned network/interface fields and metadata; full stale-manifest replacement is forbidden. The [shared VM ownership contract](/enhancements/OSAC-1435-vmaas-networking/design.md#vm-placement-and-interface-ownership) defines the namespace formula, exact owned fields, result gate and deletion behavior.
-- Prepare the DataVolume and stopped VM with deterministic placement/selector and the Subnet network reference. Resume VM execution only after AttachmentReady. Stop guest execution before `delete_subnet_attachment`, then remove the VM object after CleanupComplete. [User]
+- The workload template prepares compute/disks and creates the VM halted without tenant network/interface fields. It captures the VM UID and deterministic placement before the request is dispatched.
+- The Kubernetes Manager's `apply_subnet_attachment` task updates only the target VM's network/interface fields and installs policy while the VM is stopped. OSAC supplies protected access to the selected hosting cluster; the task must use the exact target UID and may not change run control. Provider-specific network objects and their configuration remain manager-owned. Kubernetes Managers do not produce NetworkData unless a declared Fabric input is consumed.
+- After `NetworkAttachmentsReady=True`, the workload lifecycle applies the requested run strategy and preserves manager-owned network/interface fields during later reconciliation; full stale-manifest replacement is forbidden. The [shared VM ownership contract](/enhancements/OSAC-1435-vmaas-networking/design.md#vm-placement-and-interface-ownership) defines field ownership, readiness and deletion behavior.
+- Stop guest execution before `delete_subnet_attachment`, then remove the VM object only after request cleanup completes. [User]
 - The sole attachment receives IP + default gateway + DNS via DHCP
 
 <a id="implementation-detailsnotesconstraints"></a>
@@ -390,9 +403,9 @@ The SubnetAttachment controller discovers the IP from KubeVirt VMI status and wr
 | osac-operator ComputeInstance controller | Resolve workload placement, create/wait for target-only SubnetAttachment, mirror request status, trigger AAP, and gate teardown on request and external child cleanup |
 | osac-operator ComputeInstance feedback controller | Signal fulfillment-service when mirrored workload status changes |
 | osac-operator networking controllers | Own networking resources and SubnetAttachment status/jobs; resolve policy, dispatch apply/delete, discover VMI address |
-| AAP template (ocp_virt_vm) | Prepare stopped single-NIC VM with its Subnet reference in the initial spec; start after policy readiness; stop before policy cleanup and delete afterward |
+| AAP template (ocp_virt_vm) | Prepare stopped single-NIC VM without tenant network/interface fields; start after attachment readiness; stop before cleanup and delete afterward |
 | fabric_manager (Ansible role) | Shared VN/Subnet/address/NAT operations; VM interface policy belongs to the Kubernetes Manager |
-| k8s_manager (Ansible role) | Create/delete Subnet overlay and stable `primary` NetworkAttachmentDefinition; verify each VM's initial reference and apply/delete its stateful SecurityGroup policy |
+| k8s_manager (Ansible role) | Create/delete the manager's Subnet overlay realization; apply/delete the target VM's network/interface fields and stateful SecurityGroup policy through `SubnetAttachment` |
 
 #### Primary Attachment Resolution
 
@@ -535,12 +548,12 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 
 ## Test Plan
 
-- **[DEV/QE] VM handoff:** exercise two provider implementations through the same workload template. Verify the Subnet-scoped `primary` NetworkAttachmentDefinition exists before VM creation; the initial halted VM already contains matching network/interface entries; apply verifies the exact namespace, VM UID and Subnet reference and changes policy only; there is no policy-free start; reconcile preserves the reference; replay after start does not rewrite it; replacement VM UIDs are rejected; and policy cleanup completes before VM deletion.
+- **[DEV/QE] VM handoff:** exercise two provider implementations through the same workload template. Verify the VM is initially halted with no tenant network/interface fields; apply updates only the exact VM UID while no VMI exists, installs policy, and reports readiness only after both are confirmed; no start occurs before `NetworkAttachmentsReady=True`; the first VMI uses the applied interface; replay is idempotent; replacement VM UIDs are rejected; and cleanup removes manager-owned fields/policy before VM deletion.
 
 ### Shared Attachment Contract Validation
 
 - **[DEV] Contract:** assert the SubnetAttachment request as `resource`, the ComputeInstance as `target`, its immutable `spec.placement` snapshot, normalized attachment policy, request UID/generation results, and mandatory adapter entry points. A valid no-change result is accepted; missing required data is rejected.
-- **[DEV] Contract:** prepare deterministic stopped-VM placement and selector before apply; adapters apply policy without a running VMI; VM start cannot precede AttachmentReady, and VM stop is confirmed before delete dispatch.
+- **[DEV] Contract:** prepare deterministic stopped-VM placement and selector before apply; managers add network/interface fields and apply policy without a running VMI; VM start cannot precede `NetworkAttachmentsReady=True`, and VM stop is confirmed before delete dispatch.
 - **[DEV] Envtest:** install failure leaves request/VM non-ready; request owns discovered VMI IP and workload controller mirrors it; delete failure retains finalizers and blocks VM teardown.
 - **[QE] E2E:** two VMs on one Subnet using different groups enforce their respective stateful policies before traffic; restart during apply/delete preserves stable API ownership and backend-VM UID fencing; external child cleanup completes before request/workload teardown. [User]
 
@@ -616,8 +629,8 @@ GA criteria:
 
 This subsection describes the existing code as a migration starting point; it
 is not the proposed manager flow described above. The target design replaces
-the legacy dispatch and manager-owned VM-field mutation with the registered
-manager contract.
+the legacy dispatch and template-built initial network fields with the
+registered manager contract and request-gated attachment flow.
 
 ComputeInstance already participates in the networking API. The current flow
 is:
@@ -762,4 +775,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

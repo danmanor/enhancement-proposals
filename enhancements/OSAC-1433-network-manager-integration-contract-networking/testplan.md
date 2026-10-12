@@ -95,22 +95,24 @@ The registration, NetworkData, generic dispatch, and durable recovery behavior i
 ##### Steps
 
 1. Create a VirtualNetwork and two Subnets, then attach test workloads to the same Subnet, different Subnets in the same VirtualNetwork, and a separate VirtualNetwork.
-2. Apply a SubnetAttachment for each supported normalized interface type. For `overlay`, the target already contains its requested network/interface reference before dispatch; for `physical`, record the selected host port's initial fabric membership.
-3. Inspect the job input and result: the SubnetAttachment is the tracked `resource`, the workload is the separate `target`, and `network_attachment` carries the resolved Subnet, one interface, and complete effective SecurityGroup rules.
+2. Apply a SubnetAttachment for each supported normalized interface type. For `overlay`, create the target VM with `runStrategy: Halted`, no running VMI, and no tenant network/interface fields; for `physical`, record the selected host port's initial fabric membership.
+3. Inspect the job input and result: the SubnetAttachment is the tracked `resource`, the workload is the separate `target`, and `network_attachment` carries the resolved Subnet, one interface, and complete effective SecurityGroup rules. For `overlay`, verify OSAC supplies the selected target-cluster connection outside `osac_job_vars`; the role receives no kubeconfig contents in the request or result.
 4. Test a new TCP/443 flow when both source egress and destination ingress permit it. Repeat with only source egress permitted and only destination ingress permitted; each one-sided case must fail. Test unmatched TCP/8443 and reply packets for the established TCP/443 connection.
 5. Attach multiple SecurityGroups to an endpoint and verify their allow rules combine as a union for that endpoint's check; still require the other endpoint's directional check.
 6. Test inbound and outbound flows with the external endpoint. Verify the attached workload's rule in the traffic direction controls each flow.
-7. Delete each attachment and inspect policy removal and target-specific cleanup ordering: the physical port returns to its recorded extension-defined baseline after policy cleanup; the overlay workload service deletes the stopped target after policy cleanup.
-8. For an overlay attachment, configure the Kubernetes Manager test role to fail `delete_subnet_attachment` before confirming policy cleanup. Verify cleanup remains pending, then allow the task to succeed and observe reconciliation resume.
+7. Verify the service lifecycle does not proceed before the manager result is accepted: the VM remains halted until the request reports `NetworkAttachmentsReady=True`; BMaaS does not reboot or expose the host to tenant traffic until the same request condition is true; DHCP/IP discovery is not dispatched until after VM start or the BM handoff reboot.
+8. Delete each attachment and inspect policy removal and target-specific cleanup ordering: BMaaS reports `NetworkOffboardShutdownComplete=True` before requesting physical cleanup, the request reports `NetworkOffboardComplete=True` only after the port returns to its recorded extension-defined baseline, and deprovision waits for request cleanup; the overlay target is stopped before the manager removes its network/interface fields and policy, and the workload service deletes it only after cleanup completes.
+9. For an overlay attachment, configure the Kubernetes Manager test role to fail `delete_subnet_attachment` before confirming policy cleanup. Verify cleanup remains pending, the VM stays stopped, and teardown is blocked; then allow the task to succeed and observe reconciliation resume.
 
 ##### Expected Results
 
 - Workloads in one Subnet share its Layer 2 broadcast domain; Subnets in one VirtualNetwork are Layer 3 routable; separate VirtualNetworks remain isolated.
-- Physical apply maps the selected port to the provider segment backing the requested Subnet. Overlay apply preserves and validates the reference already present in the initial workload spec.
+- Physical apply maps the selected port to the provider segment backing the requested Subnet. Overlay apply adds only the service-defined network/interface fields to the exact halted target VM and installs policy without changing run control or starting the VM.
 - SecurityGroup policy applies to each attachment. Rules combine as a union for each endpoint's ingress and egress checks, but a new flow succeeds only when both source egress and destination ingress permit it. One-sided allows fail; established replies pass; unmatched new traffic fails.
 - The target-only SubnetAttachment owns networking job history, status, and its cleanup finalizer. Its result identifies the request and current projection; the separate target identity and normalized interface scope backend state.
-- Policy is installed before traffic is enabled. A failed apply leaves the request non-ready and traffic unavailable. Delete removes policy before extension-specific target cleanup: physical ports return to their recorded baseline; stopped VMs are deleted by their workload service after policy cleanup.
-- An injected Kubernetes Manager delete-task failure does not clear the SubnetAttachment finalizer or allow target teardown. After the manager succeeds on retry, policy removal completes before workload teardown proceeds.
+- Policy and the target network configuration are ready before traffic is enabled. A failed apply leaves the request non-ready; the VM stays halted and BMaaS does not perform its tenant handoff reboot. `NetworkAttachmentsReady=True` is persisted before either service advances. IP discovery follows guest start or BM handoff, never precedes it.
+- Delete removes policy before target teardown: `NetworkOffboardShutdownComplete=True` confirms the physical host is shut down on the tenant network before the manager restores its port; `NetworkOffboardComplete=True` records successful request cleanup; a stopped VM has its manager-owned network fields and policy removed before its workload service deletes it.
+- An injected manager delete-task failure does not clear the SubnetAttachment finalizer or allow target teardown. After the manager succeeds on retry, policy removal and target cleanup complete before the workload lifecycle advances.
 
 ### FR-4: Incompatible or unsupported manager selections fail with a clear diagnostic
 
@@ -397,11 +399,9 @@ All interface changes are exercised by test cases.
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (95 behind origin/main, dirty)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
-> Context changed between revise and revise.
+> Context changed between draft and revise.
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

@@ -308,7 +308,7 @@ selection or allocation path.
       - Creates one internal target-only `SubnetAttachment` referencing the BMI. The request does not copy Subnet, interface, policy, or IP values; it tracks the apply job, readiness, lease-discovery status and cleanup finalizer. It is not the switch-port binding itself.
       - The networking controller reads the BMI, resolves its immutable Subnet/selected interface/SecurityGroup rules and NetworkData, and requires the exact selected-port MAC from the BareMetalHost interface-macs annotation before physical dispatch. It then dispatches Fabric `apply_subnet_attachment` with request `resource`, workload `target`, and normalized `network_attachment`.
       - The Fabric Manager installs effective stateful policy and synchronizes the selected physical port's membership with the fabric segment backing the requested Subnet. Tenant traffic remains unavailable until both segment membership and policy are confirmed.
-      - The request controller owns the AAP job and readiness; BMF mirrors successful attachment readiness to `NetworkAttachmentsReady`. Apply failure leaves the interface unavailable and BMI non-ready.
+      - The request controller owns the AAP job and readiness; BMF mirrors `NetworkAttachmentsReady=True` only after the exact Fabric job result is accepted and the port membership and policy are confirmed. Apply failure leaves the interface unavailable and BMI non-ready.
 
    d. **`reconcileReboot` (after attachment readiness):**
       - Performs one handoff reboot via the BareMetalHost annotation and waits for completion so the OS requests tenant DHCP configuration.
@@ -353,8 +353,8 @@ selection or allocation path.
     - **Manually created ExternalIPAttachments block deletion** — if the tenant created ExternalIPAttachments explicitly (not labeled `osac.openshift.io/auto-created`), they block the BaremetalInstance's deletion. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
-      - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
-      - After confirmed shutdown, BMF deletes the SubnetAttachment and waits for its finalizer. The networking controller dispatches Fabric `delete_subnet_attachment`, removes workload policy, and restores the selected port to provisioning connectivity. The request retains the same resolved target/attachment context until successful cleanup; missing dependencies do not justify inventing successful provider cleanup. [User]
+      - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network** and reports `NetworkOffboardShutdownComplete=True` only after power-off is confirmed. If the host is already powered off, the step is an idempotent no-op that still confirms the condition. This guarantees the tenant workload stops before the port moves to the provisioning network.
+      - Only after `NetworkOffboardShutdownComplete=True`, BMF deletes the SubnetAttachment. The networking controller dispatches Fabric `delete_subnet_attachment`, removes workload policy, and restores the selected port to provisioning connectivity. It reports `NetworkOffboardComplete=True` on the request only after the exact cleanup job succeeds. BMF waits for that condition and request finalization before deprovisioning or releasing the host. The request retains the same resolved target/attachment context until successful cleanup; missing dependencies do not justify inventing successful provider cleanup. [User]
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown. Ironic powers the host back on via BMC and PXE-boots a cleaning ramdisk on the provisioning network — not the tenant OS.
       - Removes management finalizer
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
@@ -572,8 +572,10 @@ image/callback (no egress checks, no SNAT logic).
 
 The operator uses conditions and phase to signal tenant handoff readiness:
 
-- `NetworkAttachmentsReady` — the tenant port is attached to the tenant network
-  segment (set after the move + segment active wait).
+- `NetworkAttachmentsReady` — the SubnetAttachment manager job succeeded and
+  the Fabric Manager confirmed the tenant segment membership and policy. BMF
+  mirrors this request condition; it does not mean the host has completed its
+  tenant handoff.
 - `NetworkHandoffComplete` — the port has been moved and the server has been
   rebooted; the OS is running on the tenant network.
 - `IPDiscoveryComplete` — the tenant-network DHCP IP is discovered and valid.
@@ -582,9 +584,12 @@ The operator uses conditions and phase to signal tenant handoff readiness:
   if `IPDiscoveryComplete=False/TemplateFailed`, the phase is set to `Failed`
   and the flow stops. Without this explicit check, the phase could briefly
   reach `Ready` between IP discovery retry cycles.
-- `NetworkOffboardComplete` (enabled-mode deletion only) — the host has been powered off
-  while still on the tenant network, prior to the port moving back to the
-  provisioning network. Tracked by `reconcileNetworkOffboardShutdown`.
+- `NetworkOffboardShutdownComplete` on the BMI (enabled-mode deletion only) —
+  the host is confirmed powered off while still on the tenant network.
+  `NetworkOffboardComplete` on the SubnetAttachment request means the Fabric
+  Manager has removed attachment policy and restored the port to provisioning
+  connectivity. BMF does not start OS deprovisioning or release inventory until
+  request cleanup has succeeded and finalized.
 - With provider networking enabled, phase `Ready` means fully provisioned, on
   the tenant network, and tenant IP known. With provider networking disabled,
   Ready means OS provisioning completed; it does not assert tenant placement or
@@ -632,11 +637,13 @@ request/workload status mirror → BMI Ready. Neither a provisioning lease nor
 attachment apply alone can satisfy tenant IP discovery. [User]
 
 Enabled-mode delete follows auto ExternalIPAttachment cleanup and wait →
-auto ExternalIP release and wait → BMF shutdown while still on tenant network →
-request deletion/policy removal/provisioning port restoration and wait → Ironic
+auto ExternalIP release and wait → BMF shutdown while still on tenant network
+(`NetworkOffboardShutdownComplete=True`) → request deletion and manager policy/
+port cleanup (`NetworkOffboardComplete=True`) and request finalization → Ironic
 cleaning/OS teardown → inventory release. BMF confirms shutdown before it asks
-for request cleanup, so tenant OS never runs on provisioning connectivity.
-Any provider cleanup failure retains the relevant finalizers and host ownership.
+for request cleanup and waits for cleanup before deprovisioning, so tenant OS
+never runs on provisioning connectivity. Any provider cleanup failure retains
+the relevant finalizers and host ownership.
 The disabled-mode exception is specified below. [User]
 
 ### Security Considerations
@@ -763,13 +770,13 @@ networking is disabled.
 4. Deletion preserves normal host shutdown, teardown, inventory release, and
    logical auto-created child deletion order. It waits for active network work
    to become terminal and performs no tenant-to-provisioning port movement or
-   other provider cleanup. A host is
-   not powered off solely to precede a port move that will not occur, and
-   `NetworkOffboardComplete` is not created or changed solely to report that
-   the move was skipped. If the condition already exists, preserve it as a record
-   of the prior enabled-mode power-off attempt: `True` confirms host power-off;
-   `False` means completion was not observed before disablement. Neither value
-   proves the port moved. Newly created disabled-mode hosts were never moved
+   other provider cleanup. A host is not powered off solely to precede a port
+   move that will not occur. Disabled mode does not create or change
+   `NetworkOffboardComplete` on a SubnetAttachment to report skipped cleanup.
+   Preserve any existing `NetworkOffboardShutdownComplete` as a record of the
+   prior enabled-mode shutdown: `True` confirms host power-off; `False` means
+   completion was not observed before disablement. Neither condition proves
+   the port moved. Newly created disabled-mode hosts were never moved
    off provisioning connectivity, so ordinary deprovisioning can use that
    baseline. A host
    previously moved to a tenant network is not moved back when the setting is
@@ -821,7 +828,7 @@ Resolved: After request apply and BMF's one handoff reboot complete, the network
 ### Attachment Lifecycle and Provider Contract
 
 - **[DEV] Contract:** request-as-resource/BMI-as-target and normalized stateful policy payload; mandatory Fabric entry points; apply success without invented address data; selected MAC required and malformed/ambiguous lease rejected.
-- **[DEV] Envtest:** apply readiness enables exactly one handoff reboot; DHCP job waits for handoff and MAC; BMF mirrors request status; shutdown is confirmed before request cleanup; all cleanup failures retain finalizers and inventory ownership.
+- **[DEV] Envtest:** accepted apply readiness enables exactly one handoff reboot; DHCP job waits for handoff and MAC; BMF mirrors request status; `NetworkOffboardShutdownComplete=True` precedes request deletion; deprovision waits for request `NetworkOffboardComplete=True` and finalization; all cleanup failures retain finalizers and inventory ownership.
 - **[QE] E2E:** provision/discover/delete BMI and CaaS worker on one Subnet; policy failure prevents tenant traffic; restart during offboard never runs tenant OS on provisioning network; persistent DNAT or attachment failure prevents host reuse. [User]
 
 
@@ -841,7 +848,9 @@ Resolved: After request apply and BMF's one handoff reboot complete, the network
   `ProvisioningDisabled`, confirmed prior successes remain `True`, and legacy
   `True`/`Skipped` conditions are normalized; no tenant IP or ExternalIP address
   is fabricated. Verify disabled deletion does not synthesize
-  `NetworkOffboardComplete`. Enabled mode retains normal provider behavior.
+  `NetworkOffboardComplete` on the request or create
+  `NetworkOffboardShutdownComplete` solely to claim that a skipped port cleanup
+  gate completed. Enabled mode retains normal provider behavior.
 - Verify invalid API/defaulting/dependency requests remain rejected,
   SecurityGroup defaulting/immutability remains unchanged, and automatic
   attachments still wait for Allocated + workload Ready.
@@ -1092,4 +1101,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
