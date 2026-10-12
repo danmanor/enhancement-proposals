@@ -101,7 +101,7 @@ The registration, NetworkData, generic dispatch, and durable recovery behavior i
 5. Attach multiple SecurityGroups to an endpoint and verify their allow rules combine as a union for that endpoint's check; still require the other endpoint's directional check.
 6. Test inbound and outbound flows with the external endpoint. Verify the attached workload's rule in the traffic direction controls each flow.
 7. Delete each attachment and inspect policy removal and target-specific cleanup ordering: the physical port returns to its recorded extension-defined baseline after policy cleanup; the overlay workload service deletes the stopped target after policy cleanup.
-8. For an overlay attachment, configure the Kubernetes Manager test role to fail `delete_network_attachment` before confirming policy cleanup. Verify cleanup remains pending, then allow the task to succeed and observe reconciliation resume.
+8. For an overlay attachment, configure the Kubernetes Manager test role to fail `delete_subnet_attachment` before confirming policy cleanup. Verify cleanup remains pending, then allow the task to succeed and observe reconciliation resume.
 
 ##### Expected Results
 

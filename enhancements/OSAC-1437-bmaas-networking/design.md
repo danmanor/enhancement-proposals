@@ -211,7 +211,7 @@ message BareMetalNetworkPortSpec {
 
 Interfaces are ordered. When multiple interfaces share the same role, the first one in the list is the default for that role (used by CaaS for automatic resolution — see CaaS design).
 
-**Interface-name identity contract.** `BareMetalNetworkAttachment.interface` selects a port by `BareMetalNetworkPortSpec.name`. Networking reconciliation passes this name as `network_attachment.interface.name` to `apply_network_attachment`, and the `osac.openshift.io/interface-macs` annotation keys use the same name. These three identifiers — catalog port name, fabric-manager logical interface, and interface-macs annotation key — must be consistent; a mismatch causes the port move or DHCP lease query to target the wrong NIC. Inventory tooling and BareMetalInstanceType registration must align on the same naming convention.
+**Interface-name identity contract.** `BareMetalNetworkAttachment.interface` selects a port by `BareMetalNetworkPortSpec.name`. Networking reconciliation passes this name as `network_attachment.interface.name` to `apply_subnet_attachment`, and the `osac.openshift.io/interface-macs` annotation keys use the same name. These three identifiers — catalog port name, fabric-manager logical interface, and interface-macs annotation key — must be consistent; a mismatch causes the port move or DHCP lease query to target the wrong NIC. Inventory tooling and BareMetalInstanceType registration must align on the same naming convention.
 
 #### How BMaaS Uses BareMetalInstanceType
 
@@ -306,7 +306,7 @@ selection or allocation path.
 
    c. **`reconcileNetworking` (after provisioning completes):**
       - Creates one internal target-only `SubnetAttachment` referencing the BMI. The request does not copy Subnet, interface, policy, or IP values; it tracks the apply job, readiness, lease-discovery status and cleanup finalizer. It is not the switch-port binding itself.
-      - The networking controller reads the BMI, resolves its immutable Subnet/selected interface/SecurityGroup rules and NetworkData, and requires the exact selected-port MAC from the BareMetalHost interface-macs annotation before physical dispatch. It then dispatches Fabric `apply_network_attachment` with request `resource`, workload `target`, and normalized `network_attachment`.
+      - The networking controller reads the BMI, resolves its immutable Subnet/selected interface/SecurityGroup rules and NetworkData, and requires the exact selected-port MAC from the BareMetalHost interface-macs annotation before physical dispatch. It then dispatches Fabric `apply_subnet_attachment` with request `resource`, workload `target`, and normalized `network_attachment`.
       - The Fabric Manager installs effective stateful policy and synchronizes the selected physical port's membership with the fabric segment backing the requested Subnet. Tenant traffic remains unavailable until both segment membership and policy are confirmed.
       - The request controller owns the AAP job and readiness; BMF mirrors successful attachment readiness to `NetworkAttachmentsReady`. Apply failure leaves the interface unavailable and BMI non-ready.
 
@@ -354,7 +354,7 @@ selection or allocation path.
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
     - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
       - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network**, tracked by `NetworkOffboardComplete` condition. If the host is already powered off, this is a no-op. This guarantees the tenant workload stops before the port moves to the provisioning network.
-      - After confirmed shutdown, BMF deletes the SubnetAttachment and waits for its finalizer. The networking controller dispatches Fabric `delete_network_attachment`, removes workload policy, and restores the selected port to provisioning connectivity. The request retains the same resolved target/attachment context until successful cleanup; missing dependencies do not justify inventing successful provider cleanup. [User]
+      - After confirmed shutdown, BMF deletes the SubnetAttachment and waits for its finalizer. The networking controller dispatches Fabric `delete_subnet_attachment`, removes workload policy, and restores the selected port to provisioning connectivity. The request retains the same resolved target/attachment context until successful cleanup; missing dependencies do not justify inventing successful provider cleanup. [User]
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown. Ironic powers the host back on via BMC and PXE-boots a cleaning ramdisk on the provisioning network — not the tenant OS.
       - Removes management finalizer
     - `reconcileInventory` deletion: UnassignHost from Ironic/Metal3, removes inventory finalizer
@@ -526,7 +526,7 @@ provisioning network name configured for the fabric manager must match the one
 used at bootstrap.
 
 **Attachment manager contract.** The networking controller dispatches
-`apply_network_attachment` and `delete_network_attachment` through the fixed
+`apply_subnet_attachment` and `delete_subnet_attachment` through the fixed
 Fabric Manager entry points. It passes the target-only request as `resource`,
 the BMI as `target`, and the resolved Subnet, selected physical port, complete
 SecurityGroup rules, and scoped NetworkData separately. Apply installs policy
@@ -695,7 +695,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 #### Risk: fabric_manager implementation blocked or delayed
 
-**Impact:** The fabric manager `apply_network_attachment` role and a provisioned provisioning network segment are prerequisites for BMaaS networking. Without them, switch port configuration cannot function.
+**Impact:** The fabric manager `apply_subnet_attachment` role and a provisioned provisioning network segment are prerequisites for BMaaS networking. Without them, switch port configuration cannot function.
 
 **Mitigation:** Require the selected Fabric Manager to pass the shared provider qualification for physical attachment, policy, selected-port lease discovery, and cleanup. The closed Netris port-move work is historical backend groundwork, not proof that another manager meets this contract.
 
@@ -812,7 +812,7 @@ Resolved: DHCP handles IP assignment. The host receives its IP from the fabric's
 
 ### ~~4. How is the host's runtime IP discovered after network reconfiguration?~~ — Resolved
 
-Resolved: After request apply and BMF's one handoff reboot complete, the networking controller dispatches a separate `query_dhcp_lease` job using the required selected-port MAC and immutable tenant Subnet context. It validates the manager result and stores the real address and IPDiscoveryComplete on the request; BMF mirrors it into BMI status and feedback synchronizes fulfillment. `apply_network_attachment` applies switch-side connectivity and stateful policy without changing host OS configuration. [User]
+Resolved: After request apply and BMF's one handoff reboot complete, the networking controller dispatches a separate `query_dhcp_lease` job using the required selected-port MAC and immutable tenant Subnet context. It validates the manager result and stores the real address and IPDiscoveryComplete on the request; BMF mirrors it into BMI status and feedback synchronizes fulfillment. `apply_subnet_attachment` applies switch-side connectivity and stateful policy without changing host OS configuration. [User]
 
 ## Test Plan
 
@@ -909,7 +909,7 @@ Tech Preview criteria:
 - [ ] BaremetalInstance CRD updated with `NetworkAttachments` field, CEL validation, and status field for IP addresses
 - [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented (provision-then-handoff flow)
 - [ ] bare-metal-fulfillment-operator `reconcileReboot` phase implemented (BMH annotation-based reboot after port move)
-- [ ] Request-owned fixed `apply_network_attachment`, `delete_network_attachment` and separate `query_dhcp_lease` jobs tracked durably; provisioning network and initial per-server attachment exist as deployment prerequisites
+- [ ] Request-owned fixed `apply_subnet_attachment`, `delete_subnet_attachment` and separate `query_dhcp_lease` jobs tracked durably; provisioning network and initial per-server attachment exist as deployment prerequisites
 - [ ] BareMetalInstanceType with network ports (`BareMetalNetworkPortSpec`) available and tested
 - [ ] Auto ExternalIP attachment provisioning functional
 - [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, request controller records the IP, BMF mirrors BMI status, feedback syncs to fulfillment-service)
@@ -986,7 +986,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 **Resolution:**
 1. Check bare-metal-fulfillment-operator logs for networking phase errors (dispatcher)
-2. Check AAP job logs for `apply_network_attachment` role errors (switch-side) — e.g. port not found on the server, or the provisioning/tenant network segment not resolvable
+2. Check AAP job logs for `apply_subnet_attachment` role errors (switch-side) — e.g. port not found on the server, or the provisioning/tenant network segment not resolvable
 3. If fabric manager unreachable, investigate connectivity
 4. If switch port config failed, investigate switch configuration
 
@@ -1048,7 +1048,7 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 
 ## Infrastructure Needed
 
-- AAP execution environment with the fabric manager `apply_network_attachment` role
+- AAP execution environment with the fabric manager `apply_subnet_attachment` role
 - A provisioned manager-owned provisioning network segment (DHCP + gateway + SNAT) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (deployment infrastructure)
 - Network Manager Integration Contract implementation for registration, generic dispatch, result validation, and durable recovery
 - Integration test environment with fabric manager and Ironic/Metal3 backend
@@ -1092,4 +1092,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

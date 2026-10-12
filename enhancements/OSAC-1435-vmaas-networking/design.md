@@ -191,7 +191,7 @@ KubeVirt requires a matching `spec.networks` entry and
 interface contract](https://kubevirt.io/user-guide/network/interfaces_and_networks/)
 and [run strategies](https://kubevirt.io/user-guide/compute/run_strategies/).
 
-Kubernetes `apply_network_attachment` verifies the exact VM UID and confirms
+Kubernetes `apply_subnet_attachment` verifies the exact VM UID and confirms
 the VM is halted with no running VMI on first apply. It verifies that the VM
 spec contains the `primary` Multus network and matching interface in the
 Subnet-scoped namespace, then installs the complete effective policy. It does
@@ -260,7 +260,7 @@ realization; VMaaS does not allocate or reinterpret them.
 2. **Create the stopped VM with its Subnet attachment, then apply policy:**
    - The ComputeInstance lifecycle controller resolves and persists the selected hosting cluster, Subnet overlay namespace, deterministic VM name and interface/selector identity. The ordinary AAP template prepares its DataVolume and creates the `osac-vm-<ComputeInstance API UUID>` VM with `runStrategy: Halted`, automatic pod-interface attachment disabled, and the `primary` network/interface pair in the initial VM spec. The pair references the `primary` NetworkAttachmentDefinition created with the Subnet. It records the VM UID before creating the SubnetAttachment; the request's immutable `spec.placement` captures the hosting cluster, namespace, VM name/UID and interface selector. No VMI runs or tenant traffic is enabled.
    - After registering its workload cleanup finalizer, the controller creates one target-only SubnetAttachment. The networking controller resolves the workload's immutable attachment, ready same-VirtualNetwork Subnet/SecurityGroup references, stateful rules, applicable NetworkData and the exact stopped-VM placement.
-   - It dispatches Kubernetes `apply_network_attachment` with the SubnetAttachment request as `resource`, the ComputeInstance as `target`, and normalized `network_attachment`. Request UID/generation identify the result; the ComputeInstance API ID, logical interface and captured placement own backend state. The manager uses `resource.spec.placement` to address the exact VM before a running VMI exists.
+   - It dispatches Kubernetes `apply_subnet_attachment` with the SubnetAttachment request as `resource`, the ComputeInstance as `target`, and normalized `network_attachment`. Request UID/generation identify the result; the ComputeInstance API ID, logical interface and captured placement own backend state. The manager uses `resource.spec.placement` to address the exact VM before a running VMI exists.
    - The manager verifies that exact stopped VM UID and its Subnet network reference, then installs complete stateful policy. It must not patch the network/interface fields and may not require a running VMI to apply policy. Apply failure keeps the VM stopped and the request non-ready; `AttachmentReady` follows confirmed apply/result persistence. [User]
 
 3. **Start the prepared VM (`osac.templates.ocp_virt_vm`):**
@@ -296,7 +296,7 @@ realization; VMaaS does not allocate or reinterpret them.
    - **Auto-provisioned cleanup:** If ExternalIP/ExternalIPAttachment were created by the system (`auto_external_ip_attachment=true`, labeled `osac.openshift.io/auto-created: "true"`): parent finalizer deletes ExternalIPAttachment first, then ExternalIP.
    - **Manually created ExternalIPAttachments block deletion** — if the tenant created ExternalIPAttachments explicitly (not labeled `osac.openshift.io/auto-created`), the delete request is rejected. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
    - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — they are tenant-scoped and shared across resources.
-   - The lifecycle controller stops the VM and waits until guest execution has ended, retaining the VM object and its immutable placement. It then deletes its SubnetAttachment and waits for its finalizer. The networking controller dispatches `delete_network_attachment` to the Kubernetes Manager, which removes workload-owned policy. The Subnet reference remains in the stopped VM spec until that VM is deleted.
+   - The lifecycle controller stops the VM and waits until guest execution has ended, retaining the VM object and its immutable placement. It then deletes its SubnetAttachment and waits for its finalizer. The networking controller dispatches `delete_subnet_attachment` to the Kubernetes Manager, which removes workload-owned policy. The Subnet reference remains in the stopped VM spec until that VM is deleted.
    - The ordinary `osac-delete-compute-instance` template deletes the stopped KubeVirt VM object and DataVolume only after request cleanup completes. VM teardown does not restore a physical provisioning port. [User]
 
 8. **Delete networking resources:**
@@ -373,9 +373,9 @@ The SubnetAttachment controller discovers the IP from KubeVirt VMI status and wr
 #### Template responsibilities (osac-aap)
 
 - `osac.templates.ocp_virt_vm/tasks/create_build_spec.yaml`: prepare compute/disks and create a stopped VM with the stable `primary` Subnet network/interface pair already in its spec. Disable automatic pod-interface attachment.
-- OSAC chooses and persists the namespace, VM name/UID and `primary` selector. The Kubernetes Manager creates the Subnet-scoped `primary` NetworkAttachmentDefinition during `create_subnet`; `apply_network_attachment` verifies the VM reference and installs policy without patching the VM. The manager's provider-specific NetworkAttachmentDefinition configuration can use its Fabric-produced inputs. Kubernetes Managers do not produce NetworkData.
+- OSAC chooses and persists the namespace, VM name/UID and `primary` selector. The Kubernetes Manager creates the Subnet-scoped `primary` NetworkAttachmentDefinition during `create_subnet`; `apply_subnet_attachment` verifies the VM reference and installs policy without patching the VM. The manager's provider-specific NetworkAttachmentDefinition configuration can use its Fabric-produced inputs. Kubernetes Managers do not produce NetworkData.
 - Start/reconcile operations preserve the service-owned network/interface fields and metadata; full stale-manifest replacement is forbidden. The [shared VM ownership contract](/enhancements/OSAC-1435-vmaas-networking/design.md#vm-placement-and-interface-ownership) defines the namespace formula, exact owned fields, result gate and deletion behavior.
-- Prepare the DataVolume and stopped VM with deterministic placement/selector and the Subnet network reference. Resume VM execution only after AttachmentReady. Stop guest execution before `delete_network_attachment`, then remove the VM object after CleanupComplete. [User]
+- Prepare the DataVolume and stopped VM with deterministic placement/selector and the Subnet network reference. Resume VM execution only after AttachmentReady. Stop guest execution before `delete_subnet_attachment`, then remove the VM object after CleanupComplete. [User]
 - The sole attachment receives IP + default gateway + DNS via DHCP
 
 <a id="implementation-detailsnotesconstraints"></a>
@@ -762,4 +762,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

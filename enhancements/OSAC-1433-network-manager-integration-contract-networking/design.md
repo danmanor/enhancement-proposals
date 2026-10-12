@@ -747,7 +747,7 @@ Task-specific resolved context is supplied alongside these common keys:
 | create_external_ip, delete_external_ip | Complete ExternalIP and its pool. existing_address is present only when OSAC has already accepted an address. |
 | attach_external_ip, detach_external_ip | Allocated ExternalIP and pool, confirmed destination address, service-defined endpoint selector, optional port mappings, and routing-domain context. The extension defines the endpoint and readiness source. |
 | create_nat_gateway, delete_nat_gateway | Full VirtualNetwork, NATGateway, ExternalIP, and pool. The translated source range is the complete VirtualNetwork CIDR, never a snapshot of its current Subnets. |
-| apply_network_attachment, delete_network_attachment | Target-only SubnetAttachment request, separate target, normalized network_attachment, and owner-scoped routing context. |
+| apply_subnet_attachment, delete_subnet_attachment | Target-only SubnetAttachment request, separate target, normalized network_attachment, and owner-scoped routing context. |
 
 Resolved objects include the fields declared by their resource contract and
 the immutable input snapshot captured for the attempt. Optional unavailable
@@ -765,7 +765,7 @@ provisioned backend object. The workload extension creates a target-only
 `SubnetAttachment` request. The networking controller reads its target,
 validates tenant ownership and resource references, resolves the ready Subnet
 and selected SecurityGroups, and sends complete normalized rules with the
-`apply_network_attachment` task. The request does not copy Subnet, interface,
+`apply_subnet_attachment` task. The request does not copy Subnet, interface,
 or SecurityGroup fields from the workload. It is the durable OSAC request and
 job owner; it does not itself connect a physical port or add a VM interface.
 
@@ -797,7 +797,7 @@ The `network_attachment` object is a sibling of `resource` and `target` in
 
 The networking controller validates that the Subnet and all selected
 SecurityGroups are Ready and belong to the same VirtualNetwork before
-dispatch. The shared `apply_network_attachment` entry point has role-specific
+dispatch. The shared `apply_subnet_attachment` entry point has role-specific
 behavior and workload-service timing:
 
 - For `physical`, the Fabric Manager makes the selected host port's fabric
@@ -817,7 +817,7 @@ behavior and workload-service timing:
   The extension defines the exact reference and enablement step.
 
 Both paths keep new traffic unavailable until policy is active.
-`delete_network_attachment` removes attachment-owned policy. For a physical
+`delete_subnet_attachment` removes attachment-owned policy. For a physical
 target, it returns the selected port to the baseline defined by that workload
 extension. For an overlay target, the service deletes the stopped VM after
 policy cleanup. Both operations are idempotent by stable target resource ID
@@ -839,7 +839,7 @@ subset.
 | Create/delete VirtualNetwork | Fabric | N/A | `create_virtual_network` / `delete_virtual_network` | Create or remove the isolated VirtualNetwork routing domain and associated allocation. Subnets in the same VirtualNetwork are L3-routable to one another; separate VirtualNetworks remain isolated. |
 | Create/delete Subnet | Create: Fabric, then Kubernetes when configured. Delete: Kubernetes, then Fabric. | N/A | `create_subnet` / `delete_subnet` | Fabric creates/removes one L2 broadcast domain for the Subnet and returns declared values for their NetworkClass, VirtualNetwork, or Subnet owners. OSAC persists validated values as NetworkData. Both managers receive the same applicable values on delete that they used on create. Kubernetes receives only its declared, matched inputs, which may include parent VirtualNetwork and current Subnet values. Workloads in one Subnet share that L2 domain and are L3-routable within their parent VirtualNetwork. OSAC removes Subnet NetworkData after consumer cleanup and Fabric deletion; parent-VirtualNetwork values persist through individual Subnet deletion. The Subnet CIDR belongs to its parent VirtualNetwork and cannot overlap a sibling Subnet. |
 | Create/delete FabricDomain | Fabric, only when the selected manager declares `EAST_WEST_ETHERNET` | N/A | `create_fabric_domain` / `delete_fabric_domain` | Create or remove the requested Ethernet east-west isolation for participating endpoints. The task receives the FabricDomain, its associated VirtualNetwork context, provider settings through the job environment, and applicable NetworkData. It must preserve the VirtualNetwork's north-south routing and the Subnets' broadcast domains. |
-| Apply/delete network attachment | Kubernetes Manager for `overlay`; Fabric Manager for `physical` | `SubnetAttachment` referencing an extension-defined workload target | `apply_network_attachment` / `delete_network_attachment` | For `physical`, bind the selected port to the Subnet's provider segment and install policy. For `overlay`, verify the network/interface reference present in the initial workload spec and install policy without patching that spec. For a new flow between two OSAC workloads, both source egress and destination ingress must allow it. On delete, remove policy; restore the extension-defined physical baseline or let the service remove the stopped overlay workload before deleting its Subnet network. |
+| Apply/delete SubnetAttachment | Kubernetes Manager for `overlay`; Fabric Manager for `physical` | `SubnetAttachment` referencing an extension-defined workload target | `apply_subnet_attachment` / `delete_subnet_attachment` | For `physical`, bind the selected port to the Subnet's provider segment and install policy. For `overlay`, verify the network/interface reference present in the initial workload spec and install policy without patching that spec. For a new flow between two OSAC workloads, both source egress and destination ingress must allow it. On delete, remove policy; restore the extension-defined physical baseline or let the service remove the stopped overlay workload before deleting its Subnet network. |
 | Create/delete ExternalIPPool | Fabric | N/A | `create_external_ip_pool` / `delete_external_ip_pool` | Register or remove the provider address pool. The pool has one canonical IPv4 CIDR prefix; OSAC owns API capacity counters. |
 | Allocate/release ExternalIP | Fabric | N/A | `create_external_ip` / `delete_external_ip` | Reserve or release one address from the selected pool. On allocation, return the address in `osac_result.data.external_ip.address`; repeated allocation for the same stable resource ID returns the same address. The manager does not write to the ExternalIP resource. |
 | Create/delete ExternalIPAttachment | Fabric | Service-defined workload endpoint | `attach_external_ip` / `detach_external_ip` | Add or remove inbound translation for the selected endpoint. Remove the attachment before releasing its ExternalIP. |
@@ -886,7 +886,7 @@ packages its role at
 `collections/ansible_collections/osac/networking/roles/<managerName>/tasks/`
 in the collection source, with one task file for each assigned entry point,
 such as `create_subnet.yml`, `delete_subnet.yml`, and
-`apply_network_attachment.yml`. The role FQCN is therefore
+`apply_subnet_attachment.yml`. The role FQCN is therefore
 `osac.networking.<managerName>`. Each task reads `osac_job_vars` and the
 provider settings it needs from the job environment, then returns the required
 result. The role must be installed in the execution environment used by the
@@ -1359,9 +1359,9 @@ A missing registration, projection, execution role, or incompatible profile fail
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
-Phases: revise, revise
+Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
