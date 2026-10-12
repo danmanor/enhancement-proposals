@@ -76,6 +76,8 @@ superseded-by:
   - [Version Skew Strategy](#version-skew-strategy)
   - [Support Procedures](#support-procedures)
   - [Infrastructure Needed](#infrastructure-needed)
+- [Open Questions](#open-questions)
+  - [SecurityGroup evaluation between two attached workloads](#securitygroup-evaluation-between-two-attached-workloads)
 - [Test Plan](#test-plan)
   - [Unit and component tests (DEV)](#unit-and-component-tests-dev)
   - [Integration tests (DEV)](#integration-tests-dev)
@@ -981,6 +983,20 @@ Inspect the NetworkClass state, resource conditions, authoritative resource iden
 
 No additional infrastructure beyond existing OSAC components and managers.
 
+## Open Questions
+
+### SecurityGroup evaluation between two attached workloads
+
+**Owner:** To be determined.
+
+**Impact:** The answer defines the shared attachment-policy contract and the
+corresponding provider qualification assertions for traffic between workloads.
+
+Must a new flow be admitted only when the source attachment's egress rules
+and the destination attachment's ingress rules both match? The design says
+that stateful policy is applied on each attachment, but does not yet define
+how the two endpoint rule sets compose.
+
 
 ## Test Plan
 
@@ -1034,4 +1050,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manage
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
