@@ -107,7 +107,7 @@ Per [OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/desi
 
 **BMaaS owns the full provisioning lifecycle** including networking:
 1. BMaaS provisions the host on the **provisioning network** (inventory → OS provisioning via DiskImage + ignition)
-2. BMaaS creates the worker BMI's target-only SubnetAttachment after provisioning and waits for Fabric `apply_workload_attachment` to install stateful policy and connect its selected port to the tenant network
+2. BMF creates the worker BMI's target-only SubnetAttachment after provisioning. OSAC networking dispatches Fabric `apply_network_attachment`, which maps the selected physical port to the fabric segment backing the chosen Subnet and installs stateful policy before tenant traffic is enabled.
 3. BMaaS reboots the host so the OS re-DHCPs on the tenant network (`reconcileReboot`)
 4. The SubnetAttachment controller queries the tenant DHCP lease after handoff using the required selected-port MAC; BMF mirrors the discovered IP to BMI status
 5. The full assisted-installer cluster installation begins only after the exact BMI is Running with attachment, handoff and valid tenant IP discovery complete. An Agent that registers early may be correlated but cannot be approved, cluster-bound or selected by a NodePool until the [worker binding gate](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md#mac-address-correlation) and current management publication gate pass. The admitted Agent performs the installation and reports progress on the tenant network
@@ -1023,11 +1023,11 @@ Jira states below were checked on 2026-10-12. This is an implementation-tracking
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","revise","revise","respond","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

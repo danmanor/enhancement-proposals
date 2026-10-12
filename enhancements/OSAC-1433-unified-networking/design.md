@@ -76,8 +76,6 @@ superseded-by:
   - [Version Skew Strategy](#version-skew-strategy)
   - [Support Procedures](#support-procedures)
   - [Infrastructure Needed](#infrastructure-needed)
-- [Open Questions](#open-questions)
-  - [SecurityGroup evaluation between two attached workloads](#securitygroup-evaluation-between-two-attached-workloads)
 - [Test Plan](#test-plan)
   - [Unit and component tests (DEV)](#unit-and-component-tests-dev)
   - [Integration tests (DEV)](#integration-tests-dev)
@@ -103,7 +101,7 @@ This design defines OSAC's shared networking resources, their tenant-visible mea
 ### 2.2 Non-Goals
 
 - Internet Protocol version 6 (IPv6), dual-stack networking (IPv4 and IPv6 together), or multiple tenant network attachments per workload.
-- Tenant-managed Domain Name System (DNS) zones, virtual private cloud (VPC) peering, load balancers, or Internet gateways.
+- Tenant-managed Domain Name System (DNS) zones, VirtualNetwork peering, load balancers, or Internet gateways.
 - Advanced interface configuration such as bonding, VLAN trunking, or multiple attachments per workload.
 
 ## 3. Background and Rationale
@@ -365,18 +363,27 @@ Each `SecurityRule` matches a protocol, optional TCP/UDP port range, and an
 IPv4 CIDR (source for ingress, destination for egress). A SecurityGroup is a
 reusable rule set scoped to one VirtualNetwork. The workload API selects
 SecurityGroups on each network attachment. OSAC resolves the selected groups
-and their complete rules into the workload attachment operation; the manager
-that owns the interface applies them on the Subnet-to-interface boundary. The
-Kubernetes Manager owns Kubernetes-native network interfaces; the Fabric Manager owns
-physical workload interfaces. A matching
-rule allows traffic; unmatched new traffic is denied; return traffic for an
-established connection is allowed automatically, so the rules are stateful.
-Rules contain match criteria, not an explicit allow/deny action, so list order
-does not change their meaning. When multiple SecurityGroups are attached to
-one workload interface, their allow rules combine as a union. Every selected
-SecurityGroup must belong to the VirtualNetwork that owns the attachment's
-Subnet. SecurityGroup rules are immutable; creating or deleting a SecurityGroup
-does not itself dispatch a provider operation.
+and their complete rules into the workload attachment operation. The manager
+that owns the interface applies them at the Subnet-to-interface boundary: the
+Kubernetes Manager for Kubernetes-native interfaces and the Fabric Manager
+for physical interfaces. A matching rule allows traffic; unmatched new
+traffic is denied; return traffic for an established connection is allowed
+automatically, so the rules are stateful.
+For a new connection from workload A to workload B, at least one selected
+SecurityGroup on A must allow the packet under A's egress rules, and at least
+one selected SecurityGroup on B must allow it under B's ingress rules. Both
+checks must pass, whether the Subnets are the same or are routed Subnets in one
+VirtualNetwork. When the other endpoint is outside OSAC workload policy and has
+no selected SecurityGroup, the attached workload's rule in the traffic's
+direction controls the connection. Rules contain match criteria, not an
+explicit allow/deny action, so list order does not change their meaning. When
+multiple SecurityGroups are attached to one workload interface, their allow
+rules combine as a union for that interface's ingress or egress check. Each
+manager enforces policy only on its own attachment; it does not look up or
+evaluate the peer's SecurityGroups. Every selected SecurityGroup must belong
+to the VirtualNetwork that owns the attachment's Subnet. SecurityGroup rules
+are immutable; creating or deleting a SecurityGroup does not itself dispatch
+a provider operation.
 
 ```protobuf
 message SecurityRule {
@@ -674,7 +681,7 @@ Provider-side operations are asynchronous and tracked per networking resource or
 
 ### 4.6 Security Considerations
 
-VirtualNetworks provide tenant isolation. SecurityGroup rules are evaluated on each workload attachment: the selected manager installs policy before enabling traffic and removes it before detach or teardown. Unmatched new traffic is denied. Fulfillment authorization and owner references scope tenant resources; provider registrations and backend settings remain provider-managed. Manager credentials and result handling follow the separate Network Manager Integration Contract. OSAC must not report connectivity from logical resource readiness alone when provider work is disabled or intentionally implemented as a no-op.
+VirtualNetworks provide tenant isolation. SecurityGroup rules are evaluated on each workload attachment: the selected manager installs policy before the workload service enables traffic and removes it before extension-specific target cleanup. Unmatched new traffic is denied. Fulfillment authorization and owner references scope tenant resources; provider registrations and backend settings remain provider-managed. Manager credentials and result handling follow the separate Network Manager Integration Contract. OSAC must not report connectivity from logical resource readiness alone when provider work is disabled or intentionally implemented as a no-op.
 
 ### 4.7 Failure Handling and Recovery
 
@@ -722,7 +729,7 @@ reflect logical lifecycle and unmet prerequisites. [PRD: FR-8, FR-9, FR-10]
 |----------|---------------------------------------------------|----------------------------------------------------|
 | VirtualNetwork | Create and remove the manager's tenant network; specification updates rejected | OSAC object create/delete remains available; no provider network is created or removed; specification updates rejected |
 | Subnet | Create/remove the selected managers' subnet/network resources; specification updates rejected | No provider segment, overlay, namespace, or pool is provisioned or removed; specification updates rejected |
-| Workload network attachment | Apply Subnet connectivity and selected SecurityGroup rules through the manager that owns the interface; complete before the workload is Ready; remove policy and detach before workload teardown | No provider attachment or policy work is submitted; workload provisioning follows its service extension's documented fallback behavior |
+| Workload network attachment | Apply Subnet connectivity and selected SecurityGroup rules through the manager that owns the interface; complete before the workload is Ready; remove policy and complete extension-specific cleanup before workload teardown | No provider attachment or policy work is submitted; workload provisioning follows its service extension's documented fallback behavior |
 | SecurityGroup | Create/delete the OSAC rule object; apply/delete provider policy with each workload attachment; specification and metadata updates rejected | OSAC create/delete remains available; no attachment policy work is submitted; existing backend policy may remain until provider-side cleanup; updates rejected |
 | ExternalIPPool | Create/remove provider pool integration; specification updates rejected | Logical create/delete remains available without creating or removing a provider pool; specification updates rejected |
 | ExternalIP | The Fabric Manager durably allocates an address and returns it in `osac_result.data.external_ip.address`; OSAC validates the result and pool membership before writing `status.address`. On deletion, OSAC returns pool capacity only after confirmed provider release; specification updates rejected | No provider allocation or release occurs. Without a confirmed allocation it remains Pending with an empty address; a previously confirmed allocation retains its real validated address and Allocated state, marked last-known while disabled. Logical deletion releases OSAC capacity but may leave a provider reservation for manual cleanup. Specification updates rejected |
@@ -935,7 +942,7 @@ Screen-level design and implementation are tracked by OSAC-2226.
 
 ### IC-7: SecurityGroup enforcement on workload attachments
 
-**Contract:** Stateful SecurityGroup rules apply to every workload attachment using the shared network API. The selected manager installs the complete effective policy before enabling traffic and removes it before detach. A manager integration success alone does not demonstrate that backend policy is enforced; providers retain behavioral evidence for their selected implementation.
+**Contract:** Stateful SecurityGroup rules apply to every workload attachment using the shared network API. The selected manager installs the complete effective policy before the workload service enables traffic and removes it before extension-specific target cleanup. A new flow between two OSAC workloads succeeds only when the source attachment's egress rules and destination attachment's ingress rules both allow it; each manager enforces its own attachment without looking up the peer's groups. A manager integration success alone does not demonstrate that backend policy is enforced; providers retain behavioral evidence for their selected implementation.
 
 ## 6. Alternatives Considered
 
@@ -983,28 +990,13 @@ Inspect the NetworkClass state, resource conditions, authoritative resource iden
 
 No additional infrastructure beyond existing OSAC components and managers.
 
-## Open Questions
-
-### SecurityGroup evaluation between two attached workloads
-
-**Owner:** To be determined.
-
-**Impact:** The answer defines the shared attachment-policy contract and the
-corresponding provider qualification assertions for traffic between workloads.
-
-Must a new flow be admitted only when the source attachment's egress rules
-and the destination attachment's ingress rules both match? The design says
-that stateful policy is applied on each attachment, but does not yet define
-how the two endpoint rule sets compose.
-
-
 ## Test Plan
 
 ### Unit and component tests (DEV)
 
 - Validate IPv4 CIDR parsing, parent containment, and non-overlapping sibling Subnets while permitting overlapping private ranges in separate VirtualNetworks.
 - Validate shared resource Create/Read/Delete behavior, immutable specifications, tenant ownership, readiness gates, and deletion dependency diagnostics.
-- Validate the shared Subnet and SecurityGroup contract: same-Subnet broadcast-domain membership, routed connectivity between Subnets in one VirtualNetwork, default-deny stateful policy, established replies, and policy ordering around attachment.
+- Validate the shared Subnet and SecurityGroup contract: same-Subnet broadcast-domain membership, routed connectivity between Subnets in one VirtualNetwork, default-deny stateful policy, and established replies. A new flow between OSAC workloads must succeed only when source egress and destination ingress both allow it; allowing only one side must fail. Multiple groups combine as a union independently at each endpoint. For a flow to or from an endpoint outside OSAC workload policy, only the attached workload's rule in the traffic direction applies.
 - Validate that Ethernet east-west requests are rejected before provider dispatch unless NetworkClass enables the capability and the selected Fabric Manager declares it.
 - Validate ExternalIP pool range accounting, atomic reservation, address ownership, result checks, and capacity release only after confirmed provider cleanup.
 - Validate provider-disabled status and activation transitions without claiming backend connectivity or cleanup; verify new workload admission remains closed until shared readiness and accepted work are resolved.
@@ -1044,10 +1036,10 @@ OSAC networking supports exactly one provider-owned networking hub per deploymen
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","respond","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

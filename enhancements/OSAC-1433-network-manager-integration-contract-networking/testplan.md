@@ -88,25 +88,29 @@ The registration, NetworkData, generic dispatch, and durable recovery behavior i
 
 - A NetworkClass selects a compatible Fabric Manager and Kubernetes Manager.
 - Use Subnets `192.0.2.0/25` and `192.0.2.128/25` in one VirtualNetwork and `198.51.100.0/24` in a second VirtualNetwork.
-- Test targets exercise `overlay` and `physical` interfaces through service-neutral fixtures. SecurityGroup rules allow new TCP/443 flows and do not allow TCP/8443.
+- Test targets exercise `overlay` and `physical` interfaces through service-neutral fixtures. The source SecurityGroup permits TCP/443 egress and the destination SecurityGroup permits TCP/443 ingress; neither permits TCP/8443. Include one-sided cases where only source egress or only destination ingress permits TCP/443.
+- Include one endpoint outside OSAC workload policy, with no selected SecurityGroup, for inbound and outbound direction checks.
 - The controllable Fabric and Kubernetes Manager test roles can return a task failure for a selected attachment deletion, then succeed on retry; the harness can observe the SubnetAttachment finalizer and target teardown gate.
 
 ##### Steps
 
 1. Create a VirtualNetwork and two Subnets, then attach test workloads to the same Subnet, different Subnets in the same VirtualNetwork, and a separate VirtualNetwork.
-2. Apply a SubnetAttachment for each supported normalized interface type.
+2. Apply a SubnetAttachment for each supported normalized interface type. For `overlay`, the target already contains its requested network/interface reference before dispatch; for `physical`, record the selected host port's initial fabric membership.
 3. Inspect the job input and result: the SubnetAttachment is the tracked `resource`, the workload is the separate `target`, and `network_attachment` carries the resolved Subnet, one interface, and complete effective SecurityGroup rules.
-4. Test a new TCP/443 flow, an unmatched new TCP/8443 flow, and the reply packets for the established TCP/443 connection.
-5. Delete each attachment and inspect policy removal and detachment ordering.
-6. For an overlay attachment, configure the Kubernetes Manager test role to fail `delete_workload_attachment` before confirming detach. Verify cleanup remains pending, then allow the task to succeed and observe reconciliation resume.
+4. Test a new TCP/443 flow when both source egress and destination ingress permit it. Repeat with only source egress permitted and only destination ingress permitted; each one-sided case must fail. Test unmatched TCP/8443 and reply packets for the established TCP/443 connection.
+5. Attach multiple SecurityGroups to an endpoint and verify their allow rules combine as a union for that endpoint's check; still require the other endpoint's directional check.
+6. Test inbound and outbound flows with the external endpoint. Verify the attached workload's rule in the traffic direction controls each flow.
+7. Delete each attachment and inspect policy removal and target-specific cleanup ordering: the physical port returns to its recorded extension-defined baseline after policy cleanup; the overlay workload service deletes the stopped target after policy cleanup.
+8. For an overlay attachment, configure the Kubernetes Manager test role to fail `delete_network_attachment` before confirming policy cleanup. Verify cleanup remains pending, then allow the task to succeed and observe reconciliation resume.
 
 ##### Expected Results
 
 - Workloads in one Subnet share its Layer 2 broadcast domain; Subnets in one VirtualNetwork are Layer 3 routable; separate VirtualNetworks remain isolated.
-- SecurityGroup policy applies to each attachment; associated rules combine as a union, permit matching traffic and established replies, and deny unmatched new traffic.
+- Physical apply maps the selected port to the provider segment backing the requested Subnet. Overlay apply preserves and validates the reference already present in the initial workload spec.
+- SecurityGroup policy applies to each attachment. Rules combine as a union for each endpoint's ingress and egress checks, but a new flow succeeds only when both source egress and destination ingress permit it. One-sided allows fail; established replies pass; unmatched new traffic fails.
 - The target-only SubnetAttachment owns networking job history, status, and its cleanup finalizer. Its result identifies the request and current projection; the separate target identity and normalized interface scope backend state.
-- Policy is installed before traffic is enabled. A failed apply leaves the request non-ready and traffic unavailable; delete removes policy and detaches the interface before workload teardown.
-- An injected Kubernetes Manager delete-task failure does not clear the SubnetAttachment finalizer or allow target teardown. After the manager succeeds on retry, policy removal and detach complete before workload teardown proceeds.
+- Policy is installed before traffic is enabled. A failed apply leaves the request non-ready and traffic unavailable. Delete removes policy before extension-specific target cleanup: physical ports return to their recorded baseline; stopped VMs are deleted by their workload service after policy cleanup.
+- An injected Kubernetes Manager delete-task failure does not clear the SubnetAttachment finalizer or allow target teardown. After the manager succeeds on retry, policy removal completes before workload teardown proceeds.
 
 ### FR-4: Incompatible or unsupported manager selections fail with a clear diagnostic
 

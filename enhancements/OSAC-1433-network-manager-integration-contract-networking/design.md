@@ -637,6 +637,13 @@ recreation, while its `metadata.uid` identifies the current projection.
 `network_attachment` contains the normalized Subnet, interface, and
 SecurityGroup input defined below.
 
+When a workload extension needs placement details to address its backend
+target, it captures those immutable details in the `SubnetAttachment` request
+before dispatch. The manager receives the complete request in `resource` and
+the authoritative workload projection in `target`; the extension defines the
+placement fields. A manager must use the captured target selector and identity
+and must not discover a target by tenant or name alone.
+
 The `manager.name` field carries the selected NetworkManager's
 `spec.managerName` and selects the same-named role in the `osac.networking`
 collection; `metadata.name` identifies the registration object only.
@@ -740,7 +747,7 @@ Task-specific resolved context is supplied alongside these common keys:
 | create_external_ip, delete_external_ip | Complete ExternalIP and its pool. existing_address is present only when OSAC has already accepted an address. |
 | attach_external_ip, detach_external_ip | Allocated ExternalIP and pool, confirmed destination address, service-defined endpoint selector, optional port mappings, and routing-domain context. The extension defines the endpoint and readiness source. |
 | create_nat_gateway, delete_nat_gateway | Full VirtualNetwork, NATGateway, ExternalIP, and pool. The translated source range is the complete VirtualNetwork CIDR, never a snapshot of its current Subnets. |
-| apply_workload_attachment, delete_workload_attachment | Target-only SubnetAttachment request, separate target, normalized network_attachment, and owner-scoped routing context. |
+| apply_network_attachment, delete_network_attachment | Target-only SubnetAttachment request, separate target, normalized network_attachment, and owner-scoped routing context. |
 
 Resolved objects include the fields declared by their resource contract and
 the immutable input snapshot captured for the attempt. Optional unavailable
@@ -758,16 +765,26 @@ provisioned backend object. The workload extension creates a target-only
 `SubnetAttachment` request. The networking controller reads its target,
 validates tenant ownership and resource references, resolves the ready Subnet
 and selected SecurityGroups, and sends complete normalized rules with the
-`apply_workload_attachment` task. The request does not copy Subnet, interface,
-or SecurityGroup fields from the workload.
+`apply_network_attachment` task. The request does not copy Subnet, interface,
+or SecurityGroup fields from the workload. It is the durable OSAC request and
+job owner; it does not itself connect a physical port or add a VM interface.
 
 Each rule carries `protocol`, optional TCP/UDP `port_from` and `port_to`, and
 an IPv4 `ipv4_cidr`. The payload preserves each group's stable ID and complete
 rule arrays so managers can remove only policy owned by that attachment.
 Protocols are `TCP`, `UDP`, `ICMP`, and `ALL`. TCP/UDP require a port range
 from 1 through 65535 with `port_to >= port_from`; ICMP and ALL omit port
-fields. Ingress CIDRs match sources and egress CIDRs match destinations. The
-legacy IPv6 field is omitted because the API rejects non-empty IPv6 values.
+fields. Ingress CIDRs match sources and egress CIDRs match destinations. For a
+new flow between workload A and workload B, A's egress rule and B's ingress
+rule must both match; established replies are allowed statefully. If the other
+endpoint is outside OSAC workload policy and has no selected SecurityGroup,
+the rule on the attached workload in the traffic's direction controls the
+flow. If multiple SecurityGroups are selected at either endpoint, their rules
+combine as a union for that endpoint's directional check. A manager enforces
+only the rules for the attachment it owns; a connection between two OSAC
+workloads must pass the independent checks at both endpoints. Managers do not
+look up peer SecurityGroups. The legacy IPv6 field is omitted because the API
+rejects non-empty IPv6 values.
 
 The `network_attachment` object is a sibling of `resource` and `target` in
 `osac_job_vars`. Its normalized fields are:
@@ -780,15 +797,33 @@ The `network_attachment` object is a sibling of `resource` and `target` in
 
 The networking controller validates that the Subnet and all selected
 SecurityGroups are Ready and belong to the same VirtualNetwork before
-dispatch. `apply_workload_attachment` establishes the Subnet connection and
-installs effective stateful rules before traffic is enabled. Unmatched new
-traffic is denied and established reply traffic is allowed.
-`delete_workload_attachment` removes attachment-owned policy and detaches the
-interface before workload teardown. Both operations are idempotent by the
-stable target resource ID and logical interface. Policy failure keeps the
-request non-ready and traffic unavailable; delete failure retains the request
-finalizer while the workload extension waits to continue teardown. Apply and
-delete receive the same normalized attachment input.
+dispatch. The shared `apply_network_attachment` entry point has role-specific
+behavior and workload-service timing:
+
+- For `physical`, the Fabric Manager makes the selected host port's fabric
+  membership match the requested Subnet by binding it to that Subnet's
+  provider segment. It installs the complete effective SecurityGroup policy
+  before tenant traffic is enabled. The workload service owns any additional
+  handoff or address-discovery phases.
+- For `overlay`, the workload service creates its target with the Subnet
+  network reference and matching interface already present in the initial
+  object spec. The Kubernetes Manager verifies that the reference identifies
+  the requested Subnet and installs the complete effective policy; it does not
+  add or patch the target's network/interface fields. The service enables the
+  workload only after attachment policy is ready. For a ComputeInstance overlay
+  attachment, apply runs while the VM is halted and no VMI exists; the manager
+  must associate policy with that VM so it is effective when its VMI starts.
+  A manager that requires a running VMI does not meet this lifecycle contract.
+  The extension defines the exact reference and enablement step.
+
+Both paths keep new traffic unavailable until policy is active.
+`delete_network_attachment` removes attachment-owned policy. For a physical
+target, it returns the selected port to the baseline defined by that workload
+extension. For an overlay target, the service deletes the stopped VM after
+policy cleanup. Both operations are idempotent by stable target resource ID
+and logical interface. Apply failure keeps the request non-ready; delete
+failure retains its finalizer and blocks the workload teardown gate. Apply
+and delete receive the same normalized attachment input.
 
 #### Resource action, manager, and task table
 
@@ -804,7 +839,7 @@ subset.
 | Create/delete VirtualNetwork | Fabric | N/A | `create_virtual_network` / `delete_virtual_network` | Create or remove the isolated VirtualNetwork routing domain and associated allocation. Subnets in the same VirtualNetwork are L3-routable to one another; separate VirtualNetworks remain isolated. |
 | Create/delete Subnet | Create: Fabric, then Kubernetes when configured. Delete: Kubernetes, then Fabric. | N/A | `create_subnet` / `delete_subnet` | Fabric creates/removes one L2 broadcast domain for the Subnet and returns declared values for their NetworkClass, VirtualNetwork, or Subnet owners. OSAC persists validated values as NetworkData. Both managers receive the same applicable values on delete that they used on create. Kubernetes receives only its declared, matched inputs, which may include parent VirtualNetwork and current Subnet values. Workloads in one Subnet share that L2 domain and are L3-routable within their parent VirtualNetwork. OSAC removes Subnet NetworkData after consumer cleanup and Fabric deletion; parent-VirtualNetwork values persist through individual Subnet deletion. The Subnet CIDR belongs to its parent VirtualNetwork and cannot overlap a sibling Subnet. |
 | Create/delete FabricDomain | Fabric, only when the selected manager declares `EAST_WEST_ETHERNET` | N/A | `create_fabric_domain` / `delete_fabric_domain` | Create or remove the requested Ethernet east-west isolation for participating endpoints. The task receives the FabricDomain, its associated VirtualNetwork context, provider settings through the job environment, and applicable NetworkData. It must preserve the VirtualNetwork's north-south routing and the Subnets' broadcast domains. |
-| Apply/delete workload attachment | Kubernetes Manager for `overlay`; Fabric Manager for `physical` | `SubnetAttachment` referencing an extension-defined workload target | `apply_workload_attachment` / `delete_workload_attachment` | Connect the target's resolved interface to its Subnet and enforce its complete effective stateful SecurityGroup rules before enabling traffic. On delete, remove policy and detach the interface before workload teardown. |
+| Apply/delete network attachment | Kubernetes Manager for `overlay`; Fabric Manager for `physical` | `SubnetAttachment` referencing an extension-defined workload target | `apply_network_attachment` / `delete_network_attachment` | For `physical`, bind the selected port to the Subnet's provider segment and install policy. For `overlay`, verify the network/interface reference present in the initial workload spec and install policy without patching that spec. For a new flow between two OSAC workloads, both source egress and destination ingress must allow it. On delete, remove policy; restore the extension-defined physical baseline or let the service remove the stopped overlay workload before deleting its Subnet network. |
 | Create/delete ExternalIPPool | Fabric | N/A | `create_external_ip_pool` / `delete_external_ip_pool` | Register or remove the provider address pool. The pool has one canonical IPv4 CIDR prefix; OSAC owns API capacity counters. |
 | Allocate/release ExternalIP | Fabric | N/A | `create_external_ip` / `delete_external_ip` | Reserve or release one address from the selected pool. On allocation, return the address in `osac_result.data.external_ip.address`; repeated allocation for the same stable resource ID returns the same address. The manager does not write to the ExternalIP resource. |
 | Create/delete ExternalIPAttachment | Fabric | Service-defined workload endpoint | `attach_external_ip` / `detach_external_ip` | Add or remove inbound translation for the selected endpoint. Remove the attachment before releasing its ExternalIP. |
@@ -851,7 +886,7 @@ packages its role at
 `collections/ansible_collections/osac/networking/roles/<managerName>/tasks/`
 in the collection source, with one task file for each assigned entry point,
 such as `create_subnet.yml`, `delete_subnet.yml`, and
-`apply_workload_attachment.yml`. The role FQCN is therefore
+`apply_network_attachment.yml`. The role FQCN is therefore
 `osac.networking.<managerName>`. Each task reads `osac_job_vars` and the
 provider settings it needs from the job environment, then returns the required
 result. The role must be installed in the execution environment used by the
@@ -1129,10 +1164,15 @@ Each workload extension maps its workload attachment to the common
 extension defines any additional handoff or address-discovery phase and its
 inputs, readiness gate, and output. The networking controller owns request
 job history and finalization; the workload extension owns its readiness
-mirror and teardown gate. The selected manager installs complete stateful
-SecurityGroup policy before traffic is enabled and removes the policy and
-detaches the interface before workload teardown. Exact workload fields,
-interface mapping, and lifecycle order belong in the service extension design.
+mirror and teardown gate. For a physical target, the Fabric task maps the
+selected port to the Subnet's provider segment and installs policy; the
+extension completes its handoff only after the task succeeds. For an overlay
+target, the workload creates its target with the Subnet interface reference
+before enabling it; the Kubernetes task verifies that reference and installs
+policy before enablement. On deletion, policy cleanup completes before
+physical-port restoration or target deletion. Each extension defines its
+exact workload fields, interface reference, readiness gate, and
+service-specific ordering.
 
 ### 4.5 Scalability and Performance
 
@@ -1155,7 +1195,7 @@ NetworkManager objects contain manager identity, role selection, capabilities, a
 - **NetworkData persistence failure:** The operator does not start Kubernetes work until every returned value is stored and every applicable Kubernetes input is present. It retries identical NetworkData creates idempotently; a different value for an existing model/owner key fails and is never written as an update.
 - **Kubernetes create failure after Fabric success:** OSAC retains NetworkData records and retries the Kubernetes stage with the same values. The Fabric task receives existing values on retry and must reuse them. The Subnet is not Ready until the Kubernetes stage succeeds.
 - **Kubernetes delete failure:** OSAC does not start Fabric deletion or remove NetworkData, so Kubernetes cleanup can retry using the same values.
-- **Fabric delete failure after Kubernetes detach:** OSAC retains job state and retries Fabric cleanup. The Kubernetes target is already detached; repeated Fabric deletion of absent state succeeds.
+- **Fabric delete failure after Kubernetes Subnet cleanup:** OSAC retains job state and retries Fabric cleanup. The Kubernetes Subnet realization has already been removed; repeated Fabric deletion of absent state succeeds.
 - **Backend timeout or transient error:** The AAP task returns a diagnostic and a non-success result. Existing OSAC job retry/backoff behavior retries the operation. Resource tasks are idempotent by stable fulfillment-service API resource ID; workload attachment apply/delete tasks are idempotent by stable target API resource ID and logical interface.
 - **Workload attachment policy apply failure:** The manager keeps traffic unavailable; the networking controller leaves the SubnetAttachment request non-ready and retries the same normalized `network_attachment`. The workload lifecycle owner does not report its target Ready. Policy delete failure retains the request finalizer and blocks the workload teardown gate until cleanup succeeds.
 - **Invalid manager result:** A missing, malformed, stale, or mismatched result fails the request; OSAC does not advance readiness or release capacity.
@@ -1179,7 +1219,7 @@ The selection covers every assigned operation and target plus each enabled optio
 
 - **Matching declarations may not preserve the shared network and policy semantics.** Treat input/output matching as necessary but not sufficient; require each manager and selected network path to pass conformance for VirtualNetwork L3 routing, Subnet L2 broadcast behavior, and workload attachment policy.
 - **The generic protobuf `Value` number representation cannot preserve every integer.** Restrict numeric schema values to the exactly representable range and require providers to model larger integer identifiers as strings; current OSAC VNI and VLAN values fit that range.
-- **Policy installation failure could expose a workload without its requested rules.** Require deny-by-default behavior until policy is installed, keep the SubnetAttachment request and workload non-ready on failure, and retain the request finalizer until policy cleanup and detachment succeed.
+- **Policy installation failure could expose a workload without its requested rules.** Require deny-by-default behavior until policy is installed, keep the SubnetAttachment request and workload non-ready on failure, and retain the request finalizer until policy cleanup and extension-specific target cleanup succeed.
 - **A manager may receive rules for a different tenant or attachment.** The networking controller verifies that the target matches the SubnetAttachment reference, validates tenant ownership and the Subnet/SecurityGroup relationship before dispatch, and scopes the operation to the target workload UID and interface. The task receives no cross-tenant lookup authority.
 - **The normalized operation may grow as OSAC adds rule types or attachment targets.** Treat new rule fields and targets as contract changes and require both OSAC and manager conformance updates before dispatching them.
 
@@ -1319,11 +1359,9 @@ A missing registration, projection, execution role, or incompatible profile fail
 
 ## Provenance
 
-Authored: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (95 behind origin/main, dirty)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
-
-> Context changed between revise and revise.
+Authored: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
+Phases: revise, revise
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","respond","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
