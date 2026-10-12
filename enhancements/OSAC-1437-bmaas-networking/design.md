@@ -352,7 +352,7 @@ selection or allocation path.
     - **Auto-provisioned cleanup (osac-operator):** The osac-operator adds a cleanup finalizer (`osac.openshift.io/baremetalinstance-cleanup`) on BaremetalInstance CRs that have `auto_external_ip_attachment=true`. On deletion, it performs the phased requeue cleanup: deletes ExternalIPAttachment first (by target reference), waits, then deletes ExternalIP (by `auto-created-for` label), waits, then removes its finalizer. See [Unified Networking — Auto-provisioned resource cleanup](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioned-external-access) for the pattern. BMF waits for this external child cleanup to complete before attachment cleanup, OS teardown, or inventory release; independent finalizers do not imply a safe execution order. [User]
     - **Manually created ExternalIPAttachments block deletion** — if the tenant created ExternalIPAttachments explicitly (not labeled `osac.openshift.io/auto-created`), they block the BaremetalInstance's deletion. The tenant must remove them first. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
     - **Default networking resources (VN, Subnet, SG, NATGateway) are NOT cleaned up** — tenant-scoped and shared.
-    - bare-metal-fulfillment-operator (power-off-first ordering ensures tenant workloads **never** run on the provisioning network):
+    - bare-metal-fulfillment-operator (stops the tenant OS before returning the port to provisioning connectivity):
       - `reconcileNetworkOffboardShutdown`: powers off the host **while the port is still on the tenant network** and reports `NetworkOffboardShutdownComplete=True` only after power-off is confirmed. If the host is already powered off, the step is an idempotent no-op that still confirms the condition. This guarantees the tenant workload stops before the port moves to the provisioning network.
       - Only after `NetworkOffboardShutdownComplete=True`, BMF deletes the SubnetAttachment. The networking controller dispatches Fabric `delete_subnet_attachment`, removes workload policy, and restores the selected port to provisioning connectivity. It reports `NetworkOffboardComplete=True` on the request only after the exact cleanup job succeeds. BMF waits for that condition and request finalization before deprovisioning or releasing the host. The request retains the same resolved target/attachment context until successful cleanup; missing dependencies do not justify inventing successful provider cleanup. [User]
       - `reconcileDeprovisioning`: triggers AAP delete job for OS teardown. Ironic powers the host back on via BMC and PXE-boots a cleaning ramdisk on the provisioning network — not the tenant OS.
@@ -641,8 +641,9 @@ auto ExternalIP release and wait → BMF shutdown while still on tenant network
 (`NetworkOffboardShutdownComplete=True`) → request deletion and manager policy/
 port cleanup (`NetworkOffboardComplete=True`) and request finalization → Ironic
 cleaning/OS teardown → inventory release. BMF confirms shutdown before it asks
-for request cleanup and waits for cleanup before deprovisioning, so tenant OS
-never runs on provisioning connectivity. Any provider cleanup failure retains
+for request cleanup and waits for cleanup before deprovisioning, so the tenant
+OS stays powered off while the port returns to provisioning connectivity;
+Ironic's later boot starts only the cleaning ramdisk. Any provider cleanup failure retains
 the relevant finalizers and host ownership.
 The disabled-mode exception is specified below. [User]
 
@@ -829,7 +830,7 @@ Resolved: After request apply and BMF's one handoff reboot complete, the network
 
 - **[DEV] Contract:** request-as-resource/BMI-as-target and normalized stateful policy payload; mandatory Fabric entry points; apply success without invented address data; selected MAC required and malformed/ambiguous lease rejected.
 - **[DEV] Envtest:** accepted apply readiness enables exactly one handoff reboot; DHCP job waits for handoff and MAC; BMF mirrors request status; `NetworkOffboardShutdownComplete=True` precedes request deletion; deprovision waits for request `NetworkOffboardComplete=True` and finalization; all cleanup failures retain finalizers and inventory ownership.
-- **[QE] E2E:** provision/discover/delete BMI and CaaS worker on one Subnet; policy failure prevents tenant traffic; restart during offboard never runs tenant OS on provisioning network; persistent DNAT or attachment failure prevents host reuse. [User]
+- **[QE] E2E:** provision/discover/delete BMI and CaaS worker on one Subnet; policy failure prevents tenant traffic; a restart during offboard boots only the Ironic cleaning ramdisk after port restoration while the tenant OS remains powered off; persistent DNAT or attachment failure prevents host reuse. [User]
 
 
 ### Provider Networking Control (FR-13)
@@ -1101,4 +1102,4 @@ Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
