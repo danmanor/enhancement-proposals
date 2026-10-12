@@ -88,9 +88,9 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - **FR-7:** Cloud Infrastructure Admins can create, inspect, list, and remove manager and data-model registrations through OSAC's provider management interface; OSAC rejects attempts to modify an existing registration in place. [User]
 - **FR-8:** Cloud Infrastructure Admins can provide backend settings and credentials required by the provider-selected networking managers, so manager jobs can reach their backend services. [User]
 
-- **FR-9:** A Cloud Infrastructure Admin can distinguish manager registration and successful task handling from provider behavior qualification; a successful manager result alone does not prove that advertised connectivity, address allocation, policy, or cleanup occurred. [User direction to incorporate Astra review gap, 2026-10-12]
-- **FR-10:** When manager work is interrupted or its outcome is uncertain, OSAC does not report dependent resources as ready, release address capacity, or permit replacing the bound manager/profile until the relevant work is resolved. OSAC gives the Cloud Infrastructure Admin an actionable blocker. [User direction to incorporate Astra review gap, 2026-10-12]
-- **FR-11:** A Cloud Infrastructure Admin can run the published networking qualification against the provider's selected manager configuration and receive a retained pass, fail, or incomplete report for required operations, targets, capabilities, recovery, and cleanup. A skipped required assertion is incomplete, not a pass. [User direction to incorporate Astra review gap, 2026-10-12]
+- **FR-9:** A Cloud Infrastructure Admin can distinguish manager registration and successful task handling from provider behavior qualification; a successful manager result alone does not prove that advertised connectivity, address allocation, policy, or cleanup occurred. [User]
+- **FR-10:** When manager work is interrupted or its outcome is uncertain, OSAC does not report dependent resources as ready, release address capacity, or permit replacing the bound manager/profile until the relevant work is resolved. OSAC gives the Cloud Infrastructure Admin an actionable blocker. [User]
+- **FR-11:** A Cloud Infrastructure Admin can run the published networking qualification against the provider's selected manager configuration and receive a retained pass, fail, or incomplete report for required operations, targets, capabilities, recovery, and cleanup. A skipped required assertion is incomplete, not a pass. [User]
 
 ### 3.2 Non-Functional Requirements
 
@@ -106,8 +106,11 @@ No separate non-functional requirements were specified for this work.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ fec9a9ab2
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ fec9a9ab2
+
+> Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"fec9a9ab2","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["revise"],"authoring_modes":["skill"],"context_changed":false,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"fec9a9ab2","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":4,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
