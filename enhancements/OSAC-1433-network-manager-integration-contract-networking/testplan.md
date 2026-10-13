@@ -3,11 +3,11 @@
 ## Overview
 
 - **Feature:** OSAC-1433 Network Manager Integration Contract
-- **Total test cases:** 13
-- **Requirements covered:** 11 of 11
+- **Total test cases:** 14
+- **Requirements covered:** 12 of 12
 - **Interface changes covered:** 8 of 8
 
-This plan covers generic OSAC implementation and provider qualification before a manager is selected in a production NetworkClass. Providers run backend checks against their actual AAP execution environment; OSAC can run the same cases against its supported implementations. It does not define a hosted provider certification service. The PRD uses FR-1 through FR-11 as its testable acceptance outcomes rather than defining a second AC numbering scheme; the `AC` column below cites the relevant FR.
+This plan covers generic OSAC implementation and provider qualification before a manager is selected in a production NetworkClass. Providers run backend checks against their actual AAP execution environment; OSAC can run the same cases against its supported implementations. It does not define a hosted provider certification service. The PRD uses FR-1 through FR-12 as its testable acceptance outcomes rather than defining a second AC numbering scheme; the `AC` column below cites the relevant FR.
 
 ### Existing test patterns and execution context
 
@@ -375,6 +375,35 @@ The registration, NetworkData, generic dispatch, and durable recovery behavior i
 - The retained report identifies OSAC/AAP versions, NetworkClass and model/manager registrations, test selection, job references, and redacted diagnostics.
 - A passing report covers every assigned operation and target, each enabled capability, recovery, and cleanup. It demonstrates the tested provider configuration and is not a hosted OSAC certification.
 
+### FR-12: Supported workload attachments receive tenant IPv4 configuration through DHCP
+
+#### TC-FR12-01: Verify DHCP service on overlay and physical attachments
+
+| Story | AC | Interface Change | Priority | Automation |
+|-------|----|-----------------|----------|------------|
+| Tenant User — use shared networking across compatible managers | FR-12 | IC-6 | critical | automated |
+
+##### Preconditions
+
+- A NetworkClass selects the Fabric Manager and Kubernetes Manager used by the test deployment.
+- VM guest images and bare-metal tenant OS images are configured to run a DHCP client on the selected tenant interface.
+- The provider DHCP service returns address, prefix, default gateway, and DNS resolver settings for the test Subnet. A tenant-controlled endpoint can attempt to send rogue DHCP responses.
+- Test attachments use SecurityGroups that deny tenant application traffic.
+
+##### Steps
+
+1. Create a Subnet and attach a VM through the overlay path. Confirm the VM is halted without tenant network/interface fields before apply; wait for attachment and policy readiness, then start it.
+2. Observe the first-boot DHCP exchange and verify the VM receives one unique IPv4 address inside the Subnet, with the expected prefix, gateway, and resolver settings. Confirm VMaaS discovers the address from VM/VMI status and does not dispatch `query_dhcp_lease`.
+3. Provision a bare-metal target on the separate provisioning network, apply its physical attachment, and complete the handoff reboot. Observe tenant DHCP and verify one unique in-Subnet address with the expected prefix, gateway, and resolver settings. Confirm BMaaS discovers it using `query_dhcp_lease` for the selected interface MAC.
+4. Repeat the trusted DHCP exchanges while tenant application traffic remains denied. Then send an offer from the tenant-controlled endpoint and attempt to configure a second endpoint from that offer.
+
+##### Expected Results
+
+- The VM receives its tenant settings through DHCP only after the manager has added its network/interface fields and policy to the halted VM; the first boot uses that prepared attachment. The bare-metal tenant interface receives its settings through DHCP only after the selected physical port is attached and the handoff completes.
+- Both assigned addresses are unique active leases within the correct Subnet, and the received prefix, default gateway, and resolver settings match that Subnet's provider DHCP configuration. Neither manager writes a static tenant IP into the guest or host OS.
+- Trusted DHCP and required gateway address resolution work under deny-all tenant SecurityGroups. The tenant-controlled endpoint cannot provide accepted DHCP responses to another workload.
+- VM IP discovery uses VM/VMI status; the BMaaS extension uses the selected-MAC lease query. The manager contract does not impose the BMaaS query operation on VM flows.
+
 ## Gaps
 
 ### Requirement Coverage Gaps
@@ -389,14 +418,14 @@ All interface changes are exercised by test cases.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 13 |
-| Critical | 7 |
+| Total test cases | 14 |
+| Critical | 8 |
 | High | 6 |
 | Medium | 0 |
 | Low | 0 |
-| Automated | 11 |
+| Automated | 12 |
 | Manual | 2 |
-| Requirements with test cases | 11 / 11 |
+| Requirements with test cases | 12 / 12 |
 | Interface changes with test cases | 8 / 8 |
 
 ---

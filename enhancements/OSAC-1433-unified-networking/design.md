@@ -135,7 +135,7 @@ The following table defines shared resource meaning. Provider-managed resources 
 | **NetworkManager** | Provider | An immutable registration of one manager implementation and its declared role and data-model inputs or outputs. |
 | **NetworkData** | OSAC-managed | One schema-validated value associated with its model and owning network resource. |
 | **VirtualNetwork** | Tenant | An isolated tenant IPv4 routing domain and parent of Subnets, SecurityGroups, and optional FabricDomains and NATGateways. |
-| **Subnet** | Tenant | An IPv4 range and Layer 2 network segment within one VirtualNetwork. Workloads attached to the same Subnet share its broadcast domain; Subnets in one VirtualNetwork are connected by Layer 3 routing, subject to SecurityGroup policy. |
+| **Subnet** | Tenant | An IPv4 range and Layer 2 network segment within one VirtualNetwork. Workloads attached to the same Subnet share its broadcast domain and obtain tenant IPv4 configuration through DHCP; Subnets in one VirtualNetwork are connected by Layer 3 routing, subject to SecurityGroup policy. |
 | **SecurityGroup** | Tenant | Stateful incoming and outgoing traffic rules applied to a workload's network attachment. Matching rules allow traffic, established connections allow replies, and unmatched new traffic is denied. |
 | **ExternalIPPool** | Provider | Capacity of IPv4 addresses outside tenant VirtualNetworks. |
 | **ExternalIP** | Tenant | One address allocated, or pending allocation, from an ExternalIPPool. “External” means outside the tenant VirtualNetwork; it does not guarantee public Internet reachability. |
@@ -347,7 +347,10 @@ share that Subnet's L2 broadcast domain and have L3 connectivity through the
 parent VirtualNetwork. A different Subnet remains a separate L2 broadcast
 domain, with inter-Subnet traffic routed by the VirtualNetwork subject to
 SecurityGroup policy. A Subnet is the workload attachment point; it does not
-select a workload type or a manager.
+select a workload type or a manager. Attached workload interfaces use DHCP
+to receive an IPv4 address, prefix, default gateway, and DNS resolver
+configuration. The assigned address is unique among active endpoints in the
+Subnet and is reported through the workload service's normal status path.
 
 ##### SecurityGroup
 
@@ -368,7 +371,12 @@ that owns the interface applies them at the Subnet-to-interface boundary: the
 Kubernetes Manager for Kubernetes-native interfaces and the Fabric Manager
 for physical interfaces. A matching rule allows traffic; unmatched new
 traffic is denied; return traffic for an established connection is allowed
-automatically, so the rules are stateful.
+automatically, so the rules are stateful. The interface-owning manager
+also allows DHCP exchange with the trusted provider service and required
+gateway address resolution independently of tenant rules. This infrastructure
+baseline does not permit tenant workloads to provide DHCP or accept DHCP
+responses from untrusted endpoints; tenant rules continue to govern all other
+new traffic.
 For a new connection from workload A to workload B, at least one selected
 SecurityGroup on A must allow the packet under A's egress rules, and at least
 one selected SecurityGroup on B must allow it under B's ingress rules. Both
@@ -997,6 +1005,7 @@ No additional infrastructure beyond existing OSAC components and managers.
 - Validate IPv4 CIDR parsing, parent containment, and non-overlapping sibling Subnets while permitting overlapping private ranges in separate VirtualNetworks.
 - Validate shared resource Create/Read/Delete behavior, immutable specifications, tenant ownership, readiness gates, and deletion dependency diagnostics.
 - Validate the shared Subnet and SecurityGroup contract: same-Subnet broadcast-domain membership, routed connectivity between Subnets in one VirtualNetwork, default-deny stateful policy, and established replies. A new flow between OSAC workloads must succeed only when source egress and destination ingress both allow it; allowing only one side must fail. Multiple groups combine as a union independently at each endpoint. For a flow to or from an endpoint outside OSAC workload policy, only the attached workload's rule in the traffic direction applies.
+- Verify an attached workload configured for DHCP receives a unique IPv4 address, prefix, gateway, and resolver configuration from its Subnet even when tenant SecurityGroups deny application traffic; verify untrusted tenant DHCP responses are blocked.
 - Validate that Ethernet east-west requests are rejected before provider dispatch unless NetworkClass enables the capability and the selected Fabric Manager declares it.
 - Validate ExternalIP pool range accounting, atomic reservation, address ownership, result checks, and capacity release only after confirmed provider cleanup.
 - Validate provider-disabled status and activation transitions without claiming backend connectivity or cleanup; verify new workload admission remains closed until shared readiness and accepted work are resolved.
@@ -1035,11 +1044,11 @@ OSAC networking supports exactly one provider-owned networking hub per deploymen
 
 ## Provenance
 
-Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
+Authored: revise @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 97d046f86 (16 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"97d046f86","source_repo_branch":"main","commits_behind_main":16,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: Unified Networking Requirements
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-12
+last-updated: 2026-10-13
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -121,6 +121,8 @@ egress rules and inbound access uses its ingress rules. Workloads in separate
 VirtualNetworks remain isolated. These outcomes apply to every workload
 service that integrates the shared networking model. [User]
 
+Every workload interface attached to a Subnet obtains its tenant IPv4 address through Dynamic Host Configuration Protocol (DHCP). The workload service exposes the assigned address through its normal status; tenants do not provide a static tenant-interface address. [User]
+
 Tenants may choose identical or overlapping private IPv4 ranges for separate isolated VirtualNetworks, including networks belonging to different tenants. Providers preserve routing, policy, allocation, and cleanup isolation using the owning VirtualNetwork context, without requiring globally unique private CIDRs or addresses. Sibling Subnets within one VirtualNetwork do not overlap, and independently owned endpoints within one shared Subnet receive distinct addresses. [User]
 
 #### FR-2: Infrastructure-agnostic networking resources (R2)
@@ -199,11 +201,11 @@ networking resources are not coordinated across multiple hubs.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace main @ 04cc50101
+Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace main @ 97d046f86 (16 behind origin/main)
 
 > Context changed between revise and revise.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"97d046f86","source_repo_branch":"main","commits_behind_main":16,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

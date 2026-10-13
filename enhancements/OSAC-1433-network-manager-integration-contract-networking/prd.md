@@ -3,7 +3,7 @@ title: network-manager-integration-contract
 authors:
   - dmanor@redhat.com
 creation-date: 2026-10-04
-last-updated: 2026-10-12
+last-updated: 2026-10-13
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -91,6 +91,7 @@ OSAC networking uses provider-selected Fabric and Kubernetes (K8s) managers, but
 - **FR-9:** A Cloud Infrastructure Admin can distinguish manager registration and successful task handling from provider behavior qualification; a successful manager result alone does not prove that advertised connectivity, address allocation, policy, or cleanup occurred. [User]
 - **FR-10:** When manager work is interrupted or its outcome is uncertain, OSAC does not report dependent resources as ready, release address capacity, or permit replacing the bound manager/profile until the relevant work is resolved. OSAC gives the Cloud Infrastructure Admin an actionable blocker. [User]
 - **FR-11:** A Cloud Infrastructure Admin can run the published networking qualification against the provider's selected manager configuration and receive a retained pass, fail, or incomplete report for required operations, targets, capabilities, recovery, and cleanup. A skipped required assertion is incomplete, not a pass. [User]
+- **FR-12:** Every supported workload attachment receives its tenant IPv4 address and standard network settings through Dynamic Host Configuration Protocol (DHCP). The provider qualifies this behavior for the selected manager combination; valid registrations or successful task results alone do not prove it. [Unified Networking PRD: FR-1] [User]
 
 ### 3.2 Non-Functional Requirements
 
@@ -106,11 +107,9 @@ No separate non-functional requirements were specified for this work.
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ d165396
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Authored: draft @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
+Final: revise @ prd 0.11.5 - 1c6e8de, workspace main @ 97d046f86 (16 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between draft and revise.
 
-> This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
-
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"97d046f86","source_repo_branch":"main","commits_behind_main":16,"commits_ahead_main":0,"main_ref":"main","phases":["draft","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->

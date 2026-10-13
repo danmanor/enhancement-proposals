@@ -50,6 +50,7 @@ superseded-by:
     - [Canonical serialized task inputs](#canonical-serialized-task-inputs)
     - [Workload attachment policy input](#workload-attachment-policy-input)
     - [Resource action, manager, and task table](#resource-action-manager-and-task-table)
+    - [DHCP-based tenant IPv4 addressing](#dhcp-based-tenant-ipv4-addressing)
     - [Generic AAP role invocation](#generic-aap-role-invocation)
     - [Manager result envelope](#manager-result-envelope)
     - [Stable backend ownership and projection recovery](#stable-backend-ownership-and-projection-recovery)
@@ -907,6 +908,39 @@ subset.
 | Create/delete ExternalIPAttachment | Fabric | Service-defined workload endpoint | `attach_external_ip` / `detach_external_ip` | Add or remove inbound translation for the selected endpoint. Remove the attachment before releasing its ExternalIP. |
 | Create/delete NATGateway | Fabric | N/A | `create_nat_gateway` / `delete_nat_gateway` | Add or remove outbound source network address translation (SNAT) for the VirtualNetwork using its ExternalIP. It does not provide inbound access. |
 
+#### DHCP-based tenant IPv4 addressing
+
+Attached tenant interfaces receive IPv4 configuration through DHCP: an
+address within the Subnet, prefix, default gateway, and DNS resolver
+settings. The Fabric Manager ensures each Subnet is served by provider
+DHCP/IPAM, directly or through the provider's integration, and that
+active endpoints receive distinct addresses. The manager that owns the
+interface (Kubernetes for `overlay`, Fabric for `physical`) ensures the
+DHCP exchange can reach that trusted service.
+
+A workload guest or host is expected to run a DHCP client on its tenant
+interface. Manager tasks configure the backend network path; they do not
+write a static tenant IP into the guest or host operating system. Before
+tenant traffic is enabled, the interface-owning manager allows the
+required DHCP exchange with the trusted provider service and gateway
+address resolution even when tenant SecurityGroups deny application
+traffic. It must prevent tenant endpoints from offering DHCP or sending
+accepted DHCP responses to other tenant endpoints.
+
+When a Kubernetes Manager needs provider-specific segment, relay, or
+DHCP context, the Fabric Manager declares the value through a
+`NetworkDataModel` output and the Kubernetes Manager declares the same
+model as an input. There is no universal DHCP-specific model; providers
+register only the backend-specific values their combination needs.
+Schema validation checks the value's shape, while behavioral
+qualification verifies the actual DHCP path.
+
+Address discovery remains service-specific. VMaaS reads the assigned
+address from VM/VMI status after first start. BMaaS uses its separate
+`query_dhcp_lease` task after the tenant-network handoff and matches the
+selected interface MAC. That lease-query task is not part of the generic
+VM attachment operation.
+
 Each implementation provides the complete set of resource actions assigned to
 its role. A Fabric Manager that declares `EAST_WEST_ETHERNET` also implements
 both FabricDomain task entry points. A manager with a different internal model
@@ -1358,7 +1392,7 @@ For each Fabric create or reconcile action, OSAC derives the expected model/owne
 
 ### IC-6: Workload attachment and SecurityGroup enforcement
 
-**Requirements:** FR-3, FR-4
+**Requirements:** FR-3, FR-4, FR-12
 
 The workload extension creates a target-only SubnetAttachment request. The
 networking controller resolves the request's Subnet, interface descriptor,
@@ -1448,8 +1482,8 @@ A missing registration, projection, execution role, or incompatible profile fail
 ## Provenance
 
 Authored: draft @ design 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (52 behind origin/main)
-Final: manual-edit [manual] @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
+Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 97d046f86 (16 behind origin/main)
 
-> Context changed between draft and manual-edit.
+> Context changed between draft and revise.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","manual-edit","revise","revise","revise","revise","manual-edit","manual-edit","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"97d046f86","source_repo_branch":"main","commits_behind_main":16,"commits_ahead_main":0,"main_ref":"main","phases":["draft","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":false} -->
