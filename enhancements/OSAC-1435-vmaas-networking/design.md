@@ -3,7 +3,7 @@ title: vmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-12
+last-updated: 2026-10-13
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1435
 prd: "prd.md"
@@ -50,6 +50,17 @@ This enhancement extends the unified networking API to support VMaaS-specific re
 ## Summary
 
 This enhancement is a service-specific extension of the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking/design.md), providing the detailed per-service flow for this service type. The Unified Networking EP defines NetworkClass and the shared networking resource semantics and hierarchy. The Network Manager Integration Contract defines manager registration and dispatch. This document defines how VMaaS consumes those shared contracts.
+
+This integration targets VMaaS's existing KubeVirt runtime. VMaaS controllers
+create and manage KubeVirt `VirtualMachine` resources and observe the VMI
+created by KubeVirt: the VM is prepared while halted, its network interface
+is applied before first start, and its assigned address is observed from VMI
+status.
+Provider-selected Kubernetes Managers vary how they realize networking on
+that VM. Manager modularity applies to provider networking implementations;
+VM lifecycle and IP observation remain KubeVirt-specific. Supporting another
+VM runtime requires a separate VMaaS runtime integration and updates to this
+service-specific flow.
 
 VMaaS inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/design.md#deployment-support-boundary):
@@ -105,6 +116,7 @@ the shared allocation and attachment lifecycle.
 - CaaS or BMaaS networking (this EP covers VMaaS only)
 - Implementation of the shared manager dispatch contract, which is defined by the Network Manager Integration Contract.
 - Building or selecting a particular Kubernetes Manager implementation; VMaaS uses the deployment-selected manager that conforms to the shared contract.
+- A VM runtime abstraction or support for VM runtimes other than KubeVirt.
 
 ## Proposal
 
@@ -113,10 +125,12 @@ the shared allocation and attachment lifecycle.
 The deployment selects its Fabric and Kubernetes Managers through NetworkClass.
 Neither the tenant nor the VM template chooses a binding plugin or provider.
 The same workload template works with any conforming selected Kubernetes
-Manager. The workload template creates each VM halted and without its tenant
-network/interface fields. The manager applies those fields and the requested
-policy through the target-only `SubnetAttachment` before VMaaS allows the VM to
-start.
+Manager for VMaaS's KubeVirt VM target. The workload template creates each VM
+halted and without its tenant network/interface fields. The manager applies
+those fields and the requested policy through the target-only
+`SubnetAttachment` before VMaaS allows the VM to start. The manager contract
+varies provider networking behavior; VMaaS lifecycle and status observation
+continue to use KubeVirt resources.
 
 | Phase | VMaaS responsibility | Provider-manager responsibility |
 |---|---|---|
@@ -219,6 +233,11 @@ KubeVirt requires a matching `spec.networks` entry and
 `NetworkAttachmentDefinition` in the VM's namespace. See the [KubeVirt network
 interface contract](https://kubevirt.io/user-guide/network/interfaces_and_networks/)
 and [run strategies](https://kubevirt.io/user-guide/compute/run_strategies/).
+For this single-NIC flow, the completed VM configuration must expose only the
+tenant-facing interface as an address-reporting VMI interface. The Kubernetes
+Manager configures any default or autoattached interface behavior to meet that
+constraint; this example disables `autoattachPodInterface`. This keeps the
+existing first-non-empty VMI IP selection unambiguous.
 
 Kubernetes `apply_subnet_attachment` verifies the exact VM UID, confirms the
 VM is halted with no running VMI, adds only the manager-selected
@@ -302,7 +321,8 @@ realization; VMaaS does not allocate or reinterpret them.
 #### IP Discovery (feedback loop)
 
 4. **SubnetAttachment controller discovers the VM IP:**
-   - Watches KubeVirt VMI network status and maps the sole tenant interface to the resolved attachment.
+   - Reads the first non-empty `ipAddress` in KubeVirt VMI `status.interfaces`, matching the existing `ComputeInstance.status.ipAddress` observation behavior. The supported VM profile exposes only the tenant-facing interface, so this address belongs to the sole attachment.
+   - DHCP assigns the address inside the guest; KubeVirt VMI status is OSAC's observation source. OSAC does not query a DHCP server for the VM address. A VM profile with another address-reporting interface is outside this flow; multi-interface support must match VMI interface identity to `interface_selector` before increasing the attachment limit.
    - Writes the assigned IPv4 address and `IPDiscoveryComplete` to request status.
    - The ComputeInstance lifecycle controller mirrors the request's readiness/IP to `computeNetworkAttachmentStatuses` on workload status.
    - The feedback controller transports that status through Signal RPC to fulfillment-service; fulfillment persists `compute_network_attachment_statuses` for tenant visibility and ExternalIPAttachment target resolution.
@@ -356,7 +376,7 @@ message ComputeInstanceSpec {
 
 message ComputeNetworkAttachmentStatus {
   string subnet_ref = 1;               // Subnet ID (echoed from spec)
-  string ip_address = 2;               // Discovered from KubeVirt VMI network status after DHCP/overlay assignment
+  string ip_address = 2;               // Sole attachment IP observed from the KubeVirt VMI after DHCP/overlay assignment
 }
 
 message ComputeInstanceStatus {
@@ -387,11 +407,17 @@ type ComputeInstanceStatus struct {
 
 type ComputeNetworkAttachmentStatus struct {
     SubnetRef string `json:"subnetRef"`
-    IPAddress string `json:"ipAddress,omitempty"` // Discovered from KubeVirt VMI after DHCP/overlay assignment
+    IPAddress string `json:"ipAddress,omitempty"` // Sole attachment IP observed from the KubeVirt VMI after DHCP/overlay assignment
 }
 ```
 
-The SubnetAttachment controller discovers the IP from KubeVirt VMI status and writes request status. The workload controller mirrors the discovered address to `ComputeNetworkAttachmentStatuses`; the feedback controller synchronizes workload status to fulfillment-service.
+The SubnetAttachment controller observes the first non-empty KubeVirt VMI
+interface IP for the sole tenant attachment and writes request status. The
+workload controller mirrors the discovered address to
+`ComputeNetworkAttachmentStatuses`; the feedback controller synchronizes
+workload status to fulfillment-service. The existing ComputeInstance
+`status.ipAddress` path also reads the first non-empty VMI interface IP. This
+behavior is specific to VMaaS's current KubeVirt single-interface flow.
 
 #### Server Validation (fulfillment-service)
 
@@ -567,7 +593,7 @@ Resolved: Return error, no resource persisted. Pool capacity checked synchronous
 ## Test Plan
 
 - **[DEV/QE] Subnet placement lifecycle:** provide two hosting-cluster IDs and verify OSAC tracks one Kubernetes `create_subnet` stage per ID, reuses the single Fabric result, and withholds Subnet readiness until both stages succeed. Add a placement and verify it is prepared before VM placement; remove one while it still has a consumer and verify cleanup waits; then verify Subnet deletion cleans every possibly-started placement even when it is absent from the current resolver set, before Fabric deletion.
-- **[DEV/QE] VM handoff:** exercise two provider implementations through the same workload template and two hosting-cluster kubeconfig contexts. Verify OSAC selects the context matching the captured `hosting_cluster_id`, and a same-named VM in another context is untouched. The VM is initially halted with no tenant network/interface fields; apply updates only the exact VM UID while no VMI exists, installs policy, and reports readiness only after both are confirmed; no start occurs before `NetworkAttachmentsReady=True`; the first VMI uses the applied interface; replay is idempotent; replacement VM UIDs or a missing context are rejected; and cleanup removes manager-owned fields/policy before VM deletion.
+- **[DEV/QE] VM handoff:** exercise two provider implementations through the same workload template and two hosting-cluster kubeconfig contexts. Verify OSAC selects the context matching the captured `hosting_cluster_id`, and a same-named VM in another context is untouched. The VM is initially halted with no tenant network/interface fields; apply updates only the exact VM UID while no VMI exists, installs policy, and reports readiness only after both are confirmed; no start occurs before `NetworkAttachmentsReady=True`; the first VMI uses the applied interface; its first non-empty interface IP is mirrored to the sole attachment status; replay is idempotent; replacement VM UIDs or a missing context are rejected; and cleanup removes manager-owned fields/policy before VM deletion.
 
 ### Shared Attachment Contract Validation
 
@@ -659,6 +685,7 @@ is:
 3. Tenant creates ComputeInstance with `network_attachments` (`ComputeNetworkAttachment`, no `primary` field, single-NIC only)
 4. osac-operator's ComputeInstance controller resolves subnet → namespace, triggers AAP job
 5. AAP template (`osac.templates.ocp_virt_vm`) creates KubeVirt VirtualMachine with one `l2bridge` interface in the subnet's CUDN namespace
+6. The ComputeInstance controller observes the first non-empty IP in KubeVirt VMI interface status and publishes it as `ComputeInstance.status.ipAddress`; this is the existing KubeVirt-specific IP observation path.
 
 ### What Already Works
 
