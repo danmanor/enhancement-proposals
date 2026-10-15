@@ -3,7 +3,7 @@ title: Unified Networking Requirements
 authors:
   - dmanor@redhat.com
 creation-date: 2026-06-03
-last-updated: 2026-10-13
+last-updated: 2026-10-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 see-also:
@@ -24,7 +24,7 @@ superseded-by:
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
 | Target release | OSAC 0.2 |
-| Date        | 2026-10-06 |
+| Date        | 2026-10-15 |
 
 ## Contents
 
@@ -109,19 +109,11 @@ The target release is OSAC 0.2. The provider networking setting is included beca
 
 #### FR-1: Network isolation and connectivity (R1)
 
-Tenants must be able to create isolated VirtualNetworks. Workloads on the same
-Subnet share a local network segment and can communicate directly when their
-attached SecurityGroups permit the traffic. Workloads on different Subnets in
-the same VirtualNetwork can communicate through routing when their
-SecurityGroups permit the traffic. For a new connection between two
-workloads, both the sender's egress rules and the receiver's ingress rules
-must permit it; established replies are allowed automatically. For traffic
-with only one OSAC workload endpoint, outbound access uses that workload's
-egress rules and inbound access uses its ingress rules. Workloads in separate
-VirtualNetworks remain isolated. These outcomes apply to every workload
-service that integrates the shared networking model. [User]
+Tenants must be able to create isolated VirtualNetworks. Workloads on the same Subnet share a local network segment and can communicate directly when their attached SecurityGroups permit the traffic. Workloads on different Subnets in the same VirtualNetwork can communicate through routing when their SecurityGroups permit the traffic. For a new connection between two workloads, both the sender's egress rules and the receiver's ingress rules must permit it; established replies are allowed automatically. For traffic with only one OSAC workload endpoint, outbound access uses that workload's egress rules and inbound access uses its ingress rules. Workloads in separate VirtualNetworks remain isolated. These outcomes apply to every workload service that integrates the shared networking model. [User]
 
 Every workload interface attached to a Subnet obtains its tenant IPv4 address through Dynamic Host Configuration Protocol (DHCP). The workload service exposes the assigned address through its normal status; tenants do not provide a static tenant-interface address. [User]
+
+SecurityGroup enforcement is reported per deployment. If the role that owns an interface does not declare that it enforces SecurityGroups, OSAC reports `NotEnforced` rather than implying that policy is active. [User]
 
 Tenants may choose identical or overlapping private IPv4 ranges for separate isolated VirtualNetworks, including networks belonging to different tenants. Providers preserve routing, policy, allocation, and cleanup isolation using the owning VirtualNetwork context, without requiring globally unique private CIDRs or addresses. Sibling Subnets within one VirtualNetwork do not overlap, and independently owned endpoints within one shared Subnet receive distinct addresses. [User]
 
@@ -143,7 +135,7 @@ Tenants can configure inbound access to a workload with an ExternalIPAttachment 
 
 #### FR-6: Modular networking backends with transparent selection (R6)
 
-Cloud Infrastructure Admins can use any Fabric Manager and, where needed, any Kubernetes Manager that fulfills its OSAC role contract. The same resources retain their meaning across conforming manager implementations and backend technologies; tenants do not select or need to understand the provider choice.
+Cloud Infrastructure Admins can use any Fabric Manager and, where needed, any Kubernetes Manager that fulfills its OSAC role contract. The same resources retain their meaning across conforming manager implementations and backend technologies; tenants do not select or need to understand the provider choice. Conformance is demonstrated by the published test suite, not by manager registration alone.
 
 #### FR-7: Single network attachment per workload (R7)
 
@@ -193,19 +185,19 @@ must be reachable within that deployment.
 
 ### Networking hub support boundary
 
-Each deployment has one provider-owned networking hub. Multiple hosting
-clusters remain supported where a workload feature calls for them, but
-networking resources are not coordinated across multiple hubs.
+Each deployment has one provider-owned networking hub. The networking contract supports one hosting cluster and one provider-owned networking hub; networking resources are not coordinated across multiple hubs.
+
+---
 
 ---
 
 ## Provenance
 
-Authored: revise @ prd 0.11.3 - 2bd6607, workspace main @ 1f3b63b82 (58 behind origin/main)
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace main @ 97d046f86 (16 behind origin/main)
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: manual-edit [manual] @ prd 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and manual-edit.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"97d046f86","source_repo_branch":"main","commits_behind_main":16,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

@@ -3,7 +3,7 @@ title: default-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-12
+last-updated: 2026-10-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1433
 prd: "prd.md"
@@ -101,7 +101,7 @@ A provider-connected resource in OSAC requires networking resources: VirtualNetw
 
 - Custom default configurations per tenant (all tenants receive the same defaults)
 - Auto-provisioning of additional VirtualNetworks or Subnets beyond the initial default
-- UI support for simplified creation (deferred — API and CLI only)
+- UI support for simplified creation; the supported interfaces are API and CLI
 - Automatic migration of existing resources to use defaults
 
 ## Proposal
@@ -533,7 +533,7 @@ No new metrics or alerts (existing provisioning duration and failure rate metric
 
 **Impact:** A persistent provider failure leaves parent deletion pending, holding child references and external pool capacity until cleanup is confirmed.
 
-**Mitigation:** Retain parent/child finalizers, durable operation identities and address ownership; expose the failed task, retry with backoff, and resume after provider repair. Release capacity only after confirmed address release. Enabled-mode failures do not remove finalizers after a retry limit. [User]
+**Mitigation:** Retain parent/child finalizers and address ownership; expose the failed task, retry idempotently with the same stable API ID and captured task inputs, and resume after provider repair. Release capacity only after confirmed address release. Enabled-mode failures do not remove finalizers after a retry limit. [User]
 
 **Reviewed by:** Platform
 
@@ -750,7 +750,7 @@ kubectl describe tenant acme-corp -n <namespace>
 
 **Resolution:**
 1. Inspect parent, child and AAP operation diagnostics to identify the failed task.
-2. Repair provider connectivity/configuration or the backend operation; let reconciliation retry with the same durable operation identity.
+2. Repair provider connectivity/configuration or the backend task; let reconciliation retry idempotently with the same stable API ID and captured task inputs.
 3. Confirm attachment deletion before address release and parent deletion. Preserve finalizers and address ownership until successful cleanup; do not force-remove finalizers. [User]
 
 ### Disabling automatic ExternalIP requests by exhausting pools
@@ -788,13 +788,15 @@ shared [Unified Networking disabled-mode contract](/enhancements/OSAC-1433-unifi
 
 ---
 
+---
+
 ## Provenance
 
-Authored: revise @ design 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: manual-edit [manual] @ design 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and manual-edit.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

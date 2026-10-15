@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Dan Manor |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1433 |
-| Date        | 2026-10-11 |
+| Date        | 2026-10-15 |
 
 This PRD inherits the [Unified Networking deployment support
 boundary](/enhancements/OSAC-1433-unified-networking/prd.md#deployment-support-boundary):
@@ -51,7 +51,7 @@ available.
   receive the same default CIDR and SecurityGroup rules)
 - Auto-provisioning of VirtualNetworks or Subnets beyond the initial
   default (tenants create additional VNs manually)
-- UI support for simplified creation (deferred — API and CLI only for now)
+- UI support for simplified creation; the supported interfaces are API and CLI
 - Automatic migration of existing tenants to receive default networking
   resources (only new tenants get defaults at onboarding)
 
@@ -273,13 +273,15 @@ flows are defined by their extension designs.
 
 ---
 
+---
+
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: manual-edit [manual] @ prd 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and manual-edit.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","manual-edit","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","respond","revise","revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

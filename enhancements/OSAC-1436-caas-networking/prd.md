@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1436 |
-| Date        | 2026-07-08 |
+| Date        | 2026-10-15 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
 Networking resources support only Create, List/Get, and Delete. A Cluster's
@@ -51,7 +51,7 @@ attachments. Multi-NIC cluster-node networking is future scope.
 
 ### 2.3 Non-Goals
 
-- VM-based cluster node sets (deferred — bare-metal only for initial release)
+- VM-based cluster node sets
 - DNS API for cluster endpoints (automated DNS management is outside this enhancement)
 - Per-node-set subnet placement (all node sets share the cluster's single network attachment)
 - Multi-NIC cluster nodes (one tenant Subnet is supported for the initial release)
@@ -216,13 +216,15 @@ allocation, and network configuration decisions are documented in the
 
 ---
 
+---
+
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: manual-edit [manual] @ prd 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and manual-edit.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

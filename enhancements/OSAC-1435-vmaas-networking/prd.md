@@ -4,7 +4,7 @@
 |-------------|---------|
 | Author(s)   | Dan Manor (dmanor@redhat.com) |
 | Jira        | https://redhat.atlassian.net/browse/OSAC-1435 |
-| Date        | 2026-07-08 |
+| Date        | 2026-10-15 |
 
 > This PRD is an expansion of the [Unified Networking PRD](/enhancements/OSAC-1433-unified-networking/prd.md), scoped to the specific service type. The unified PRD defines the shared architectural requirements and requires connected deployments only; air-gapped and disconnected networking deployments are not supported. This document defines the service-specific requirements and user stories.
 Networking resources support only Create, List/Get, and Delete. A VM's network
@@ -41,7 +41,7 @@ Creating a VM with external access requires manual IP allocation and NAT configu
 ### 2.2 Non-Goals
 
 - Cluster or bare-metal server networking (this PRD covers VMs only; clusters and bare-metal servers are addressed in separate enhancements)
-- Multi-NIC VM networking (future scope)
+- More than one tenant network attachment per VM
 
 ## 3. User Stories
 
@@ -109,6 +109,10 @@ provider work is skipped. [User]
 
 - **FR-9:** A VM's selected SecurityGroups define its stateful ingress and egress policy. Rules from the selected groups combine; established replies are allowed and unmatched new traffic is denied. OSAC reports tenant network connectivity only after the policy is applied and the tenant address is known; a policy failure is visible and does not report successful connectivity. [User]
 
+#### VM Network Preparation
+
+- **FR-10:** The system prepares a VM's tenant network attachment before VM creation. VMaaS creates the VM with that attachment already configured, so its first boot uses the requested network. [User]
+
 Re-enabling provider networking requires the Cloud Provider Admin to drain/delete all existing deployment workloads, including managed cluster workers, finish or account for outstanding network operations, and arrange cleanup of leftover provider state. Workloads remain readable/deletable during the transition, but new workload creation is blocked. After deployment activation, each new workload requires its own provider-backed network dependencies to be ready; a failure in one tenant's defaults does not block other ready tenants. OSAC does not automatically move existing baseline workloads into tenant networks. [User]
 
 ### 4.2 Non-Functional Requirements
@@ -119,6 +123,7 @@ Connectivity, allocation, provider policy enforcement/cleanup, and related
 provider-work timing requirements described here apply when provider networking is
 enabled. Disabled mode retains API prerequisites and explicitly identifies
 skipped provider work; it does not claim those provider outcomes. [User]
+
 
 ## 5. Acceptance Criteria
 
@@ -132,6 +137,7 @@ skipped provider work; it does not claim those provider outcomes. [User]
 - [ ] A Tenant User can create a VM with `--external-ip-attachment` and no explicit network configuration — the VM is created on the default subnet with an auto-provisioned external IP for inbound access
 - [ ] Creating a VM in a bare-metal-only deployment returns an error with a clear message
 - [ ] A VM with one attachment is provisioned with that attachment providing the default gateway
+- [ ] VMaaS creates a VM only after its tenant attachment is ready, and the VM's first boot uses that configured network.
 - [ ] VM status shows the allocated IP address for the sole network attachment after provisioning completes
 - [ ] External IP attachment with a VM target routes inbound traffic to the VM's primary attachment IP
 - [ ] Auto-created external IPs and attachments are visible in list views with a label indicating they were auto-provisioned
@@ -155,16 +161,16 @@ skipped provider work; it does not claim those provider outcomes. [User]
 
 - **Unified Networking EP** — this PRD builds on the unified networking resource model (virtual networks, subnets, security groups, external IPs, NAT gateways) defined in the [Unified Networking EP](/enhancements/OSAC-1433-unified-networking)
 - **Default Networking PRD** — default subnet and security group selection behavior defined in [Default Networking PRD](/enhancements/OSAC-1433-default-networking)
-- **Network Manager Integration Contract** — defines how providers register and select compatible managers and how OSAC validates their shared networking work; this PRD defines the VM-specific behavior that uses that contract ([PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md), [design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md))
+- **Network Manager Integration Contract** — defines manager registration, task execution, and shared networking behavior; this PRD defines the VM-specific behavior that uses that contract ([PRD](/enhancements/OSAC-1433-network-manager-integration-contract-networking/prd.md), [design](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md))
 - **OSAC-1712 (automatic pool selection)** — the auto external IP pool selection reuses the identical algorithm: pick the pool with the most available capacity matching the IP family
-- **Qualified Kubernetes Manager** — VM overlay networking requires a deployment-selected manager that is compatible with the Fabric Manager and meets the shared manager contract. OSAC-1511 and OSAC-1717 were evaluation spikes; their closure does not establish that a manager is deployed or qualified.
+- **Qualified Kubernetes Manager** — VM overlay networking requires a deployment-selected Kubernetes Manager that meets the shared manager contract; the provider documents and qualifies its selected manager pairing. OSAC-1511 and OSAC-1717 were evaluation spikes; their closure does not establish that a manager is deployed or qualified.
 
 ## 8. Risks
 
 ### 8.1 Virtualization platform integration blocked or delayed
 
 - **Owner:** Engineering / Product
-- **Mitigation:** OSAC-1511 and OSAC-1717 are closed evaluation spikes, not delivery or qualification of a deployment's Kubernetes Manager. Gate VM overlay networking on a compatible, registered manager that passes provider qualification; without one, VM overlay networking remains unavailable.
+- **Mitigation:** OSAC-1511 and OSAC-1717 are closed evaluation spikes, not delivery or qualification of a deployment's Kubernetes Manager. Gate VM overlay networking on a registered Kubernetes Manager that fulfills its role contract and passes provider conformance; without one, VM overlay networking remains unavailable.
 
 ### 8.2 Shared manager support is delayed
 
@@ -184,13 +190,15 @@ Resolved: Return error, no resource persisted.
 
 ---
 
+---
+
 ## Provenance
 
-Authored: revise @ prd 0.11.5 - 6d28c88, workspace docs/OSAC-1433-network-manager-provider-guide @ eabff3b59 (76 behind origin/main, dirty)
-Final: revise @ prd 0.11.5 - 1c6e8de, workspace docs/OSAC-1433-network-manager-provider-guide @ 639af2dba
+Authored: revise @ prd 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
+Final: manual-edit [manual] @ prd 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and manual-edit.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"639af2dba","source_repo_branch":"docs/OSAC-1433-network-manager-provider-guide","commits_behind_main":0,"commits_ahead_main":5,"main_ref":"main","phases":["revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"prd","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->

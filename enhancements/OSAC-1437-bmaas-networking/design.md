@@ -3,7 +3,7 @@ title: bmaas-networking
 authors:
   - dmanor@redhat.com
 creation-date: 2026-07-08
-last-updated: 2026-10-12
+last-updated: 2026-10-15
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-1437
 prd: "prd.md"
@@ -44,7 +44,6 @@ superseded-by:
 - [Alternatives Considered](#alternatives-considered)
 - [Open Questions](#open-questions)
 - [Test Plan](#test-plan)
-- [Long-Term Evolution](#long-term-evolution-the-reboot-is-the-seam)
 - [Graduation Criteria](#graduation-criteria)
 - [Upgrade and Downgrade Strategy](#upgrade-and-downgrade-strategy)
 - [Version Skew Strategy](#version-skew-strategy)
@@ -67,8 +66,7 @@ OSAC networking supports exactly one provider-owned hub per deployment.
 Multi-hub networking placement, cross-hub resource coordination, and
 cross-hub network connectivity are unsupported. This boundary applies only to
 the networking area and does not define hub behavior for other OSAC areas.
-Multiple hosting/workload clusters remain supported where a networking feature
-explicitly specifies them.
+BMaaS networking uses the deployment's single hosting cluster. Tenant guest clusters created through the workload API do not change that hosting-cluster boundary.
 
 BaremetalInstance supports a repeated `BareMetalNetworkAttachment` field for API compatibility, but accepts at most one entry. The optional `interface` and `primary` fields retain their existing semantics; with one entry, `primary` is implicit, omission and `true` are accepted, and `false` is rejected. The bare-metal-fulfillment-operator's `reconcileNetworking` phase creates and waits for its SubnetAttachment; networking reconciliation dispatches Fabric policy/attachment and lease jobs. The workload mirrors discovered address status for DNAT target resolution. See [PRD](prd.md) for detailed requirements.
 
@@ -82,7 +80,7 @@ cleanup. [User]
 
 The [Network Manager Integration Contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md)
 owns registration, task/input/result schemas, no-op requirements, overlapping
-address spaces, stable API ownership, NetworkData, retries and shared cleanup.
+address spaces, stable API ownership, opaque provider values, retries and shared cleanup.
 The [internal request protocol](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#workload-attachment-policy-lifecycle)
 defines attachment status and projection recovery. This design specifies the
 service's handoffs and readiness gates, not another copy of those rules.
@@ -156,7 +154,7 @@ Ironic reaching two planes at once is ordinary **multi-homing**: the conductor h
 - CaaS or VMaaS networking (this EP covers BMaaS only)
 - Implementation of the shared manager dispatch contract, which is defined by the Network Manager Integration Contract.
 - Creating the provisioning network (network segment + DHCP + gateway + SNAT) and the initial per-server attach — a deployment prerequisite handled by the fabric infrastructure / deployment infrastructure, not the operator (see [Provisioning Network and Port Moves](#provisioning-network-and-port-moves))
-- Re-provision handoff reset: NetworkHandoffComplete is never reset after initial provisioning, so an in-place re-provision (config-version change after Ready) would run over the tenant network (deferred to long-term design)
+- Re-provision handoff reset: NetworkHandoffComplete is never reset after initial provisioning, so an in-place re-provision (config-version change after Ready) would run over the tenant network (unsupported)
 
 ## Proposal
 
@@ -245,7 +243,7 @@ Roles are conventions, not enforced enums. BMaaS uses them for display/documenta
 
 ### Workflow Description
 
-#### Phase 1: Networking prerequisites
+#### Networking prerequisites
 
 Use the shared [creation readiness gates](/enhancements/OSAC-1433-unified-networking/design.md#creation-readiness-gates) and [deletion dependency guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards), together with [tenant defaults](/enhancements/OSAC-1433-default-networking/design.md).
 Require the resolved tenant Subnet and SecurityGroups ready before creating
@@ -253,7 +251,7 @@ the workload. Shared network creation, data persistence and optional external
 address resources follow unified rules; this service adds no backend-specific
 selection or allocation path.
 
-#### Phase 2: Tenant Creates BM Server
+#### Tenant creates the bare-metal server
 
 1. **Create BaremetalInstance with network_attachments:**
 
@@ -289,7 +287,7 @@ selection or allocation path.
      - The optional `interface` references a valid interface name from the BareMetalInstanceType's network ports list
      - If `interface` is omitted, defaults to the first port with `role=fabric` from the BareMetalInstanceType
      - If one attachment is present, it is the implicit primary; omitted or `primary: true` is accepted but redundant, while `primary: false` is rejected
-   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) in the same DB transaction as the BaremetalInstance. The ExternalIP starts in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). The ExternalIPAttachment is **not** created at this point — it is deferred to the fulfillment-service internal reconciler, which creates it only after the ExternalIP is Allocated and the BaremetalInstance is Ready (has a known IP from `reconcileIPDiscovery`). See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioned-external-access) for the full stepped flow.
+   - If `auto_external_ip_attachment == true`: auto-selects ExternalIPPool (READY, most available capacity, matching IP family), creates ExternalIP (labeled `osac.openshift.io/auto-created: "true"` and `osac.openshift.io/auto-created-for: <baremetal-instance-id>`) in the same DB transaction as the BaremetalInstance. The ExternalIP starts in **Pending** state. Pool capacity is decremented atomically; if the pool is exhausted, the API call fails and no resources are persisted (including the BaremetalInstance). The ExternalIPAttachment is **not** created at this point. The fulfillment-service internal reconciler creates it after the ExternalIP is Allocated and the BaremetalInstance is Ready with a known IP from `reconcileIPDiscovery`. See [Unified Networking — Auto-provisioning lifecycle](/enhancements/OSAC-1433-unified-networking/design.md#auto-provisioned-external-access) for the full stepped flow.
    - Creates BaremetalInstance CR with `network_attachments` in spec
 
 3. **bare-metal-fulfillment-operator BareMetalInstance controller:**
@@ -306,7 +304,7 @@ selection or allocation path.
 
    c. **`reconcileNetworking` (after provisioning completes):**
       - Creates one internal target-only `SubnetAttachment` referencing the BMI. The request does not copy Subnet, interface, policy, or IP values; it tracks the apply job, readiness, lease-discovery status and cleanup finalizer. It is not the switch-port binding itself.
-      - The networking controller reads the BMI, resolves its immutable Subnet/selected interface/SecurityGroup rules and NetworkData, and requires the exact selected-port MAC from the BareMetalHost interface-macs annotation before physical dispatch. It then dispatches Fabric `apply_subnet_attachment` with request `resource`, workload `target`, and normalized `network_attachment`.
+      - The networking controller reads the BMI, resolves its immutable Subnet/selected interface/SecurityGroup rules and provider_values, and requires the exact selected-port MAC from the BareMetalHost interface-macs annotation before physical dispatch. It then dispatches Fabric `apply_subnet_attachment` with request `resource`, workload `target`, and normalized `network_attachment`.
       - The Fabric Manager installs effective stateful policy and synchronizes the selected physical port's membership with the fabric segment backing the requested Subnet. Tenant traffic remains unavailable until both segment membership and policy are confirmed.
       - The request controller owns the AAP job and readiness; BMF mirrors `NetworkAttachmentsReady=True` only after the exact Fabric job result is accepted and the port membership and policy are confirmed. Apply failure leaves the interface unavailable and BMI non-ready.
 
@@ -322,13 +320,13 @@ selection or allocation path.
    - The networking controller validates one unambiguous tenant-Subnet IPv4 lease for the selected MAC, writes IP/`IPDiscoveryComplete` to request status, and retains the request's job history.
    - BMF `reconcileIPDiscovery` mirrors request status into `networkAttachmentStatuses`; the feedback controller signals fulfillment-service to persist tenant-visible status. BMI Ready requires successful apply, handoff, and valid discovery. [User]
 
-#### Phase 3: External Access (optional)
+#### External Access (optional)
 
 5. **Create ExternalIP:**
    ```bash
    osac create externalip --pool external-pool-1 --name my-ip
    ```
-   Dispatcher → Fabric `create_external_ip` through `osac.networking.<selected managerName>`
+   Dispatcher → Fabric `create_external_ip` through `osac.templates.<fabric manager name>`
 
 6. **Create ExternalIPAttachment:**
     ```bash
@@ -340,7 +338,7 @@ selection or allocation path.
       1. **ExternalIP must be Allocated** (have an allocated address from the fabric manager)
       2. **BaremetalInstance must have a primary IP** — reads `status.networkAttachmentStatuses[].ipAddress` for the attachment where `primary: true`. This IP is written by the operator during `reconcileIPDiscovery` (step 4) and synced to the fulfillment-service via the feedback controller.
     - Once both preconditions are met: writes `osac.openshift.io/target-ip` annotation on the ExternalIPAttachment CR
-    - Calls Fabric `attach_external_ip` through `osac.networking.<selected managerName>`
+    - Calls Fabric `attach_external_ip` through `osac.templates.<fabric manager name>`
     - Fabric manager creates DNAT rule: external IP → BM's primary subnet IP
     - ExternalIPAttachment transitions from Pending to Ready
 
@@ -365,24 +363,11 @@ selection or allocation path.
 
 **BMaaS-specific deletion dependency guard:**
 
-The Subnet controller gates its deprovision job on the complete removal
-of all BareMetalInstance CRs with `spec.networkAttachments[].subnetRef`
-referencing the subnet. This prevents the infrastructure backend from
-rejecting the subnet deletion because bare-metal servers are still
-attached to it. The guard lists BMI CRs in the namespace and filters by
-`subnetRef` in-memory, requeuing every 10 seconds until all BMIs are gone.
-See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards)
-for the full guard table covering all networking resources.
+The Subnet deletion guard keys workload references by the Subnet's stable fulfillment-service API ID. It compares each BMI `spec.networkAttachments[].subnetRef` with that API ID, not with the generated Kubernetes Subnet name. The current guard compares the API UUID to the CR name, so it does not match attached BMIs; implementation must correct the key before relying on the guard. The guard waits until all referencing BMIs are gone before allowing Subnet deprovisioning. See [Unified Networking — Deletion Dependency Guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards).
 
 **IP discovery lease validation:**
 
-The SubnetAttachment controller requires a valid manager result containing one
-unambiguous `osac_result.data.dhcp_leases` match for the sole selected-port MAC
-and tenant Subnet. A missing result, empty lease, conflicting matches or an
-out-of-Subnet address leaves `IPDiscoveryComplete` false with retry/diagnostic
-behavior. BMF mirrors the request result; BMI Ready/RUNNING requires apply,
-handoff and discovery completion. It cannot appear RUNNING without a real
-tenant address because a lease has not propagated yet. [User]
+The SubnetAttachment controller requires one unambiguous `dhcp_leases[]` result matching the selected-port MAC and tenant Subnet. Each lease contains `subnet_ref`, `interface`, `ip_address`, and `mac_address`. A missing result, empty lease, conflicting matches, or an out-of-Subnet address leaves `IPDiscoveryComplete` false with retry and a diagnostic. BMF mirrors the request result; BMI Ready/RUNNING requires apply, handoff, and discovery completion. [User]
 
 <a id="api-extensions"></a>
 
@@ -525,17 +510,9 @@ the fabric infrastructure / deployment infrastructure), not operator responsibil
 provisioning network name configured for the fabric manager must match the one
 used at bootstrap.
 
-**Attachment manager contract.** The networking controller dispatches
-`apply_subnet_attachment` and `delete_subnet_attachment` through the fixed
-Fabric Manager entry points. It passes the target-only request as `resource`,
-the BMI as `target`, and the resolved Subnet, selected physical port, complete
-SecurityGroup rules, and scoped NetworkData separately. Apply installs policy
-before tenant connectivity; delete removes policy and restores provisioning
-connectivity after BMF confirms host shutdown. Provider segment identifiers and
-credentials are manager environment/context, not workload API selectors.
-AAP jobs, results and finalizer state belong to the request. The lifecycle owner
-waits for apply/delete status and does not launch a parallel raw port-move job.
-Backend operations remain idempotent by BMI API ID, selected logical interface and placement; request/target CR UIDs fence projections and result correlation. [User]
+**Attachment manager contract.** The networking controller dispatches `apply_subnet_attachment` and `delete_subnet_attachment` through the fixed Fabric Manager task files. The task name expresses the action; the manager never derives direction from `deletionTimestamp`. It passes the target-only request as `resource`, the BMI as `target`, and the resolved Subnet, selected physical port, complete SecurityGroup rules, and applicable `provider_values`. Apply installs policy before enabling tenant connectivity; delete removes policy and restores provisioning connectivity after BMF confirms host shutdown. Provider segment identifiers and credentials come from manager environment/context, not workload API selectors. AAP jobs and finalizer state belong to the request. The lifecycle owner waits for apply/delete status and does not launch a parallel raw port-move job. The binding identity is the BMI API ID, logical interface, and Subnet API ID; Kubernetes UIDs fence projections and results. [User]
+
+The Fabric Manager enforces SecurityGroup semantics on physical interfaces when its registration declares `securityGroups`. Without that capability, OSAC reports `NotEnforced`; attachment readiness does not imply policy enforcement.
 
 #### Topology-Agnostic Operator (Transport is Environment Config)
 
@@ -677,14 +654,7 @@ This feature inherits the existing security model:
 
 ### RBAC and Tenancy
 
-BMF requires create/get/list/watch/delete access to its target-only SubnetAttachment requests. The networking controller requires target BMI/BareMetalHost and Subnet/SecurityGroup/NetworkClass read access and owns request status/finalizer updates. It reads runtime NetworkData through the authorized fulfillment private API; the fulfillment service also projects NetworkData records as CRs in the networking hub, but AAP manager jobs have no Kubernetes access to those projections. The operator passes validated values to jobs through the manager contract. Tenant and target ownership are validated before dispatch. [User]
-
-All new resources (BaremetalInstance with new fields, auto-provisioned ExternalIP/ExternalIPAttachment) inherit tenant isolation from parent:
-- `osac.openshift.io/tenant` annotation propagated from BaremetalInstance to auto-created resources
-- OPA policies enforce tenant-scoped operations according to each resource API;
-  networking resources use create/list/get/delete and do not expose
-  update/patch, while supported non-network workload updates remain available
-- Tenant User can view and manage auto-provisioned resources (labeled `osac.openshift.io/auto-created: "true"`) via standard API
+BMF requires create/get/list/watch/delete access to its target-only SubnetAttachment requests. The networking controller reads the target BMI/BareMetalHost and Subnet/SecurityGroup/NetworkClass, and owns request status and finalizer updates. It resolves applicable OSAC-owned provider values and passes them to manager jobs through the shared contract. AAP manager jobs do not read or write OSAC-owned provider-value ConfigMaps directly. Tenant and target ownership are validated before dispatch. [User]
 
 ### Observability and Monitoring
 
@@ -824,11 +794,11 @@ Resolved: After request apply and BMF's one handoff reboot complete, the network
 
 ## Test Plan
 
-- **[DEV/QE] Tenant boundary:** standalone BMIs reject foreign networks. CaaS workers require the immutable authorized parent binding before apply/lease lookup and retain its original context through cleanup; ordinary system resources gain no exception. The extension owns these parent-authorization cases; generic owner/context rejection is covered by [TC-FR6-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-fr6-01-reject-invalid-json-schemas-declarations-and-manager-results).
+- **[DEV/QE] Tenant boundary:** standalone BMIs reject foreign networks. CaaS workers require the immutable authorized parent binding before apply/lease lookup and retain its original context through cleanup; ordinary system resources gain no exception. The extension owns these parent-authorization cases; generic owner/context rejection is covered by [TC-FR6-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-result-01-validate-result-identity-typed-outputs-and-task-errors).
 
 ### Attachment Lifecycle and Provider Contract
 
-- **[DEV] Contract:** request-as-resource/BMI-as-target and normalized stateful policy payload; mandatory Fabric entry points; apply success without invented address data; selected MAC required and malformed/ambiguous lease rejected.
+- **[DEV] Contract:** request-as-resource/BMI-as-target and normalized stateful policy payload; fixed `apply_subnet_attachment` and `delete_subnet_attachment` tasks determine direction; UID-keyed binding identity; SecurityGroup `NotEnforced` reporting when the capability is absent; selected MAC required and malformed/ambiguous `dhcp_leases[]` rejected.
 - **[DEV] Envtest:** accepted apply readiness enables exactly one handoff reboot; DHCP job waits for handoff and MAC; BMF mirrors request status; `NetworkOffboardShutdownComplete=True` precedes request deletion; deprovision waits for request `NetworkOffboardComplete=True` and finalization; all cleanup failures retain finalizers and inventory ownership.
 - **[QE] E2E:** provision/discover/delete BMI and CaaS worker on one Subnet; policy failure prevents tenant traffic; a restart during offboard boots only the Ironic cleaning ramdisk after port restoration while the tenant OS remains powered off; persistent DNAT or attachment failure prevents host reuse. [User]
 
@@ -886,28 +856,6 @@ Resolved: After request apply and BMF's one handoff reboot complete, the network
 - Auto-provisioned resource cleanup failure (verify retained finalizer/ownership on persistent failure, successful cleanup after repair)
 - IP address feedback latency (verify ExternalIPAttachment controller waits for IP to appear in status)
 
-## Long-Term Evolution (The Reboot is the Seam)
-
-The structure `inventory → provision → establish-tenant-networking → discovery`
-stays; only "establish-tenant-networking" changes:
-
-**Ironic Standalone Networking** (metal3-docs PR #586; BMO PR #3469, ToR
-networking part 1): Ironic switches the port VLAN per lifecycle phase
-(provisioning→tenant) on one NIC — drop the reboot. Upstream assumes
-`networking-generic-switch` (direct ToR control), which does not fit
-The fabric manager owns the switch; adopting a new backend means implementing the fabric manager interface or aligning the model.
-
-**Dedicated always-on provisioning NIC** (two NICs): attach the tenant NIC after
-`provisioned`; no move of the provisioning NIC. Needs 2 NICs, a local registry,
-gateway-less provisioning DHCP, and provisioning-network isolation.
-
-**Static host-side networking + IPAM** (`networkData`): one boot, but not
-OS-agnostic and reintroduces IPAM. Opt-in fast path for capable, self-contained
-images.
-
-Each evolution replaces just the reboot step while preserving the same overall
-flow and operator structure.
-
 ## Graduation Criteria
 
 **Note:** This section will be updated when the enhancement is targeted at a release.
@@ -919,7 +867,7 @@ Tech Preview criteria:
 - [ ] BaremetalInstance CRD updated with `NetworkAttachments` field, CEL validation, and status field for IP addresses
 - [ ] bare-metal-fulfillment-operator `reconcileNetworking` phase implemented (provision-then-handoff flow)
 - [ ] bare-metal-fulfillment-operator `reconcileReboot` phase implemented (BMH annotation-based reboot after port move)
-- [ ] Request-owned fixed `apply_subnet_attachment`, `delete_subnet_attachment` and separate `query_dhcp_lease` jobs tracked durably; provisioning network and initial per-server attachment exist as deployment prerequisites
+- [ ] Request-owned fixed `apply_subnet_attachment`, `delete_subnet_attachment` and separate `query_dhcp_lease` jobs tracked with the resource status and current job reference; provisioning network and initial per-server attachment exist as deployment prerequisites
 - [ ] BareMetalInstanceType with network ports (`BareMetalNetworkPortSpec`) available and tested
 - [ ] Auto ExternalIP attachment provisioning functional
 - [ ] IP discovery implemented (`query_dhcp_lease` role queries fabric manager DHCP lease API after provisioning + reboot, matches port MAC to assigned IP on tenant network, request controller records the IP, BMF mirrors BMI status, feedback syncs to fulfillment-service)
@@ -929,7 +877,7 @@ Tech Preview criteria:
 
 GA criteria:
 - [ ] Selected Fabric Manager passes provider qualification for physical attachment, stateful policy, selected-port lease discovery, and cleanup
-- [ ] Network Manager Integration Contract registration, generic dispatch, result validation, and durable recovery implemented and stable
+- [ ] Network Manager Integration Contract registration, generic dispatch, result validation, and task result handling implemented and stable
 - [ ] NATGateway full stack (OSAC-1443) implemented and stable
 - [ ] Production deployment verified (MOC or other OSAC deployment)
 - [ ] User feedback incorporated (usability, error messages, edge cases)
@@ -1019,7 +967,7 @@ kubectl describe baremetalinstance <name> -n <namespace>
 
 **Resolution:**
 1. Inspect parent, child and AAP operation diagnostics to identify the failed task.
-2. Repair provider connectivity/configuration or the backend operation; let reconciliation retry with the same durable operation identity.
+2. Repair provider connectivity/configuration or the backend task; let reconciliation retry idempotently with the same stable BaremetalInstance API ID and captured task inputs.
 3. Confirm attachment deletion before address release and parent deletion. Preserve finalizers and address ownership until successful cleanup; do not force-remove finalizers. [User]
 
 ### Symptom: ExternalIPAttachment stuck in Pending, waiting for BM IP address
@@ -1060,7 +1008,7 @@ Existing provider resources may require manual/provider-side cleanup. [User]
 
 - AAP execution environment with the fabric manager `apply_subnet_attachment` role
 - A provisioned manager-owned provisioning network segment (DHCP + gateway + SNAT) and the initial per-server attach, plus the BareMetalHost `osac.openshift.io/interface-macs` annotation — deployment prerequisites (deployment infrastructure)
-- Network Manager Integration Contract implementation for registration, generic dispatch, result validation, and durable recovery
+- Network Manager Integration Contract implementation for registration, generic dispatch, result validation, and task result handling
 - Integration test environment with fabric manager and Ironic/Metal3 backend
 
 ## Dependencies
@@ -1069,8 +1017,8 @@ Jira states below were checked on 2026-10-12. Closed legacy or service issues ar
 
 | Dependency | Jira | Status (2026-10-12) |
 |-----------|------|---------------------|
-| Legacy dispatcher groundwork (not the new NetworkManager/NetworkData contract) | OSAC-1457, OSAC-1458, OSAC-1460 | Closed |
-| Network Manager Integration Contract registration, generic dispatch, result validation, and durable recovery | N/A — defined by the linked contract design; platform implementation remains required | Required before provider networking is enabled |
+| Legacy dispatcher groundwork (does not implement the manager role contract) | OSAC-1457, OSAC-1458, OSAC-1460 | Closed |
+| Network Manager Integration Contract registration, generic dispatch, result validation, and task result handling | N/A — defined by the linked contract design; platform implementation remains required | Required before provider networking is enabled |
 | NATGateway full stack | OSAC-1443 (10 tasks) | Closed |
 | ExternalIPAttachment BM target in CRD | OSAC-2041 | Closed |
 | BM DNAT flow in controller | OSAC-1496 | Closed |
@@ -1093,13 +1041,15 @@ Jira states below were checked on 2026-10-12. Closed legacy or service issues ar
 
 ---
 
+---
+
 ## Provenance
 
 Authored: revise @ design 0.11.3 - cc0daa6, workspace main @ 06d340f90 (43 behind origin/main)
-Final: revise @ design 0.11.5 - 1c6e8de, workspace main @ 04cc50101
+Final: manual-edit [manual] @ design 0.11.5 - 0c7ea35, workspace main @ 14c4d6f1c (17 behind origin/main)
 
-> Context changed between revise and revise.
+> Context changed between revise and manual-edit.
 
 > This document's phase history does not include an initial /draft — structure was not verified against the template from origin.
 
-<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"1c6e8de","source_repo":"04cc50101","source_repo_branch":"main","commits_behind_main":0,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit","revise","revise","revise","revise","revise","revise","revise"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
+<!-- ai-workflow-provenance:{"schema_version":1,"provenance_kind":"session","workflow":"design","workflow_version":"0.11.5","ai_workflows":"0c7ea35","source_repo":"14c4d6f1c","source_repo_branch":"main","commits_behind_main":17,"commits_ahead_main":0,"main_ref":"main","phases":["revise","revise","manual-edit","revise","manual-edit","revise","manual-edit","revise","respond","respond","revise","revise","revise","revise","manual-edit"],"authoring_modes":["manual","skill"],"context_changed":true,"origin_untracked":true} -->
