@@ -8,7 +8,7 @@
 - **Design:** [design.md](design.md). Its pinned, under-review implementation baseline and support limits apply here.
 - **Authority:** This requirement-anchored test plan is part of the design PR;
   the design document's Test Plan section is only a short strategy summary.
-- **Total test cases:** 36
+- **Total test cases:** 37
 - **Requirements mapped to planned cases:** 13 of 13 (not a pass count)
 - **Interface changes mapped to planned cases:** 6 of 6 (not executed coverage)
 
@@ -23,9 +23,10 @@ automation, not an executed test result or conformance certification.
 | Existing cases / traceability | Source evidence at that head | Boundary / remaining validation |
 |---|---|---|
 | TC-FR1-01 / IC-1 | Installer `agentless-net-registration.yaml` renders immutable `name`/`ansible_role` registration, not role/capability data keys. | Rendering and a selected NetworkClass are not deployed readiness or IPv6 rejection evidence. |
-| TC-FR4-01, TC-FR4-05 / IC-3 | `osac-aap/tests/unit/test_agentless_network_state.py` has read-only lease, missing-match, ownership, physical-range reservation, check-mode and cleanup tests; `test_agentless_net_subnet.py` has lease expiry/ambiguity and DHCP restart/pruning tests. | Provider commands are substituted in unit tests. Real Cumulus, DHCP clients, reboot and BMF feedback still require E2E evidence. |
+| TC-FR4-01, TC-FR4-05 / IC-3 | `osac-aap/tests/unit/test_agentless_network_state.py` has read-only lease, missing-match, ownership, physical-range reservation, check-mode and cleanup tests; `test_agentless_net_subnet.py` has lease expiry/ambiguity and DHCP restart/pruning tests. | Provider commands are substituted in unit tests. Real Cumulus, DHCP clients, the BMF handoff power cycle and BMF feedback still require E2E evidence. |
 | TC-FR5-01, TC-FR7-01, TC-FR8-01 / IC-3, IC-4 | `osac-aap/tests/integration/targets/agentless_net_contract/tasks/baseline.yml` invokes the generic playbook, uses distinct API/Kubernetes IDs, checks typed lease/address results and cleanup, and checks unsupported operations. | This is a local fixture with provider commands substituted, not real AAP, switch, FRR convergence or packet-delivery validation. The target was inspected, not run here. |
 | TC-FR9-02 / IC-6 | `osac-operator/internal/controller/networking_attachments_test.go` supplies typed DHCP artifacts and checks handoff/result handling. | Controller fixture evidence is not deployed cross-component feedback evidence. |
+| TC-FR4-06 / IC-3 | `test_agentless_network_state.py` checks that state preparation raises `range is exhausted` and saves no new attachment row. | Gap: no test runs apply through the generic playbook to check `retryable: false` and that no switch or DHCP write happens. |
 | TC-FR4-01, TC-FR9-02 / IC-3, IC-6 | The NetworkAttachment controller stores `status.dhcpLease`, but `bare-metal-fulfillment-operator/internal/controller/baremetalinstance_ip_discovery.go` still parses legacy `leases` artifacts. | Provider success and NetworkAttachment Ready do not establish BMF status propagation or fulfillment feedback. Keep those as service-integration acceptance goals. |
 | TC-NFR1-02 / IC-2 | `agentless_net_state.py::_subnet_payload` rejects prefixes longer than `/28` for the configured address plan. | The case's positive `/30` scenario describes desired support, not the audited implementation. Do not change another manager's small-Subnet semantics. |
 | TC-FR4-02, TC-FR4-03, TC-FR8-02 / IC-3 | Multi-interface acceptance and CaaS/VMaaS integration remain service-level goals. Physical AgentlessNet apply/query requires a BareMetalInstance. | Do not claim these scenarios pass from the role's destination abstraction or from an old testplan. |
@@ -243,7 +244,7 @@ certify shared-contract policy conformance, or adopt future policy proposals
 
 1. Provision the host.
 2. Run the generic network-attachment job and hand the port to the Subnet VLAN.
-3. Reboot or renew DHCP on the host.
+3. Let BMF run the handoff power cycle so the host requests DHCP.
 4. Run the generic DHCP lease query job.
 5. Restart the per-VN dnsmasq service and query the same lease again.
 
@@ -381,6 +382,38 @@ certify shared-contract policy conformance, or adopt future policy proposals
 - The role renders the configured ranges and reserved gateway addresses again.
 - The daemon restarts with the preserved lease and the same MAC/Subnet receives
   the same valid address without a duplicate lease.
+
+#### TC-FR4-06: Fail apply when the physical range is full
+
+| Interface Change | Priority | Automation |
+|-----------------|----------|------------|
+| IC-3 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** Component integration / [DEV].
+- A Ready Subnet has a small `ipam.physical_ipv4_cidrs` range, and every usable
+  address in it is reserved by other attachments.
+- A BareMetalInstance with a new MAC has a network attachment on that Subnet.
+- The fake switch and the net-node DHCP configuration record every write.
+
+##### Steps
+
+1. Run `playbook_osac_network_task.yml` with `apply_network_attachment` for
+   the new attachment.
+2. Inspect the task result, the fake switch writes, the rendered `dhcp-host`
+   entries and the provider `network_attachments` and
+   `network_attachment_ports` state.
+3. Run the same apply again.
+
+##### Expected Results
+
+- Apply fails with `osac_error.retryable: false` and a message that names the
+  full physical range.
+- No switch port moves, no `dhcp-host` entry is added, and no attachment row or
+  port claim is saved.
+- Existing reservations and their hosts are unchanged.
+- The second apply fails the same way and still changes nothing.
 
 ### FR-5: Inbound external access
 
@@ -742,9 +775,10 @@ certify shared-contract policy conformance, or adopt future policy proposals
 
 1. Run `playbook_osac_network_task.yml` with `apply_network_attachment` and
    controller-supplied `osac_job_vars` snapshots and IPAM.
-2. Verify the port is on the tenant VLAN, reboot the host, and wait for
-   `NetworkHandoffComplete` and DHCP discovery.
-3. Power off the host and run the same playbook with `delete_network_attachment`.
+2. Verify the port is on the tenant VLAN. Let BMF run the handoff power cycle,
+   and wait for `NetworkHandoffComplete` and DHCP discovery.
+3. Wait for BMF to power off the host (`NetworkOffboardComplete=True`), then
+   run the same playbook with `delete_network_attachment`.
 4. Inspect the Cumulus port, VLAN, `network_attachments` and
    `network_attachment_ports` state. Compare the sibling Subnet's VLAN with
    its value recorded before attachment deletion.
@@ -755,7 +789,8 @@ certify shared-contract policy conformance, or adopt future policy proposals
   and MAC, tenant and IPAM; it obtains port/provisioning-VLAN settings from
   provider inventory, not a generic move binding envelope.
 - The switch port is assigned to the Subnet VLAN and the binding is recorded;
-  DHCP and handoff readiness follow reboot.
+  `NetworkHandoffComplete` and DHCP discovery follow the BMF handoff power
+  cycle.
 - Delete restores saved fabric ports to the validated inventory provisioning
   VLAN before releasing the address and port claims. Failed cleanup retains
   claims; late apply must not undo deletion. The role does not emit an
@@ -1216,12 +1251,12 @@ established by that mapping.
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 36 |
+| Total test cases | 37 |
 | Critical | 11 |
-| High | 24 |
+| High | 25 |
 | Medium | 1 |
 | Low | 0 |
-| Automated | 35 |
+| Automated | 36 |
 | Manual | 1 |
 | Requirements with test cases | 13 / 13 |
 | Interface changes with test cases | 6 / 6 |

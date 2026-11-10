@@ -3,7 +3,7 @@ title: agentless-vlan-fabric-manager
 authors:
   - yonibettan@gmail.com
 creation-date: 2026-09-08
-last-updated: 2026-11-03
+last-updated: 2026-11-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3664
   - https://redhat.atlassian.net/browse/OSAC-4307
@@ -79,12 +79,12 @@ source test coverage from unexecuted acceptance scenarios.
 
 This design registers 'agentless_net' as a pluggable physical fabric manager and
 implements the existing OSAC Networking API on managed-switch infrastructure.
-The implementation reuses the NetworkClass/dispatcher lifecycle, maps each
-VirtualNetwork to an isolated Linux routing namespace, maps each Subnet to a
-unique VLAN, and provisions DHCP, permit-all forwarding, provider-managed
-external route distribution, local FRR routes for ExternalIPAttachment,
-NATGateway BGP routes, whole-address DNAT, and explicit-source SNAT through
-Ansible roles.
+The implementation reuses the NetworkClass and generic network-task playbook
+lifecycle, maps each VirtualNetwork to an isolated Linux routing namespace,
+maps each Subnet to a unique VLAN, and provisions DHCP, permit-all forwarding,
+provider-managed external route distribution, local FRR routes for
+ExternalIPAttachment, NATGateway BGP routes, whole-address DNAT, and
+explicit-source SNAT through Ansible roles.
 See [PRD](prd.md) for detailed requirements.
 
 ## Motivation
@@ -122,7 +122,7 @@ bare-metal-fulfillment-operator/internal/controller/baremetalinstance_ip_discove
 
 ### Goals
 
-- Reuse NetworkClass discovery, dispatcher selection, controller finalizers, and
+- Reuse NetworkClass discovery, manager selection, controller finalizers, and
   provisioning job tracking instead of adding an agentless-specific controller
   architecture. [Codebase: osac-operator/pkg/networkmanager]
 - Implement all fabric-manager operations required by the existing Networking API
@@ -175,7 +175,12 @@ implementation strategy and starts generic AAP jobs; the agentless template
 performs the switch and net-node work; status returns through job results and
 existing resource feedback. It does not introduce a second controller path.
 
-The osac-operator dispatcher is the routing layer between a Networking CR and the selected implementation. It reads the NetworkClass fabric_manager and k8s_manager values, resolves the corresponding labeled manager ConfigMaps, stamps the implementation strategy used by the generic AAP playbook, and lets the existing provisioning lifecycle track retries, finalizers, job history, and status. It does not implement VLAN, DHCP, or NAT behavior itself.
+At create, the osac-operator records the NetworkClass's managers on the
+Networking CR. For every task it runs the recorded manager's role through the
+generic network-task playbook ([contract §4.3](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#43-invocation-settings-and-secrets)),
+and the existing provisioning lifecycle tracks retries, finalizers, job
+history, and status. The operator does not implement VLAN, DHCP, or NAT
+behavior itself.
 ~~~mermaid
 flowchart LR
     Admin[Cloud Infrastructure Admin] --> Helm[Helm values and manager registration]
@@ -183,7 +188,7 @@ flowchart LR
     Tenant[Tenant Admin or User] --> API[Existing Networking API]
     API --> FS[fulfillment-service]
     FS --> CR[Networking CRs and tenant metadata]
-    CR --> OP[osac-operator dispatcher]
+    CR --> OP[osac-operator]
     OP --> AAP[Generic AAP playbook]
     AAP --> Role[osac.templates.agentless_net]
     Role --> Switch[Cumulus switch VLAN and port]
@@ -208,7 +213,8 @@ resources. Pool CIDRs arrive as API/controller snapshots and are persisted in
 provider pool state; they are not independently selected by inventory.
 
 1. The unified Networking API selects the backend through
-   NetworkClass.fabric_manager and the osac-operator dispatcher. It does not
+   NetworkClass.fabric_manager; the osac-operator runs the recorded manager's
+   role through the generic network-task playbook (contract §4.3). It does not
    use NETWORK_STEPS_COLLECTION. That variable selects the AAP collection used
    by embedded CaaS workflows such as cluster_infra and external_access; the
    CaaS follow-up may set it to agentless_net.steps, but this BMaaS-focused
@@ -307,9 +313,9 @@ integration. [PRD: FR-4, FR-8] [IC-3]
    tenant VLAN and removes other mapped fabric interfaces from the tenant
    network, then marks the provider attachment ready.
 3. The NetworkAttachment controller waits for the BareMetalInstance's
-   `NetworkHandoffComplete` before starting `query_dhcp_lease`. The handoff and
-   reboot remain workload-controller responsibilities, not a provider move
-   result envelope.
+   `NetworkHandoffComplete` before starting `query_dhcp_lease`. After the port
+   move, BMF performs the handoff power cycle ([BMaaS — Create](/enhancements/OSAC-1437-bmaas-networking/design.md#create),
+   step 6); it is not a provider move result envelope.
 4. Query reads the saved ready API-ID-owned attachment under the VN lock.
    It accepts only an unexpired (or non-expiring) lease for the reserved MAC
    **and exact reserved address**. Missing matches remain retryable; ambiguous
@@ -618,7 +624,7 @@ The implementation changes the following existing surfaces:
 | ID | Existing surface | Change | Requirements |
 |---|---|---|---|
 | IC-1 | Installer values, manager ConfigMap, NetworkClass selection | Register and select 'agentless_net' as a fabric manager with IPv4 capability | FR-1, NFR-1 |
-| IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Route existing fabric resources through the agentless dispatcher and realize VLAN, namespace, forwarding baseline, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
+| IC-2 | VirtualNetwork and Subnet API/CR lifecycle | Run the agentless role for existing fabric resources through the generic network-task playbook and realize VLAN, namespace, forwarding baseline, and cleanup state | FR-2, FR-3, FR-10, NFR-2, NFR-3 |
 | IC-3 | Fabric network-attachment and DHCP feedback path | Attach and detach BM/CaaS/VM targets through a backend-neutral stable binding contract, restore the provider provisioning network on offboarding, and surface fabric-assigned IPs for BM/CaaS | FR-4, FR-8 |
 | IC-4 | ExternalIPPool, ExternalIP, and ExternalIPAttachment lifecycle | Persist an ExternalIP-UID reservation in fulfillment-service, allocate provider-side addresses through the locked AAP state file, transport and validate the provider result, install whole-address DNAT, and install/withdraw the saved local FRR `/32` route for ExternalIPAttachment without requiring upstream BGP convergence | FR-5, FR-7, FR-10, NFR-2, NFR-3 |
 | IC-5 | NATGateway lifecycle | Apply explicit outbound SNAT using the address in `ExternalIP.status.address`, announce/withdraw its `/32` route, and never replace it with host/interface MASQUERADE | FR-6, FR-10, NFR-2, NFR-3 |
@@ -1308,9 +1314,12 @@ cleanup; provider `CLEANUP_COMPLETE` then permits allocation capacity release.
 Each Subnet uses the controller-supplied `ipam.gateway_ipv4` and recorded
 `ipam.physical_ipv4_cidrs`; AgentlessNet does not recalculate the shared address
 plan. Attachment apply reserves a usable physical address and renders a
-static `dhcp-host` MAC/address mapping. dnsmasq uses static scopes and
-`dhcp-ignore=tag:!known`; an empty physical range creates no physical DHCP
-scope. It does not allocate an arbitrary dynamic address to an unknown MAC.
+static `dhcp-host` MAC/address mapping. If the physical range has no free
+address for the MAC, apply fails with `retryable: false` before any switch or
+DHCP write ([contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-apply_network_attachment--delete_network_attachment)).
+dnsmasq uses static scopes and `dhcp-ignore=tag:!known`; an empty physical
+range creates no physical DHCP scope. It does not allocate an arbitrary dynamic
+address to an unknown MAC.
 Reservations exclude the recorded gateway, VIP and other non-physical ranges.
 [PRD: FR-4] [IC-3]
 [Locked: D13]
@@ -1585,7 +1594,7 @@ default-deny readiness gate or claim an in-use SecurityGroup deletion protocol.
 | ExternalIP allocation fails before atomic provider-state commit | Require a provider `NOT_COMMITTED` result or an inspect job before compensation; retain capacity while retryable and release it exactly once only after terminal failure/deletion | ExternalIP remains non-ready during retry; capacity is restored only after authoritative compensation |
 | ExternalIP deletion races allocation or provider cleanup | Serialize by ExternalIP UUID; keep `release_requested` and the finalizer until `NOT_COMMITTED` or `CLEANUP_COMPLETE` is acknowledged by fulfillment-service | No address becomes reusable until provider state, consumer state, and API reservation agree |
 | Switch VLAN or access-port operation fails | Retry the same binding UID with the saved host/MAC, switch port, tenant VLAN, and provisioning VLAN; do not release or forget the binding on partial failure | AAP failure and resource status contain switch error; the port remains in the last verified state |
-| BMaaS reboot, power-off, or post-move DHCP gate fails | Keep the binding phase and BMF finalizer, retry the host lifecycle operation, and do not start or complete IP discovery until the matching handoff condition is true | `NetworkHandoffComplete` or `NetworkOffboardComplete` remains false with a diagnostic condition |
+| BMaaS handoff power cycle or offboarding power-off fails | Handoff: BMF keeps a step pending until the 15-minute deadline from `NetworkAttachmentsReady=True`, fails at once on a non-`ErrTransitioning` `SetPowerState` error, and does not start IP discovery. Offboarding: BMF retries power-off every 30 seconds without a deadline and keeps the binding and BMF finalizer; no port move back until OFF is observed | `NetworkHandoffComplete=False` (`NetworkHandoffFailed`, phase `Failed`) or `NetworkOffboardComplete=False` (`Offboarding` or `PowerOffFailed`) |
 | BMaaS detach cannot resolve the provisioning network | Fail closed and retain the binding/finalizer; do not leave the host on a tenant VLAN or guess from a display name | Resource remains terminating with provisioning-network diagnostic |
 | Transit-pool allocation or veth/router setup partially fails | Reuse the UID-keyed transit `/30` and saved interface/IP values on retry; do not install an attachment local route or announce a NATGateway BGP route until the namespace and default route are verified | VirtualNetwork or dependent consumer remains non-ready with a transit-link diagnostic |
 | Namespace/VLAN interface creation partially fails | Reconcile desired namespace and interfaces; remove only orphaned state on delete | Resource remains non-ready with net-node error |
@@ -1796,8 +1805,8 @@ platform-support breadth than a generic NetworkRunner claim and may require
 manual operational recovery if a net node loses state.
 
 Those costs are accepted because the PRD's value is an API-equivalent physical
-fabric path without Netris. The dispatcher and NetworkClass abstractions keep
-the backend-specific complexity behind an existing contract.
+fabric path without Netris. NetworkClass and the generic network-task playbook
+keep the backend-specific complexity behind an existing contract.
 
 ### Alternatives (Not Implemented)
 
@@ -1848,7 +1857,8 @@ Cumulus documents them as scale alternatives. [Research: NetworkRunner and Cumul
 
 A separate controller could hard-code the backend flow, but it would duplicate
 manager discovery, finalizers, retries, job target tracking, and status logic.
-The existing dispatcher is the intended pluggability boundary. [Codebase: osac-operator/pkg/networkmanager]
+The generic network-task playbook, which runs the recorded manager's role
+(contract §4.3), is the intended pluggability boundary. [Codebase: osac-operator/pkg/networkmanager]
 
 ### Open Questions
 
@@ -1938,7 +1948,7 @@ not a substitute for that testplan.
   accounting.
 - Validate attachment binding keys, host/MAC identity, direction transitions,
   provisioning-network resolution, and idempotent attach/detach state changes,
-  including reboot, power-off, and
+  including the BMF handoff power cycle, offboarding power-off, and
   DHCP-gated handoff phases.
 - Verify status condition reason/message mapping for AAP and controller-owned
   allocation errors.
@@ -1970,9 +1980,9 @@ not a substitute for that testplan.
   distinct Subnets, and reject duplicate SubnetRefs before lease discovery.
 - Exercise Cumulus attach and detach with a fake switch: verify tenant VLAN
   placement, provisioning-VLAN restoration, partial-failure retry, and
-  controller/AAP restart recovery from `port_bindings`. Verify the BMF power
-  and reboot gates before DHCP discovery and before tenant-to-provisioning
-  restoration.
+  controller/AAP restart recovery from `port_bindings`. Verify that DHCP
+  discovery waits for the BMF handoff power cycle and that
+  tenant-to-provisioning restoration waits for the BMF offboarding power-off.
 - Stop and restart the net node during Ready traffic and cleanup; verify
   existing resources become degraded, new operations are blocked, local
   attachment routes and NATGateway BGP routes are restored after the data path,
@@ -1992,9 +2002,9 @@ not a substitute for that testplan.
 - Provision a BMaaS reference attachment, obtain a DHCP address, and observe it in
   status.
 - Verify the BMaaS lifecycle moves a host from provisioning to its tenant VLAN
-  then reboots and observes tenant DHCP before Ready, and powers it off before
-  returning to the exact provisioning VLAN on offboarding, without relying on a
-  Netris variable or display name.
+  then BMF runs the handoff power cycle and tenant DHCP is observed before
+  Ready; on offboarding, BMF powers the host off before it returns to the exact
+  provisioning VLAN, without relying on a Netris variable or display name.
 - Verify an external-client probe reaches a BareMetalInstance through the
   saved local FRR route and whole-address DNAT, then receives its response;
   upstream BGP convergence is not an AAP attachment-readiness check.
