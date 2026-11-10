@@ -24,6 +24,8 @@ The PRD must define the inter-service dependency model: disabled services block 
 
 When a service is disabled, no enabled service may provision resources that depend on the disabled service. CaaS with BMaaS disabled blocks bare-metal HostTypes but allows virtual HostTypes (and vice versa for VMaaS).
 
+> Superseded 2026-11-10: CaaS requires BMaaS (workers are BareMetalInstances, OSAC-2135); CaaS on VMaaS is a non-goal. See [design](design.md#inter-service-dependency-enforcement).
+
 ---
 
 ### R1.Q2: Post-installation disablement

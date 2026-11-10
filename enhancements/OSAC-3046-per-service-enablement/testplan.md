@@ -3,7 +3,7 @@
 ## Overview
 
 - **Feature:** OSAC-3046 — Per-Service Enablement (CaaS/VMaaS/BMaaS/MaaS)
-- **Total test cases:** 20
+- **Total test cases:** 21
 - **Requirements covered:** 8 of 8
 
 ## Execution Strategy
@@ -13,19 +13,19 @@ Each `helm upgrade` triggers a pod rollout (2-5 minutes). To minimize rollout cy
 **State 0 — Helm validation (no deployment needed):**
 TC-FR1-03, TC-FR1-04
 
-**State 1 — BMaaS+MaaS disabled** (`services.bmaas.enabled=false`, `services.maas.enabled=false`):
-TC-FR1-01, TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04, TC-FR2-05, TC-FR4-01, TC-FR5-01, TC-FR5-04, TC-NFR1-01, TC-NFR3-01
+**State 1 — VMaaS only** (`services.caas.enabled=false`, `services.bmaas.enabled=false`, `services.maas.enabled=false`; CaaS requires BMaaS, so it is disabled too). Install with `global.networking.k8sManager` set and an explicit `global.networking.networkClass.addressPlan` of `overlay: 0.5`, `fabric: 0.25`, `lbVip: 0.25` (the plan derived for all services), so later upgrades do not change the plan. Onboard no tenant: onboarding creates a default VirtualNetwork, which blocks enabling BMaaS or CaaS:
+TC-FR1-01, TC-FR2-01, TC-FR2-02, TC-FR2-03, TC-FR2-04, TC-FR2-05, TC-FR4-01, TC-FR5-01, TC-FR5-04, TC-NFR1-01
 
-**State 2 — Upgrade to enable BMaaS** (`helm upgrade` with `services.bmaas.enabled=true`):
-TC-FR3-01
+**State 2 — Upgrade to enable BMaaS** (`helm upgrade` with `services.bmaas.enabled=true`; run TC-FR3-02 first, then TC-FR3-01):
+TC-FR3-02, TC-FR3-01
 
 **State 3 — All services enabled (default values)**:
 TC-FR1-02, TC-FR2-04, TC-FR4-02, TC-FR4-03, TC-NFR2-01
 
-**State 4 — VMaaS disabled** (`services.vmaas.enabled=false`):
-TC-FR5-02
+**State 4 — VMaaS disabled** (`services.vmaas.enabled=false`; CaaS and BMaaS enabled):
+TC-FR5-02, TC-NFR3-01
 
-This reduces execution from 20 individual rollouts to 4 deployment states plus a pre-deployment Helm validation step.
+This reduces execution from 21 individual rollouts to 4 deployment states plus a pre-deployment Helm validation step.
 
 ## Test Cases
 
@@ -41,7 +41,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 
 - **Tier / owner:** E2E / [QE].
 - A Kind cluster with OSAC prerequisites installed
-- A Helm values file with `services.bmaas.enabled: false` and `services.maas.enabled: false`
+- A Helm values file with `services.caas.enabled: false`, `services.bmaas.enabled: false`, and `services.maas.enabled: false`
 
 ##### Steps
 
@@ -50,8 +50,8 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 
 ##### Expected Results
 
-- The fulfillment-service container args include `--enable-caas` and `--enable-vmaas` but not `--enable-bmaas` or `--enable-maas`
-- The operator deployment env vars set `OSAC_ENABLE_BAREMETAL_INSTANCE_CONTROLLER=false`
+- The fulfillment-service container args include `--enable-vmaas` but not `--enable-caas`, `--enable-bmaas`, or `--enable-maas`
+- The operator deployment env vars set `OSAC_ENABLE_CLUSTER_CONTROLLER=false` and `OSAC_ENABLE_BAREMETAL_INSTANCE_CONTROLLER=false`
 - The BMF operator deployment is absent from the rendered manifests
 
 #### TC-FR1-02: Default installation enables all services
@@ -77,7 +77,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 - All operator controller env vars are set to `true`
 - The BMF operator deployment is present
 
-#### TC-FR1-03: Invalid combination — CaaS without VMaaS or BMaaS — rejected
+#### TC-FR1-03: Invalid combination — CaaS without BMaaS — rejected
 
 | Story | AC | Priority | Automation |
 |-------|-----|----------|------------|
@@ -90,11 +90,12 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 
 ##### Steps
 
-1. Run `helm template osac charts/osac --set services.caas.enabled=true --set services.vmaas.enabled=false --set services.bmaas.enabled=false`
+1. Run `helm template osac charts/osac --set services.caas.enabled=true --set services.vmaas.enabled=true --set services.bmaas.enabled=false`
+2. Run `helm template osac charts/osac --set services.caas.enabled=true --set services.vmaas.enabled=false --set services.bmaas.enabled=false`
 
 ##### Expected Results
 
-- The command fails with a schema validation error indicating CaaS requires at least one of VMaaS or BMaaS
+- Both commands fail with the schema validation error "CaaS requires BMaaS to be enabled"
 
 #### TC-FR1-04: Invalid combination — MaaS without CaaS — rejected
 
@@ -126,7 +127,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- Fulfillment-service running with `--enable-caas` and `--enable-vmaas` only (BMaaS disabled)
+- Fulfillment-service running with `--enable-vmaas` only (BMaaS disabled, State 1)
 
 ##### Steps
 
@@ -155,7 +156,8 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Expected Results
 
 - `osac.public.v1.BareMetalInstances`, `osac.public.v1.BareMetalInstanceTemplates`, `osac.public.v1.BareMetalInstanceCatalogItems`, and `osac.public.v1.BareMetalInstanceTypes` are absent from the reflection response
-- `osac.public.v1.Clusters` and `osac.public.v1.ComputeInstances` are present
+- `osac.public.v1.Clusters` is absent (CaaS is disabled with BMaaS)
+- `osac.public.v1.ComputeInstances` is present
 
 #### TC-FR2-03: Disabled service REST endpoint not registered
 
@@ -175,7 +177,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Expected Results
 
 - The HTTP request receives no valid response for the BMaaS resource path — the REST gateway has no registered handler for it, so the mux returns its default unmatched-route response (not a BMaaS-specific payload)
-- CaaS and VMaaS REST endpoints remain accessible and return valid responses
+- VMaaS REST endpoints remain accessible and return valid responses
 
 #### TC-FR2-04: Shared infrastructure always available regardless of service flags
 
@@ -186,7 +188,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- Fulfillment-service running with some services disabled (tested under State 1: BMaaS+MaaS disabled, and State 3: all enabled)
+- Fulfillment-service running with some services disabled (tested under State 1: VMaaS only, and State 3: all enabled)
 
 ##### Steps
 
@@ -231,7 +233,8 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- OSAC deployed with `services.bmaas.enabled: false`
+- OSAC deployed in State 1 (`services.bmaas.enabled: false`, explicit `addressPlan`)
+- No VirtualNetwork exists (TC-FR3-02 cleaned up)
 - BMaaS gRPC endpoints currently return `codes.Unavailable`
 
 ##### Steps
@@ -247,6 +250,31 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 - The osac-operator pod now has `OSAC_ENABLE_BAREMETAL_INSTANCE_CONTROLLER=true`
 - BMF operator pods are now running
 
+#### TC-FR3-02: Enabling BMaaS while a VirtualNetwork exists fails
+
+| Story | AC | Priority | Automation |
+|-------|-----|----------|------------|
+| Story 1.05 | AC-6 | high | automated |
+
+##### Preconditions
+
+- **Tier / owner:** E2E / [QE].
+- OSAC deployed in State 1 (`services.bmaas.enabled: false`)
+- Rule from [Unified networking](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)
+
+##### Steps
+
+1. Onboard a tenant, which creates its default VirtualNetwork
+2. Update Helm values to set `services.bmaas.enabled: true` and run `helm upgrade osac charts/osac -f values.yaml`
+3. Read the fulfillment-service pod logs and the rollout status
+4. Run `helm rollback osac`, then delete the tenant and confirm no VirtualNetwork remains
+
+##### Expected Results
+
+- The fulfillment service refuses to start with the message "Enabling BMaaS or CaaS after networking resources exist is not supported in this release; delete every VirtualNetwork or reinstall"
+- The rollout fails
+- After the rollback, BMaaS gRPC endpoints still return `codes.Unavailable` and the Capabilities response does not include `bmaas`
+
 ### FR-4: The Capabilities endpoint advertises which services are currently enabled
 
 #### TC-FR4-01: Capabilities returns enabled services list
@@ -258,7 +286,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Preconditions
 
 - **Tier / owner:** Component integration / [DEV].
-- Fulfillment-service running with `--enable-caas` and `--enable-vmaas` only
+- Fulfillment-service running with `--enable-vmaas` only (State 1)
 
 ##### Steps
 
@@ -267,8 +295,8 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 
 ##### Expected Results
 
-- Both responses include `enabled_services: ["caas", "vmaas"]`
-- Neither response includes `"bmaas"` or `"maas"`
+- Both responses include `enabled_services: ["vmaas"]`
+- Neither response includes `"caas"`, `"bmaas"`, or `"maas"`
 
 #### TC-FR4-02: Capabilities returns all services when all enabled
 
@@ -320,7 +348,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Preconditions
 
 - **Tier / owner:** Component integration / [DEV].
-- Fulfillment-service running with BMaaS disabled and CaaS + VMaaS enabled
+- Fulfillment-service running with BMaaS disabled and VMaaS enabled (State 1; CaaS is disabled with BMaaS)
 - Seed host types include both bare-metal (with `interfaces`) and virtual (without `interfaces`) types
 
 ##### Steps
@@ -362,7 +390,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Preconditions
 
 - **Tier / owner:** Unit / [DEV].
-- `serviceFlags` with both BMaaS and VMaaS disabled (unit test — this combination is not deployable via Helm because CaaS requires VMaaS or BMaaS)
+- `serviceFlags` with both BMaaS and VMaaS disabled (unit test — this combination is not deployable via Helm because CaaS requires BMaaS and MaaS requires CaaS, so no service would be enabled)
 
 ##### Steps
 
@@ -403,7 +431,7 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 ##### Preconditions
 
 - **Tier / owner:** Component integration / [DEV].
-- Fulfillment-service running with BMaaS and MaaS disabled (State 1 configuration)
+- Fulfillment-service running with CaaS, BMaaS, and MaaS disabled (State 1 configuration)
 
 ##### Steps
 
@@ -466,18 +494,18 @@ This reduces execution from 20 individual rollouts to 4 deployment states plus a
 
 - **Story 1.04, AC-4** (`fulfillment_disabled_service_requests_total` Prometheus metric): Verified by unit tests only — metric increment is an internal implementation detail, not a behavioral scenario observable from outside the system.
 - **Story 1.04, AC-5** (startup log listing enabled/disabled services): Verified by unit tests only — log output is an operational detail, not a user-facing behavioral outcome.
-- **TC-FR5-03** (Story 3.01, AC-3 — empty host types when both compute services disabled): Unit-test-only. The `values.schema.json` constraint requires CaaS to have at least one of VMaaS or BMaaS enabled, so both-disabled is not a deployable Helm configuration. The filtering logic is verified at the unit test level with `serviceFlags` set directly.
+- **TC-FR5-03** (Story 3.01, AC-3 — empty host types when both compute services disabled): Unit-test-only. CaaS requires BMaaS and MaaS requires CaaS, so disabling both VMaaS and BMaaS leaves no service enabled and is not a deployable Helm configuration. The filtering logic is verified at the unit test level with `serviceFlags` set directly.
 
 ## Summary
 
 | Metric | Count |
 |--------|-------|
-| Total test cases | 20 |
-| Critical | 10 |
-| High | 8 |
+| Total test cases | 21 |
+| Critical | 11 |
+| High | 10 |
 | Medium | 0 |
 | Low | 0 |
-| Automated (E2E) | 18 |
+| Automated | 20 |
 | Unit only | 1 |
 | Manual | 0 |
 | Requirements with test cases | 8 / 8 |

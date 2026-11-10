@@ -8,7 +8,7 @@
 
 ## Problem Statement
 
-NIST SP 800-53 CM-7 (Least Functionality) requires organizations to "identify unnecessary functions, ports, protocols, software, and services; and disable or remove them." OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally, making it impossible to satisfy this control for unused services. Deployments that only need a subset — for example, a CaaS-only site — still carry the compliance burden and operational overhead for services they do not use: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits.
+NIST SP 800-53 CM-7 (Least Functionality) requires organizations to "identify unnecessary functions, ports, protocols, software, and services; and disable or remove them." OSAC deploys all services (CaaS, VMaaS, BMaaS, MaaS) unconditionally, making it impossible to satisfy this control for unused services. Deployments that only need a subset — for example, a VMaaS-only site — still carry the compliance burden and operational overhead for services they do not use: a deployment that does not provision bare metal hosts must still satisfy BMaaS-specific attestation controls (UEFI Secure Boot, TPM 2.0) during audits.
 
 ## In Scope
 
@@ -16,13 +16,14 @@ NIST SP 800-53 CM-7 (Least Functionality) requires organizations to "identify un
 - Disabled services are not accessible — no API endpoints, no UI surfaces, no provisioning capability.
 - Post-installation enablement of additional services via `helm upgrade`.
 - The Capabilities endpoint advertises which services are currently enabled so that clients (CLI, UI) can adapt. [Clarify: R1.Q5]
-- When a service is disabled, other enabled services cannot provision resources that depend on it (e.g., disabling BMaaS blocks bare-metal-backed CaaS cluster host types). [Clarify: R1.Q1]
+- When a service is disabled, other enabled services cannot provision resources that depend on it (e.g., CaaS clusters run on bare metal, so CaaS requires BMaaS). [Clarify: R1.Q1]
 
 ## Out of Scope
 
 - Post-installation **disablement** of services and the lifecycle of existing resources when a service is turned off — unanswered in requirements and deferred pending stakeholder input. [Clarify: R1.Q2]
 - Compliance scanning and reporting scoped to enabled services — this feature provides the enablement signal; actual scan-profile scoping is the responsibility of OSAC-3029 (ACM Compliance Policies) and OSAC-3031 (OpenSCAP/Insights Compliance). [Clarify: R1.Q5]
 - Disabling shared infrastructure (networking, storage, tenants, identity, events). These remain always-on regardless of which services are enabled. [Clarify: R1.Q3]
+- Clusters on virtual machines (CaaS on VMaaS). CaaS requires BMaaS.
 - Alignment between the Enclave wizard "experiences" mechanism and per-service enablement — requires cross-team discussion to determine whether experiences drive the Helm enablement values, are replaced by them, or run alongside them. [Clarify: R2.Q2]
 
 ## User Stories

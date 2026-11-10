@@ -167,7 +167,7 @@ representation uses the generated enum names:
 ```json
 {
   "authn": {},
-  "enabled_services": ["SERVICE_TIER_CAAS", "SERVICE_TIER_VMAAS"]
+  "enabled_services": ["SERVICE_TIER_CAAS", "SERVICE_TIER_BMAAS"]
 }
 ```
 

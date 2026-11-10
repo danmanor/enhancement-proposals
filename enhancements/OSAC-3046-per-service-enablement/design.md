@@ -3,7 +3,7 @@ title: per-service-enablement
 authors:
   - htayrie@redhat.com
 creation-date: 2026-08-26
-last-updated: 2026-08-27
+last-updated: 2026-11-10
 tracking-link:
   - https://redhat.atlassian.net/browse/OSAC-3046
 prd:
@@ -43,6 +43,7 @@ This design closes the gap by adding conditional service registration to the ful
 - Post-installation disablement of services and lifecycle management of existing resources when a service is turned off.
 - Compliance scan-profile scoping to enabled services (responsibility of OSAC-3029 and OSAC-3031, which consume the enablement signal this feature provides). [Locked: D3]
 - Disabling shared infrastructure (networking, storage, tenants, identity, events). [Locked: D2]
+- CaaS with VM worker nodes (CaaS on VMaaS); CaaS requires BMaaS.
 
 
 ## Proposal
@@ -51,7 +52,7 @@ Four service enablement flags — `services.caas.enabled`, `services.vmaas.enabl
 
 In the fulfillment-service, a new `serviceFlags` struct groups which services are enabled. The gRPC server and REST gateway conditionally skip registration of services belonging to disabled features. A custom `grpc.UnknownServiceHandler` maps calls to known-but-disabled services to `codes.Unavailable` with a descriptive message. The Capabilities endpoint is extended with an `enabled_services` field so clients can discover available services without trial and error. [Locked: D3]
 
-HostTypes define the host flavors available for cluster creation (CaaS). Each host type is backed by either BMaaS (bare-metal hosts, identified by having network `interfaces`) or VMaaS (virtual hosts, no `interfaces`). HostTypes is a shared service — always registered — but when a backing service is disabled, its host types are filtered out of List responses so that users only see host types they can actually provision. [Locked: D1]
+HostTypes define the host flavors available for cluster creation (CaaS). Each host type is backed by either BMaaS (bare-metal hosts, identified by having network `interfaces`) or VMaaS (virtual hosts, no `interfaces`). HostTypes is a shared service — always registered — but when a backing service is disabled, its host types are filtered out of List responses so that users only see host types they can actually provision. [Locked: D1] CaaS requires BMaaS, and cluster node sets reference a BareMetalInstanceType instead of a HostType ([OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md)), so this filtering no longer affects cluster creation.
 
 ### Workflow Description
 
@@ -66,61 +67,63 @@ services:
   caas:
     enabled: true
   vmaas:
-    enabled: true
-  bmaas:
     enabled: false
+  bmaas:
+    enabled: true
   maas:
     enabled: false
 ```
 
 2. The admin runs `helm install osac charts/osac -f values.yaml`.
 3. The installer deploys only enabled components:
-   - fulfillment-service starts with `--enable-caas`, `--enable-vmaas` — only CaaS and VMaaS API endpoints are registered.
-   - osac-operator starts with `OSAC_ENABLE_CLUSTER_CONTROLLER=true`, `OSAC_ENABLE_COMPUTE_INSTANCE_CONTROLLER=true`, `OSAC_ENABLE_BAREMETAL_INSTANCE_CONTROLLER=false`.
-   - The bare-metal-fulfillment-operator deployment is skipped entirely (`bmf.enabled=false`).
+   - fulfillment-service starts with `--enable-caas`, `--enable-bmaas` — only CaaS and BMaaS API endpoints are registered.
+   - osac-operator starts with `OSAC_ENABLE_CLUSTER_CONTROLLER=true`, `OSAC_ENABLE_COMPUTE_INSTANCE_CONTROLLER=false`, `OSAC_ENABLE_BAREMETAL_INSTANCE_CONTROLLER=true`.
+   - The bare-metal-fulfillment-operator is deployed (`bmf.enabled=true`).
 4. The admin verifies the deployment by calling the Capabilities endpoint:
 
 ```bash
 osac get capabilities
-# Response includes: enabled_services: [caas, vmaas]
+# Response includes: enabled_services: [caas, bmaas]
 ```
 
 #### Post-Installation Enablement
 
-Starting state: A running OSAC deployment with CaaS and VMaaS enabled.
+Starting state: A running OSAC deployment with CaaS and BMaaS enabled.
 
-1. The admin updates the Helm values file to enable BMaaS:
+1. The admin updates the Helm values file to enable MaaS:
 
 ```yaml
 services:
-  bmaas:
+  maas:
     enabled: true
 ```
 
 2. The admin runs `helm upgrade osac charts/osac -f values.yaml`. [Locked: D4]
-3. The fulfillment-service restarts with BMaaS services now registered.
-4. The osac-operator restarts with the bare-metal instance controller enabled.
-5. The bare-metal-fulfillment-operator deployment is created.
-6. The Capabilities endpoint now includes `bmaas` in `enabled_services`.
+3. The fulfillment-service restarts with `--enable-maas`. MaaS has no controllers or API endpoints yet (see [MaaS](#maas)) and does not change the Subnet address plan.
+4. The Capabilities endpoint now includes `maas` in `enabled_services`.
+
+Networking limits which services can be enabled later ([Unified networking](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)):
+- Enabling BMaaS or CaaS is refused once any VirtualNetwork exists (tenant onboarding creates one): the fulfillment service does not start and the rollout fails.
+- A rollout whose derived Subnet address plan differs from the stored plan fails. Enabling BMaaS or CaaS on a deployment with no VirtualNetwork therefore also needs an explicit `addressPlan` at installation that covers them.
+- Enabling VMaaS later needs the Kubernetes Manager (`k8sManager`) set from installation.
 
 #### Client Discovery
 
 Starting state: A Tenant User interacting with the OSAC CLI or UI.
 
 1. The CLI calls `GET /api/fulfillment/v1/capabilities`.
-2. The response includes `enabled_services: [caas, vmaas]`.
-3. The CLI hides BMaaS and MaaS commands from help output and tab completion.
-4. If the user explicitly invokes a disabled service command, the CLI returns a clear error: "BMaaS is not enabled on this server."
+2. The response includes `enabled_services: [caas, bmaas]`.
+3. The CLI hides VMaaS and MaaS commands from help output and tab completion.
+4. If the user explicitly invokes a disabled service command, the CLI returns a clear error: "VMaaS is not enabled on this server."
 
 For the UI, the same Capabilities response drives which navigation items and pages are rendered (see Implementation Details).
 
 #### Inter-Service Dependency Enforcement
 
-Starting state: CaaS enabled, BMaaS disabled, VMaaS enabled.
+Starting state: A Cloud Provider Admin sets `services.caas.enabled: true` and `services.bmaas.enabled: false`.
 
-1. A Tenant User calls `osac get host-types`.
-2. The HostTypes service returns only virtual host types (those without network interfaces). Bare-metal host types are filtered out because BMaaS is disabled. [Locked: D1]
-3. When creating a cluster, only virtual host types are selectable. Attempting to reference a bare-metal host type in a cluster creation request returns a validation error.
+1. `helm install` or `helm upgrade` fails with the schema error "CaaS requires BMaaS to be enabled". No pods start or restart.
+2. With CaaS and BMaaS enabled, cluster node sets reference BareMetalInstanceTypes, which BMaaS serves ([OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md)). Disabling VMaaS does not affect cluster creation, so CaaS needs no service-based filtering. [Locked: D1]
 
 ### API Extensions
 
@@ -135,7 +138,7 @@ message CapabilitiesGetResponse {
 }
 ```
 
-The `enabled_services` field contains the lowercase service names that are currently active (e.g., `["caas", "vmaas"]`). This field is populated from the fulfillment-service's startup configuration and is immutable at runtime — changes require a `helm upgrade` and service restart.
+The `enabled_services` field contains the lowercase service names that are currently active (e.g., `["caas", "bmaas"]`). This field is populated from the fulfillment-service's startup configuration and is immutable at runtime — changes require a `helm upgrade` and service restart.
 
 No new gRPC services are introduced. No existing resources owned by other teams are modified. The only proto change is the addition of `enabled_services` to the existing `CapabilitiesGetResponse` message.
 
@@ -164,8 +167,10 @@ services:
 All four default to `true` for backward compatibility. The `values.schema.json` is updated with corresponding boolean schema entries with descriptions.
 
 The schema also enforces inter-service dependency constraints:
-- CaaS requires at least one of VMaaS or BMaaS to be enabled — CaaS provisions clusters that need compute nodes, which come from either VMaaS or BMaaS.
+- CaaS requires BMaaS to be enabled — CaaS worker nodes are BareMetalInstances ([OSAC-2135](/enhancements/OSAC-2135-caas-bare-metal-worker-provisioning/design.md)).
 - MaaS requires CaaS to be enabled — MaaS serves models on clusters provisioned by CaaS.
+
+The installer's networking validation also depends on the enabled services: VMaaS needs a Kubernetes Manager, BMaaS or CaaS needs a `fabric` share, and CaaS needs an `lbVip` share in the Subnet address plan ([Unified networking](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)).
 
 These constraints are encoded as `if`/`then` rules in `values.schema.json` so that `helm install` and `helm upgrade` fail immediately with a descriptive error when an invalid combination is specified.
 
@@ -265,8 +270,8 @@ func (f *serviceFlags) enableAllIfNoneSet() {
 }
 
 func (f *serviceFlags) validate() error {
-    if f.CaaS && !f.VMaaS && !f.BMaaS {
-        return fmt.Errorf("CaaS requires at least one of VMaaS or BMaaS to be enabled")
+    if f.CaaS && !f.BMaaS {
+        return fmt.Errorf("CaaS requires BMaaS to be enabled")
     }
     if f.MaaS && !f.CaaS {
         return fmt.Errorf("MaaS requires CaaS to be enabled")
@@ -439,7 +444,7 @@ The osac-operator already has per-controller enable flags — no new mechanism i
 
 Shared controllers (Tenant, Storage, Volume, Networking) remain always-enabled — they are shared infrastructure. [Locked: D2]
 
-The existing `operator.controllers.*` values and their propagation to `OSAC_ENABLE_*_CONTROLLER` env vars are unchanged. The operator's existing `controllerFlags` struct is extended with a `validate()` method that enforces the same inter-service dependency rules as the fulfillment-service: CaaS requires VMaaS or BMaaS, MaaS requires CaaS. The operator exits on startup with a clear error if an invalid combination is detected. [Codebase: osac-operator/charts/operator/templates/deployment.yaml]
+The existing `operator.controllers.*` values and their propagation to `OSAC_ENABLE_*_CONTROLLER` env vars are unchanged. The operator's existing `controllerFlags` struct is extended with a `validate()` method that enforces the same inter-service dependency rules as the fulfillment-service: CaaS requires BMaaS, MaaS requires CaaS. The operator exits on startup with a clear error if an invalid combination is detected. [Codebase: osac-operator/charts/operator/templates/deployment.yaml]
 
 #### Bare-Metal Fulfillment Operator
 
@@ -465,19 +470,19 @@ The `--enable-*` flags are typed booleans — no input parsing is needed beyond 
 
 ### Failure Handling and Recovery
 
-**Invalid service combination in Helm values:** If an admin specifies an invalid combination (e.g., CaaS enabled without VMaaS or BMaaS), `helm install`/`helm upgrade` fails immediately with a validation error from `values.schema.json`. No pods are started or restarted.
+**Invalid service combination in Helm values:** If an admin specifies an invalid combination (e.g., CaaS enabled without BMaaS), `helm install`/`helm upgrade` fails immediately with a validation error from `values.schema.json`. No pods are started or restarted.
 
-**Invalid service combination at runtime:** If the binary is started with an invalid flag combination outside Helm (development, testing, custom manifests), the `validate()` method on `serviceFlags` (fulfillment-service) or `controllerFlags` (operator) rejects the combination at startup before any server or controller initialization. The process exits with a clear error message (e.g., `"CaaS requires at least one of VMaaS or BMaaS to be enabled"`). This is defense in depth — Helm catches it at deploy time, the binary catches it at startup.
+**Invalid service combination at runtime:** If the binary is started with an invalid flag combination outside Helm (development, testing, custom manifests), the `validate()` method on `serviceFlags` (fulfillment-service) or `controllerFlags` (operator) rejects the combination at startup before any server or controller initialization. The process exits with a clear error message (e.g., `"CaaS requires BMaaS to be enabled"`). This is defense in depth — Helm catches it at deploy time, the binary catches it at startup.
 
 **No `--enable-*` flags provided:** If no service enable flag is provided, the fulfillment-service enables all services via `enableAllIfNoneSet()` (backward compatibility). This matches the operator's behavior. The `validate()` call runs after `enableAllIfNoneSet()`, so the all-enabled default always passes validation.
 
-**Helm upgrade with new services enabled:** When a `helm upgrade` enables a previously disabled service, the fulfillment-service pod restarts and registers the new service endpoints. No database migration is needed — the database schema includes all tables regardless of enabled services (tables for disabled services are unused but present). The operator pod restarts and begins reconciling the newly enabled controller's resources.
+**Helm upgrade with new services enabled:** When a `helm upgrade` enables a previously disabled service, the fulfillment-service pod restarts and registers the new service endpoints. No database migration is needed — the database schema includes all tables regardless of enabled services (tables for disabled services are unused but present). The operator pod restarts and begins reconciling the newly enabled controller's resources. Networking limits apply: enabling BMaaS or CaaS fails the rollout once any VirtualNetwork exists or when the derived Subnet address plan changes, and enabling VMaaS needs the Kubernetes Manager from installation ([Unified networking](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)).
 
 **Version skew during rolling update:** During a `helm upgrade`, there is a brief window where the old fulfillment-service pod (without the new service) and the new pod (with it) may both be running. The gRPC service routing handles this gracefully: requests to the new service that land on the old pod receive `codes.Unavailable`, and the client retries. The Kubernetes readiness probe ensures the new pod is ready before the old one is terminated.
 
-**Client calls a disabled service without checking Capabilities:** The `UnknownServiceHandler` returns `codes.Unavailable` with a descriptive message identifying which service is disabled. The gRPC status code `Unavailable` is appropriate — it signals a transient condition (the service could be enabled via `helm upgrade`), unlike `Unimplemented` which implies the service does not exist.
+**Client calls a disabled service without checking Capabilities:** The `UnknownServiceHandler` returns `codes.Unavailable` with a descriptive message identifying which service is disabled. The gRPC status code `Unavailable` is appropriate — it signals a transient condition (the service could be enabled via `helm upgrade`, within the networking limits in [Post-Installation Enablement](#post-installation-enablement)), unlike `Unimplemented` which implies the service does not exist.
 
-**HostTypes filtering with no enabled compute services:** If both VMaaS and BMaaS are disabled, the HostTypes `List` returns an empty list. The `Get` method returns `codes.NotFound` for any specific host type. This is correct behavior — there are no usable host types when no compute services are active.
+**HostTypes filtering with no enabled compute services:** If both VMaaS and BMaaS are disabled (CaaS and MaaS are then disabled too), the HostTypes `List` returns an empty list. The `Get` method returns `codes.NotFound` for any specific host type. This is correct behavior — there are no usable host types when no compute services are active.
 
 ### RBAC / Tenancy
 
@@ -487,8 +492,8 @@ No RBAC or tenancy changes are required. This feature controls which services ar
 
 **New structured log events:**
 
-- `fulfillment-service`: At startup, log which services are enabled and disabled at `INFO` level: `"service enablement configured" services_enabled=["caas","vmaas"] services_disabled=["bmaas","maas"]`
-- `fulfillment-service`: When the `UnknownServiceHandler` rejects a call to a disabled service, log at `WARN` level: `"request to disabled service" service="bmaas" method="/osac.public.v1.BareMetalInstances/List"`
+- `fulfillment-service`: At startup, log which services are enabled and disabled at `INFO` level: `"service enablement configured" services_enabled=["caas","bmaas"] services_disabled=["vmaas","maas"]`
+- `fulfillment-service`: When the `UnknownServiceHandler` rejects a call to a disabled service, log at `WARN` level: `"request to disabled service" service="vmaas" method="/osac.public.v1.ComputeInstances/List"`
 - `osac-operator`: Already logs which controllers are enabled at startup via existing flag logging.
 
 **New Prometheus metric:**
@@ -574,7 +579,7 @@ Should navigation items for disabled services be completely hidden or shown as g
 
 How do Enclave wizard "experiences" relate to the per-service enablement flags? Do experiences drive the Helm values, get replaced by them, or run alongside them?
 
-**Resolution:** Enclave profiles drive the service enablement values. The Enclave plugin's `osacProfilesList` (e.g., `[caas, vmaas]`) is translated into individual `services.*.enabled` flags via value-map extension — the plugin sets `--set services.caas.enabled=true,services.vmaas.enabled=true` rather than templating entire value files. This aligns with the team decision to modify the Enclave plugin to extend by value map (OSAC-4106).
+**Resolution:** Enclave profiles drive the service enablement values. The Enclave plugin's `osacProfilesList` (e.g., `[caas, bmaas]`) is translated into individual `services.*.enabled` flags via value-map extension — the plugin sets `--set services.caas.enabled=true,services.bmaas.enabled=true` rather than templating entire value files. This aligns with the team decision to modify the Enclave plugin to extend by value map (OSAC-4106).
 
 **Reconciliation with PR [osac-project/osac#380](https://github.com/osac-project/osac/pull/380):** PR #380 introduced a `global.profilesList` convenience layer with Helm helper functions that compute per-controller flags from a list. This design's `services.*.enabled` booleans are the canonical chart interface — they are simpler to validate (schema constraints, see Helm Values Structure), propagate uniformly to all components (fulfillment-service, operator, BMF), and are directly settable via Enclave value-map extension. PR #380's `global.profilesList` should be reconciled with this design: either adopt `services.*.enabled` as the underlying mechanism that the list maps to, or be superseded by the per-service booleans.
 
@@ -592,7 +597,7 @@ Should AAP instance groups be disabled when their corresponding service is disab
 **fulfillment-service:**
 
 - `enableAllIfNoneSet` enables all services when no flag is explicitly set, and preserves explicit flags when any are set.
-- `validate` rejects invalid combinations (CaaS without VMaaS/BMaaS, MaaS without CaaS), accepts valid combinations, and passes after `enableAllIfNoneSet()`.
+- `validate` rejects invalid combinations (CaaS without BMaaS, MaaS without CaaS), accepts valid combinations, and passes after `enableAllIfNoneSet()`.
 - `RegisterResourceServers` with each `serviceFlags` combination registers only the expected services. Verify by checking which services are registered on the gRPC server (via reflection or the server's `GetServiceInfo()` method).
 - `UnknownServiceHandler` returns `codes.Unavailable` with the correct service name for calls to known-but-disabled services, and falls through to `codes.Unimplemented` for genuinely unknown services.
 - REST gateway `registerHandlers` returns the expected handler set for each `serviceFlags` combination.
@@ -606,15 +611,16 @@ Should AAP instance groups be disabled when their corresponding service is disab
 
 ### Integration Tests
 
-- Deploy with `services.bmaas.enabled=false`. Verify: BMaaS gRPC services return `codes.Unavailable`; BMaaS REST endpoints return HTTP 503; Capabilities response does not include `bmaas`; bare-metal host types do not appear in HostTypes list; BMF operator pods are not running; CaaS and VMaaS endpoints function normally.
+- Deploy with `services.bmaas.enabled=false`. Verify: BMaaS gRPC services return `codes.Unavailable`; BMaaS REST endpoints return HTTP 503; Capabilities response does not include `bmaas`; bare-metal host types do not appear in HostTypes list; BMF operator pods are not running; VMaaS endpoints function normally. CaaS must be disabled with BMaaS.
 - Deploy with all services enabled (default). Verify: all endpoints function normally; Capabilities response includes all four services.
 - `helm upgrade` to enable a previously disabled service. Verify: the newly enabled service's endpoints become available; Capabilities response updates.
+- `helm upgrade` enabling BMaaS or CaaS while a VirtualNetwork exists. Verify: the rollout fails with the Unified networking message.
 
 ### E2E Tests
 
 - Full deployment with selective services. Verify end-to-end: Capabilities discovery → resource creation → provisioning for enabled services only.
 - Tenant user experience: catalog only shows items for enabled services; attempting to create a resource for a disabled service via the CLI returns a clear error.
-- HostType filtering: with BMaaS disabled, verify that bare-metal host types are not visible and cannot be used in cluster creation.
+- HostType filtering: with BMaaS disabled, verify that bare-metal host types are not visible.
 
 ## Graduation Criteria
 
@@ -654,7 +660,7 @@ No data migration is required in either direction. Database tables for all servi
 **Disabling/re-enabling services:**
 
 - Update the Helm values file and run `helm upgrade`. The fulfillment-service and operator pods restart with the new configuration.
-- No manual cleanup is needed. Enabling a service makes its API endpoints and controllers available immediately.
+- No manual cleanup is needed. Enabling a service makes its API endpoints and controllers available once the rollout completes. Enabling BMaaS or CaaS fails once any VirtualNetwork exists or when the derived Subnet address plan changes, and enabling VMaaS needs the Kubernetes Manager from installation ([Unified networking](/enhancements/OSAC-1433-unified-networking/design.md#subnet-address-plan)).
 - Disabling a service (out of scope for this feature) would require consideration of existing resources — this is why post-installation disablement is deferred.
 
 **Consequences of disabling a service:**
