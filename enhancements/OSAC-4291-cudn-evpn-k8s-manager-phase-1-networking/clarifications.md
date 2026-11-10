@@ -1,5 +1,7 @@
 # Clarification Log — OSAC-4291
 
+> **Superseded (2026-11-10):** D3, D4 and D7 are superseded by [contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership) and [§4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment). Route targets are `0:<VNI>` on both sides, set by `cudn_evpn` and the Fabric, not returned by Netris (D3, D7). A second Subnet is accepted and goes READY; a VM attachment on it fails with the `cudn_evpn` limit error, and the fulfillment service does not check it (D4). "Open gaps: None" below refers to the clarification rounds only. The log below is kept as history.
+
 ## Status
 
 - Rounds completed: 3

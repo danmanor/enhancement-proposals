@@ -130,7 +130,7 @@
 - CUDN reports `TransportAccepted`, `NetworkCreated` and `NetworkAllocationSucceeded` True within 60 seconds
 - OVN-Kubernetes provisions VXLAN interfaces on worker nodes
 
-### R4: VM-to-fabric connectivity (L2 same-subnet and L3 cross-subnet scenarios)
+### R4: VM-to-fabric connectivity (same Subnet; between Subnets in a later phase)
 
 #### TC-R4-01: L2 same-subnet VM to bare-metal connectivity
 
@@ -164,11 +164,12 @@
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
-| IC-5, IC-6 | critical | manual |
+| IC-5, IC-6 | critical | manual, Blocked (later phase) |
 
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
+- **Status:** Blocked. VM routing between Subnets waits for a later phase. In phase 1, VMs run only on the Subnet that owns the hub network, and the case also depends on the Netris leaves importing `0:<VNI>`. Not run until then.
 - CUDN provisioned with subnet 200.200.1.0/24
 - VirtualMachine deployed in CUDN namespace, IP 200.200.1.3
 - Bare-metal node provisioned on Netris fabric in different subnet 200.200.2.0/24, IP 200.200.2.10
@@ -187,7 +188,7 @@
 - FRR advertises Type-5 EVPN route for 200.200.1.0/24 prefix
 - Traffic encapsulated with L3 VNI (ipVRF), not L2 VNI (macVRF)
 
-### R5: Single-subnet-per-VirtualNetwork constraint for this k8s manager
+### R5: One VM Subnet per VirtualNetwork for this k8s manager
 
 #### TC-R5-01: Second Subnet is accepted, a VM on it fails with the limit error
 
@@ -215,7 +216,7 @@
 
 ### R6: Non-conflicting IP address assignment
 
-#### TC-R6-01: OVN answers the VM; Netris DHCP should not (open lab check)
+#### TC-R6-01: OVN answers the VM; Netris DHCP does not
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -225,7 +226,7 @@
 
 - **Tier / owner:** E2E / [QE].
 - CUDN provisioned with subnet 200.200.1.0/24
-- Netris V-Net created by the Netris manager; Netris DHCP covers `physical_ipv4_cidrs` only
+- Netris V-Net created by the Netris manager; Netris DHCP is on and covers `physical_ipv4_cidrs` only
 
 ##### Steps
 
@@ -236,7 +237,7 @@
 5. Check VM received IP from OVN DHCP (inside VM: check DHCP server IP in lease file)
 6. Verify the Netris DHCP scope is only `physical_ipv4_cidrs`, not the overlay range
 7. Verify VM IP is not in fabric reserved range (reservedSubnets)
-8. Check Netris DHCP does not answer the VM MAC address (open lab check)
+8. Check Netris DHCP does not answer the VM MAC address
 9. Verify VM IP is in subnet CIDR (200.200.1.0/24)
 
 ##### Expected Results
@@ -244,7 +245,7 @@
 - CUDN `reservedSubnets` and `infrastructureSubnets` follow the `ipam` layout (contract §4.8)
 - VM IP assigned by OVN-Kubernetes DHCP (not Netris DHCP), in `ipam.overlay_ipv4_cidrs`
 - VM DHCP lease gives `gateway_ipv4` as router, served by OVN-Kubernetes
-- Only OVN-Kubernetes answers the VM; Netris DHCP should not (step 8 is an open lab check: Netris range DHCP answers any MAC in `physical_ipv4_cidrs`)
+- Only OVN-Kubernetes answers the VM; the VM's DHCP request never reaches Netris DHCP
 - **VM IP does not collide with the gateway, the management port (network + 2), or the fabric DHCP and LB VIP ranges**
 - OVN IPAM respects the reserved range (correctness requirement, not optional)
 - No second DHCP server exists on the Subnet for VMs
@@ -269,14 +270,14 @@
    - FRRConfiguration underlay BGP peering
    - RouteAdvertisements CR
    - BGP underlay connectivity (worker ↔ fabric switch)
-   - Gateway MAC coordination requirement
+   - Gateway MAC addresses: Netris serves `gateway_ipv4` with its own MAC and OVN-Kubernetes serves it to VMs; two MACs are accepted (contract §4.9)
 3. Verify guide includes validation commands to check prerequisites complete
 
 ##### Expected Results
 
 - All manual prerequisites documented with examples
 - Validation commands provided (check VTEP exists, FRR BGP session up, etc.)
-- Guide warns against skipping gateway MAC coordination
+- Guide states that two gateway MACs are accepted and a shared MAC is optional
 
 ### R8: Diagnostic tooling documentation
 
@@ -307,9 +308,9 @@
 - Commands cover BGP session verification
 - Known failure modes documented with symptoms and fixes
 
-### R9: Gateway MAC coordination prerequisite
+### R9: Gateway MAC addresses
 
-#### TC-R9-01: Gateway MAC documented as manual prerequisite
+#### TC-R9-01: Two gateway MACs documented
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -322,12 +323,12 @@
 ##### Steps
 
 1. Read installation prerequisites
-2. Verify guide documents gateway MAC coordination requirement
-3. Verify guide explains consequences of mismatch (L3 traffic fails, ARP flapping)
+2. Verify guide documents the gateway: Netris serves `gateway_ipv4` with its own MAC, OVN-Kubernetes serves it to VMs
+3. Verify guide explains the effect of two gateway MACs on routed traffic
 
 ##### Expected Results
 
-- Gateway MAC coordination listed as prerequisite, or the two MACs documented as a known limitation for a fabric that serves the gateway too (contract §4.9)
+- Two gateway MACs documented as accepted (contract §4.9); a shared MAC is optional, not a prerequisite
 - Guide explains the effect of two gateway MACs on routed traffic
 
 ### SecurityGroup ICMP: capability gate with cudn_evpn
@@ -362,7 +363,7 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 
 ### Subnet Deletion: Ordered cleanup prevents stale VRFs
 
-#### TC-DELETE-01: Subnet deletion with running VMs
+#### TC-DELETE-01: Ordered delete: VM, Subnet, VirtualNetwork
 
 | Interface Change | Priority | Automation |
 |-----------------|----------|------------|
@@ -371,27 +372,28 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 ##### Preconditions
 
 - **Tier / owner:** E2E / [QE].
-- CUDN provisioned with subnet
-- VirtualMachine running in CUDN namespace
-- Subnet marked for deletion (finalizer present)
+- One VirtualNetwork with one Subnet that owns the CUDN
+- VirtualMachine running in the namespace `osac-vn-<VirtualNetwork API ID>`
 
 ##### Steps
 
-1. Delete Subnet CR
-2. Observe k8s manager delete playbook runs
-3. Verify VMs deleted before CUDN deletion attempted
-4. Verify playbook waits for all VMIs terminated (retries with timeout)
-5. Verify CUDN deleted after VMIs gone
-6. Verify namespace deleted after CUDN deleted
-7. Check for stale VRF on worker nodes (should not exist)
+1. Delete the Subnet while the VM exists
+2. Delete the VM and wait until its record is gone
+3. Delete the Subnet
+4. Verify the CUDN is gone before the Fabric `delete_subnet` runs, and the Netris V-Net is deleted
+5. Verify the namespace `osac-vn-<VirtualNetwork API ID>` still exists
+6. Delete the VirtualNetwork
+7. Verify the namespace and its baseline deny are deleted
+8. Check for stale VRF on worker nodes (should not exist)
 
 ##### Expected Results
 
-- Deletion order enforced: VMs → wait VMIs → CUDN → namespace
-- No stuck CUDN finalizer (deletion completes within timeout)
+- Step 1 fails with `FAILED_PRECONDITION` ([Unified — Deletion dependency guards](/enhancements/OSAC-1433-unified-networking/design.md#deletion-dependency-guards))
+- Subnet delete: the owner Subnet's Kubernetes `delete_subnet` removes the CUDN and waits until it is gone, then the Fabric delete runs
+- The namespace stays until Kubernetes `delete_virtual_network` removes it
 - **Normal case:** No stale VRF devices persist after CUDN deleted
 - **Rare failure case:** Stale VRF requires manual recovery (see TC-DELETE-02 and Support Procedures)
-- Subnet CR finalizer removed, CR deleted successfully
+- Subnet and VirtualNetwork CRs are deleted, finalizers removed
 
 #### TC-DELETE-02: Stale VRF manual recovery (troubleshooting)
 
@@ -427,4 +429,4 @@ Traces to contract FR-13 and [contract TC-CAP-03](/enhancements/OSAC-1433-networ
 
 ## Gaps
 
-All requirements map to test cases. No case exercises IC-4.
+All requirements map to test cases. No case exercises IC-4. TC-R4-02 is Blocked until VM routing between Subnets lands in a later phase.
