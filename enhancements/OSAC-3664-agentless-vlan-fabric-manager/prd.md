@@ -30,8 +30,8 @@ explicitly specifies them.
 > [osac#2170 at `54272aa80e6a56ff1d77b2ee8cf4749267f98cbe`](https://github.com/osac-project/osac/tree/54272aa80e6a56ff1d77b2ee8cf4749267f98cbe)
 > is under review. It registers AgentlessNet through the shared task contract
 > and implements physical BareMetalInstance attachment with reserved-address
-> DHCP feedback. Its physical-policy tasks are no-ops; FabricDomain creation,
-> VM overlay attachment, and cluster-ingress reservation are unsupported.
+> DHCP feedback. Its physical-policy tasks are no-ops; FabricDomain creation
+> and VM overlay attachment are unsupported.
 > ExternalIPAttachment consumes a tenant-network destination snapshot rather
 > than requiring a BareMetalInstance target. None of this establishes deployed
 > service parity or end-to-end validation. See the [current behavior mapping](design.md#current-agentlessnet-behavior)

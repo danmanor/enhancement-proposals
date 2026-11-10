@@ -58,10 +58,10 @@ snapshot's `apiVersion`, `metadata.uid` or `metadata.generation`. Those fields
 describe the captured CR, while `resource.id` identifies provider ownership.
 
 SecurityGroup tasks are a documented physical-policy no-op, not enforcement.
-FabricDomain creation and cluster-ingress reservation fail as unsupported;
-their cleanup tasks are no-ops. Physical NetworkAttachment apply/query is
-BareMetalInstance-only, while ExternalIPAttachment accepts the tenant-network
-destination abstraction. That abstraction alone does not prove VMaaS or CaaS
+FabricDomain creation fails as unsupported; its cleanup task is a no-op.
+Physical NetworkAttachment apply/query is BareMetalInstance-only, while
+ExternalIPAttachment accepts the tenant-network destination abstraction. That
+abstraction alone does not prove VMaaS or CaaS
 integration or packet delivery. These are AgentlessNet limits, not restrictions
 on other Fabric Managers, and do not amend the future policy proposals in
 [enhancement-proposals#324](https://github.com/osac-project/enhancement-proposals/pull/324)

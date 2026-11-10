@@ -364,7 +364,7 @@ The address plan splits each Subnet into three ranges; each share is a fraction 
 |---|---|---|
 | `overlay` | `overlay_ipv4_cidrs` | VM addresses from the Kubernetes Manager. |
 | `fabric` | `physical_ipv4_cidrs` | The Fabric Manager's range ([contract §4.8](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#48-addressing)): Fabric DHCP for physical interfaces (bare-metal servers, CaaS workers) and the provider's own devices. Also used with only VMaaS enabled, for provider devices. |
-| `lbVip` | `lb_vip_ipv4_cidrs` | CaaS ingress address reservations. |
+| `lbVip` | `lb_vip_ipv4_cidrs` | CaaS guest ingress addresses, which OSAC assigns. |
 
 **Default plan.** Without `addressPlan`, the installer derives the plan from the enabled services ([OSAC-3046](/enhancements/OSAC-3046-per-service-enablement/design.md); MaaS adds nothing) and the Kubernetes Manager:
 
@@ -693,8 +693,8 @@ Delete: only the fulfillment service deletes automatic resources: first the Exte
 With provider networking enabled, OSAC runs the manager tasks as this design and the [contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md) define.
 
 With provider networking disabled, OSAC keeps the same authorization, isolation, validation, defaulting, operations, gates (except those marked "provider networking enabled"), and guards, and runs no provider operation:
-- OSAC runs no networking job: no manager task, real or no-op, for any networking resource, and no reserve, release, guest ingress, or DNS job from the ClusterOrder controller.
-- VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, and FabricDomain become READY once their gates pass: `Ready=True`, reason `ProvisioningDisabled`, with a message naming the skipped operation. This claims no connectivity, policy, or routing. A SecurityGroup Update stores the rules and reports the same way.
+- OSAC runs no networking job: no manager task, real or no-op, for any networking resource, and no guest ingress address, guest ingress job, or DNS job from the ClusterOrder controller.
+- VirtualNetwork, Subnet, SecurityGroup, ExternalIPPool, and FabricDomain become READY once their gates pass: `Ready=True`, reason `ProvisioningDisabled`; the hub condition message names the skipped operation, and the API shows the fixed [Status](#status) message. This claims no connectivity, policy, or routing. A SecurityGroup Update stores the rules and reports the same way.
 - An ExternalIP create fails with `FAILED_PRECONDITION`, message `provider networking is disabled`, and nothing is stored, so no ExternalIPAttachment or NATGateway can be created either: their gates need an ALLOCATED ExternalIP.
 - Workloads still run, with the fallback their workload service design defines for provider networking disabled; workload controllers choose it from the deployment setting. A workload condition for skipped network work is `True`, reason `ProvisioningDisabled`, never `Unknown`. Such a workload is never a ready endpoint: an ExternalIPAttachment create for it fails with `FAILED_PRECONDITION`. Workload services create no NetworkAttachment.
 - Deletes follow the guards and the automatic cleanup order and remove the finalizer without a task. No job ever ran, so no provider state is left.
@@ -882,7 +882,7 @@ kind cluster with the fulfillment service, the OSAC operator, and the reference 
 - Plan change: a rollout whose plan in force differs from the stored plan fails and names `spec.address_plan`, with or without VirtualNetworks; a private Update of `spec.address_plan` fails with `INVALID_ARGUMENT`.
 - [Hub CRs](#hub-crs): the CR carries its API ID label and `hub` is set after the create; a normal delete of every kind removes the record once the CR is gone.
 - Automatic access: one-transaction create; ExternalIPAttachment after allocation and endpoint readiness; delete order.
-- Provider networking disabled: no networking job and no ClusterOrder reserve, release, guest ingress, or DNS job; resources READY with reason `ProvisioningDisabled` (also FabricDomain); an ExternalIP create is rejected with `FAILED_PRECONDITION`; a SecurityGroup Update stores the rules and starts no job; ExternalIPAttachment creates for a workload rejected; deletes remove the finalizer without a task.
+- Provider networking disabled: no networking job and no ClusterOrder guest ingress address, guest ingress job, or DNS job; resources READY with reason `ProvisioningDisabled` (also FabricDomain); an ExternalIP create is rejected with `FAILED_PRECONDITION`; a SecurityGroup Update stores the rules and starts no job; ExternalIPAttachment creates for a workload rejected; deletes remove the finalizer without a task.
 - Fixed setting: a rollout that changes `provisioningEnabled` after installation fails, because the fulfillment service refuses to start and names the setting; the stored value stays.
 - Service enablement: a rollout that enables BMaaS or CaaS while a VirtualNetwork exists fails, because the fulfillment service refuses to start with the message of [Service changes](#subnet-address-plan); with no VirtualNetwork it succeeds.
 - Excluded ranges: a rollout that adds an `excludedIpv4Cidrs` range overlapping the NetworkClass default `virtual_network_ipv4_cidr` fails, because the fulfillment service refuses to start.
