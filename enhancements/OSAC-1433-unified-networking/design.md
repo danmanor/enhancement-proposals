@@ -271,6 +271,7 @@ The tenant-facing message is selected from the stable reason and is not copied f
 - A required tenant default is missing.
 - A FabricDomain create when the NetworkClass does not set `supports_east_west_ethernet`.
 - A request changes `spec` beyond what the [API operation constraint](#api-operation-constraint) allows, or sets `status`; a SecurityGroup Update lacks the object, its ID, or its spec.
+- A public request creates a BareMetalInstance with `osac.openshift.io/cluster-api-id`, or makes a FabricDomain or ExternalIPAttachment use a Cluster worker ([creation readiness gates](#creation-readiness-gates)).
 - A creator other than `system` uses a reserved name prefix (`auto-eip-`, `auto-eipa-`, or `auto-sg-`).
 - A create sets the label `osac.openshift.io/default`; only the fulfillment service sets it ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md#inspecting-default-resources)).
 
@@ -336,7 +337,7 @@ message VirtualNetworkSpec {
 }
 ```
 
-- The VirtualNetwork routes between its Subnets at L3; each Subnet stays its own L2 domain. SecurityGroups filter all of this traffic.
+- The VirtualNetwork routes between its Subnets at L3; each Subnet stays its own L2 domain. SecurityGroups filter all of this traffic. With `cudn_evpn`, VMs run only on the Subnet that owns its hub network, so in this release only bare metal uses the other Subnets ([contract — `cudn_evpn` limit](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)).
 - With a Kubernetes Manager, the VirtualNetwork CR records the L3 VNI that Fabric `create_virtual_network` returns in `status.l3Vni`, and OSAC passes it to its Subnet and NetworkAttachment tasks in the stored `virtual_network` snapshot ([contract §4.9](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#49-network-types-and-the-network-segment)). It is hub CR status only: no tenant request field, operation, or API field.
 - Separate VirtualNetworks, even of one tenant, may have identical or overlapping CIDRs; managers keep them isolated ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)). The prefix length is at most the plan's [prefix limit](#subnet-address-layout), so it holds at least one Subnet.
 - `global.networking.excludedIpv4Cidrs` is an installation setting: canonical IPv4 CIDRs (default empty) that the provider's infrastructure uses, such as management, provisioning, and node networks. A VirtualNetwork CIDR that overlaps one, or any ExternalIPPool CIDR, is rejected (`INVALID_ARGUMENT`). The fulfillment service refuses to start when the setting overlaps the NetworkClass default `virtual_network_ipv4_cidr`, an existing VirtualNetwork, or an ExternalIPPool, with the message "excludedIpv4Cidrs range <CIDR> overlaps <kind> <ID or CIDR>" for the first overlap, so Helm values adding such a range fail the rollout.
@@ -375,7 +376,6 @@ The address plan splits each Subnet into three ranges; each share is a fraction 
 | VMaaS | 0.75 / 0.25 / 0 | not allowed |
 | BMaaS, CaaS | 0.5 / 0.25 / 0.25 | 0 / 0.75 / 0.25 |
 | BMaaS | 0.5 / 0.5 / 0 | 0 / 1 / 0 |
-| None of them | 0.75 / 0.25 / 0 | 0 / 1 / 0 |
 
 **Validation.** The installer validates the plan in force, set or derived, in Helm `values.schema.json` and in its NetworkClass step. A failure fails the rollout with a message that names the field.
 - Each share is a multiple of 0.0625 from 0 to 1. These values are exact as floats, so the sum check is exact. A negative value, NaN, any other value, or a plan that sets only some shares is rejected.
@@ -447,7 +447,7 @@ enum Protocol {
 - A rule with ports on ICMP or ALL, a TCP or UDP rule without ports, or `PROTOCOL_UNSPECIFIED` fails with `INVALID_ARGUMENT`.
 - **ICMP depends on the managers.** A SecurityGroup create and a rule update with a `PROTOCOL_ICMP` rule fail with `INVALID_ARGUMENT` and the message "<ingress|egress> rule at index <n>: protocol icmp is not supported by this deployment's network managers; use protocol all, which includes ICMP" unless the singleton NetworkClass has `status.security_group_icmp` true ([contract §4.2](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#42-registration-and-capabilities)), or the value is unset and provisioning is disabled (rules are only stored). An unset value with provisioning enabled fails closed. `PROTOCOL_ALL` is never gated and includes ICMP. The check runs only when a rule is ICMP, and it applies to the whole candidate rule list, so an update that keeps an ICMP rule is rejected as well; a group that already has one stays readable and deletable, and replacing the rule with `all` recovers a FAILED group. The CLI and UI do not offer ICMP; the CLI still parses `icmp`, so the API gives the real error. The operator also fails a NetworkClass whose `spec.defaults` use ICMP without the capability, and the installer fails the rollout for `cudn_evpn` with such defaults, because the default SecurityGroup of every tenant would be rejected.
 
-**Rule updates.** A [rule update](#api-operation-constraint) stores the new rules and, in the same transaction, updates the record's status ([Status](#status)), so the tenant sees the update at once: a READY group stays READY with the message `Updating`, and a FAILED group becomes PENDING.
+**Rule updates.** A [rule update](#api-operation-constraint) stores the new rules and, in the same transaction, updates the record's status ([Status](#status)), so the tenant sees the update at once: a READY group stays READY with reason `Updating`, and a FAILED group becomes PENDING.
 1. The fulfillment controller copies the rules to the SecurityGroup CR.
 2. The OSAC operator stores them in `status.taskInput` as the next attempt's input ([contract §4.5](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#45-task-input)) and sets the CR's reason to `Updating` (a FAILED group: `Ready=False`, reason `Progressing`).
 3. It runs `create_security_group` again on each recorded manager, in manager order (Fabric, then Kubernetes), as the next attempt ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
@@ -455,8 +455,8 @@ enum Protocol {
 5. Once the run of each recorded manager with the new rules has succeeded, the reason returns to `Succeeded`.
 
 - A final failure sets `Ready=False`, reason `Failed` (FAILED). The tenant API uses the fixed message `Resource provisioning did not complete.`; the hub SecurityGroup condition and `status.jobs` retain the administrator diagnostic. Each manager's object keeps the rules of its last successful run, and bound workloads keep running. New workloads cannot select the group ([gate](#creation-readiness-gates)). The tenant fixes the rules with another Update or deletes the group once no workload uses it.
-- An Update is accepted only while the SecurityGroup is READY with no update in progress, or FAILED. Otherwise (PENDING, or READY with the message `Updating`) it fails with `FAILED_PRECONDITION` and the message "SecurityGroup <id> is being created or updated; retry when it is READY or FAILED", so no job of the group runs when an Update is stored.
-- With provider networking disabled, an Update only stores the rules; the group stays READY, reason `ProvisioningDisabled`, without the `Updating` message ([Provider networking control](#provider-networking-control)).
+- An Update is accepted only while the SecurityGroup is READY with no update in progress, or FAILED. Otherwise (PENDING, or READY with reason `Updating`) it fails with `FAILED_PRECONDITION` and the message "SecurityGroup <id> is being created or updated; retry when it is READY or FAILED", so no job of the group runs when an Update is stored.
+- With provider networking disabled, an Update only stores the rules; the group stays READY, reason `ProvisioningDisabled`, never `Updating` ([Provider networking control](#provider-networking-control)).
 
 #### ExternalIPPool
 
@@ -561,7 +561,7 @@ A FabricDomain belongs to one VirtualNetwork (`spec.virtual_network`); its creat
 
 The workload service creates one NetworkAttachment CR per workload from the workload's network attachment field: the attachment of the workload's interface to a Subnet, plus its SecurityGroups. The OSAC operator runs `apply_network_attachment` and `delete_network_attachment` on it, on each manager with an enforcement point for the interface ([SecurityGroup](#securitygroup), [contract §4.10](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#410-task-reference)):
 
-The shared `NetworkAttachmentName` helper takes target kind, target API ID, and the optional resolved interface name. It returns `<target kind lowercase>-<target API ID>` and appends `-<interface name>` when the resolved interface is named. The current VM overlay interface is unnamed, so its name remains `computeinstance-<API ID>`; BMaaS physical interfaces use `baremetalinstance-<BMI API ID>-<resolved interface name>`. The NetworkAttachment name does not change `spec.target.id`, which remains the workload API ID used by manager tasks. When a controller finds an existing unsuffixed NetworkAttachment during upgrade or restart, it reuses that name for lookup and deletion instead of creating a suffixed duplicate or renaming the object. The current one-attachment limit remains; a suffix does not define the stable per-attachment manager identity required for future multi-attachment support.
+The shared `NetworkAttachmentName` helper takes target kind, target API ID, and the optional resolved interface name. It returns `<target kind lowercase>-<target API ID>` and appends `-<interface name>` when the resolved interface is named; a named interface is DNS-label-safe ([BMaaS — interface selection](/enhancements/OSAC-1437-bmaas-networking/design.md#baremetalinstancetype-and-interface-selection)). The current VM overlay interface is unnamed, so its name remains `computeinstance-<API ID>`; BMaaS physical interfaces use `baremetalinstance-<BMI API ID>-<resolved interface name>`. The NetworkAttachment name does not change `spec.target.id`, which remains the workload API ID used by manager tasks. When a controller finds an existing unsuffixed NetworkAttachment during upgrade or restart, it reuses that name for lookup and deletion instead of creating a suffixed duplicate or renaming the object. The current one-attachment limit remains; a suffix does not define the stable per-attachment manager identity required for future multi-attachment support.
 
 - **VM (overlay interface): both managers.**
   1. Kubernetes `apply_network_attachment`, before the VM exists: it returns `vm_attachment.namespace`, where VMaaS creates the VM, and binds the VM's pod to the groups' NetworkPolicy.
@@ -574,7 +574,7 @@ The shared `NetworkAttachmentName` helper takes target kind, target API ID, and 
 apiVersion: osac.openshift.io/v1alpha1
 kind: NetworkAttachment
 metadata:
-  name: computeinstance-<API ID>        # Current unnamed overlay interface; see shared naming rule below
+  name: computeinstance-<API ID>        # Current unnamed overlay interface; see the shared naming rule above
   namespace: <hub networking namespace>
   annotations:
     osac.openshift.io/tenant: <tenant>  # copied from the workload; the Cluster tenant for CaaS workers
@@ -649,7 +649,7 @@ The fulfillment service rejects a delete with `FAILED_PRECONDITION` while a depe
 | Tenant default resource (label `osac.openshift.io/default`) | Always, unless the fulfillment service deletes it with the Tenant ([Default Networking](/enhancements/OSAC-1433-default-networking/design.md)). |
 | Tenant | Any workload, or any of its networking resources without the label `osac.openshift.io/default`, exists. |
 
-A workload record is removed only after its NetworkAttachment is gone, so these guards also protect the hub. The fulfillment service evaluates the FabricDomain-to-BMI dependency; BMF does not need FabricDomain RBAC. The deletion guard matches the BMI's assigned host name regardless of whether the FabricDomain or the BMI was created first, applies to Cluster worker BMIs too, and counts a FabricDomain until its DELETING record is removed. If a FabricDomain already names a worker's assigned host when deletion is requested, the delete is rejected and the host stays allocated until that FabricDomain record is fully removed. In the other order, FabricDomain creation rejects a BMI already marked with `osac.openshift.io/cluster-api-id`. The transaction and serialization rules in [Concurrent requests](#concurrent-requests) ensure a concurrent FabricDomain create and BMI delete cannot both succeed. FabricDomain `servers` is immutable in this release, so the tenant deletes the FabricDomain before deleting a listed BMI. Delete tasks run children first and in reverse manager order ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
+A workload record is removed only after its NetworkAttachment is gone, so these guards also protect the hub. The fulfillment service evaluates the FabricDomain-to-BMI dependency; BMF does not need FabricDomain RBAC. The deletion guard matches the BMI's assigned host name regardless of whether the FabricDomain or the BMI was created first, applies to Cluster worker BMIs too, and counts a FabricDomain until its DELETING record is removed. A FabricDomain cannot list a worker (creation gate), so in practice the guard never blocks a worker; it still covers one. The transaction and serialization rules in [Concurrent requests](#concurrent-requests) ensure a concurrent FabricDomain create and BMI delete cannot both succeed. FabricDomain `servers` is immutable in this release, so the tenant deletes the FabricDomain before deleting a listed BMI. Delete tasks run children first and in reverse manager order ([contract §4.7](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#47-ordering-concurrency-retries-and-ownership)).
 
 #### Concurrent requests
 
@@ -778,7 +778,7 @@ No new metrics or alerts. The fulfillment service logs `AutoProvisionedExternalI
 |---|---|
 | A manager reports success without the behavior. | Result validation and the conformance suite ([contract §4.11](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#411-conformance-tests)). |
 | A stale CR triggers work on the wrong owner. | Results come only from OSAC's own job; state is keyed by API ID; one job per resource. |
-| Readiness with provider networking disabled is mistaken for connectivity. | Reason `ProvisioningDisabled`, with a message naming the skipped operation. |
+| Readiness with provider networking disabled is mistaken for connectivity. | Reason `ProvisioningDisabled` and its fixed message. |
 | Overlapping tenant CIDRs leak traffic. | Managers key routing and policy by API ID; the follow-up network-behavior tests check overlapping CIDRs. |
 | Tenant CIDRs collide with provider infrastructure. | `global.networking.excludedIpv4Cidrs`. |
 | A SecurityGroup rule update that a manager cannot enforce exactly fails the group. | The run never allows more traffic than the rules and replaces them atomically ([contract](/enhancements/OSAC-1433-network-manager-integration-contract-networking/design.md#fabric-create_security_group--delete_security_group)), so each manager keeps the rules of its last successful run; the tenant sees the fixed failure message, administrator diagnostics stay on the hub, workloads keep running, and the tenant fixes the rules with another Update. |
@@ -866,7 +866,7 @@ Ginkgo, in fulfillment-service and osac-operator:
 - Every defaulting row; a SecurityGroup ID listed twice.
 - SecurityRule: ports only for TCP and UDP; `PROTOCOL_UNSPECIFIED` rejected.
 - SecurityGroup Update: the mask is fixed to `spec.ingress` and `spec.egress` (name, parent, and metadata in the request ignored), rules validated as at create, the default SecurityGroup accepted, an automatic, PENDING, updating, or being-deleted SecurityGroup rejected with `FAILED_PRECONDITION`, and every other public networking Update `UNIMPLEMENTED`.
-- FabricDomain create listing a host that is not a BareMetalInstance of the same tenant or a Cluster worker (exact worker error message), and FabricDomain Update that changes `spec.servers`, rejected with `INVALID_ARGUMENT`; verify both dependency orders: a pre-existing FabricDomain record matching a Cluster worker's assigned host blocks worker deletion, and creating a FabricDomain that lists an already-marked worker is rejected. The delete stays blocked while the FabricDomain record exists, including during DELETING, and the host is not released until that record is removed. Verify a concurrent FabricDomain create and BMI delete cannot both succeed. ExternalIP create with provider networking disabled is rejected with `FAILED_PRECONDITION`.
+- FabricDomain create listing a host that is not a BareMetalInstance of the same tenant or a Cluster worker (exact worker error message), and FabricDomain Update that changes `spec.servers`, rejected with `INVALID_ARGUMENT`; verify that creating a FabricDomain that lists a marked worker is rejected, and that a FabricDomain record matching a worker's assigned host (seeded in the database) blocks its deletion. The delete stays blocked while the FabricDomain record exists, including during DELETING, and the host is not released until that record is removed. Verify a concurrent FabricDomain create and BMI delete cannot both succeed. ExternalIP create with provider networking disabled is rejected with `FAILED_PRECONDITION`.
 - Pool accounting: `total` for /30, /31, /32; atomic reservation; slot release only at record removal, including when no create job started.
 - Status mapping from `Ready`, including SecurityGroup `Updating` (READY), DELETING for an accepted delete in any condition, and fixed tenant-facing messages for FAILED status; raw AAP diagnostics stay in administrator-visible hub status and events even when no `osac_error` was published.
 - Automatic resources: names, labels, creator `system`, pool choice and tie-break; tenant-set labels ignored.
@@ -884,7 +884,7 @@ kind cluster with the fulfillment service, the OSAC operator, and the reference 
 - Automatic access: one-transaction create; ExternalIPAttachment after allocation and endpoint readiness; delete order.
 - Provider networking disabled: no networking job and no ClusterOrder reserve, release, guest ingress, or DNS job; resources READY with reason `ProvisioningDisabled` (also FabricDomain); an ExternalIP create is rejected with `FAILED_PRECONDITION`; a SecurityGroup Update stores the rules and starts no job; ExternalIPAttachment creates for a workload rejected; deletes remove the finalizer without a task.
 - Fixed setting: a rollout that changes `provisioningEnabled` after installation fails, because the fulfillment service refuses to start and names the setting; the stored value stays.
-- Service enablement: a rollout that enables BMaaS or CaaS while a VirtualNetwork exists fails, because the fulfillment service refuses to start with the message of [Service changes](#subnet-address-plan); with no VirtualNetwork it succeeds.
+- Service enablement: a rollout that enables BMaaS or CaaS while a VirtualNetwork exists fails, because the fulfillment service refuses to start with the message of [Service changes](#subnet-address-plan); with no VirtualNetwork and an unchanged plan in force (an explicit `addressPlan`) it succeeds.
 - Excluded ranges: a rollout that adds an `excludedIpv4Cidrs` range overlapping the NetworkClass default `virtual_network_ipv4_cidr` fails, because the fulfillment service refuses to start.
 - Release: a rollout to another minor release while a networking record exists fails, because the fulfillment service refuses to start; a patch release succeeds.
 - Admission: from a non-OSAC identity, a delete of a Subnet CR, a finalizer removal from a NetworkAttachment, and a delete of a ComputeInstance CR are rejected; an annotation change on a ClusterOrder is allowed.
@@ -895,7 +895,7 @@ kind cluster with the fulfillment service, the OSAC operator, and the reference 
 `tests/e2e/` pytest, with a real EVPN Fabric Manager and `cudn_evpn`:
 - The conformance suite self-test ([contract TC-CONFORMANCE-01](/enhancements/OSAC-1433-network-manager-integration-contract-networking/testplan.md#tc-conformance-01-report-suite-outcomes)).
 - A VM and a bare-metal host on one Subnet connect only when both sides' SecurityGroups allow it; replies pass; a one-sided allow fails.
-- Two Subnets of one VirtualNetwork route to each other; two VirtualNetworks with the same CIDR stay isolated.
+- Bare-metal hosts on two Subnets of one VirtualNetwork route to each other; two VirtualNetworks with the same CIDR stay isolated.
 - DHCP gives each interface a unique address, prefix, and gateway, even when SecurityGroups deny application traffic.
 - An ExternalIPAttachment makes a workload reachable on its ExternalIP; a NATGateway makes outbound traffic use its ExternalIP.
 
